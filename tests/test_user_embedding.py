@@ -6,12 +6,12 @@ import pytest
 from litellm import EmbeddingResponse
 from tokenizers import Tokenizer, models, pre_tokenizers
 
-from insight_agent.evidence_streams.user_embedding.embedding import (
+from compass.compass_signals.user_embedding.embedding import (
     LiteLLMEmbeddingConfig,
     UserEmbeddingGenerator,
 )
-from insight_agent.evidence_streams.user_sentiment.classifier import ComplaintClassifier
-from insight_agent.evidence_streams.user_sentiment.stream import screen_user_messages
+from compass.compass_signals.user_sentiment.classifier import ComplaintClassifier
+from compass.compass_signals.user_sentiment.signal import screen_user_messages
 
 
 def test_local_batch_preserves_character_limit(monkeypatch):
@@ -31,7 +31,7 @@ def test_local_batch_preserves_character_limit(monkeypatch):
 
 
 def test_remote_batches_preserve_trace_order_and_skip_empty_messages(monkeypatch):
-    monkeypatch.setattr("insight_agent.evidence_streams.user_embedding.embedding._BATCH_SIZE", 4)
+    monkeypatch.setattr("compass.compass_signals.user_embedding.embedding._BATCH_SIZE", 4)
     generator = UserEmbeddingGenerator(litellm=LiteLLMEmbeddingConfig(model="openai/qwen"))
     generator.remote_tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0}, unk_token="[UNK]"))
     calls = []

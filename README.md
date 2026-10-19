@@ -9,17 +9,17 @@ The goal of NeMo Compass is to efficiently find signals in agent traces that lea
 
 A critical input to improving any agent is understanding what it’s doing, especially once you turn it on in production. Evals often capture only a small subset of the tasks an agent actually needs to be good at. Agent developers have discovered that production trace analysis is an essential part of improving an agent, but today there's no standard for how this type of analysis gets validated and measured.
 
-NeMo Compass is an applied research project with a goal of improving the tools and techniques available to developers for trace analysis at scale. It uses a range of techniques to identify different types of issues in a large set of traces, then summarizes findings as actionable insights. We call each of those discovery techniques "evidence streams."
+NeMo Compass is an applied research project with a goal of improving the tools and techniques available to developers for trace analysis at scale. It uses a range of techniques to identify different types of issues in a large set of traces, then summarizes findings as actionable insights. We call each of those discovery techniques "Compass Signals."
 
-| Evidence Stream | Question It Answers | How It Works |
+| Compass Signal | Question It Answers | How It Works |
 | --- | --- | --- |
 | Anomaly Detection | What outlier behaviors exist in a set of agent traces? | Scores outliers with an Isolation Forest and reports feature-level deviations |
 | Tool Issues	| What recurring problems occur when the agent uses tools?	| Checks tool calls and results for invalid arguments, failures, missing results, and unproductive retries |
 | User Sentiment | What recurring complaints do users have about the agent? | Screens recorded human messages with a classifier, then reviews recurring complaints in context |
-| Ethos.md Divergence | Where does the agent’s behavior conflict with its stated rules and goals? | Compares traces with the agent’s ethos.md document and investigates possible gaps |
-| Evaluation Failures | What behaviors recur in traces with poor evaluation results? | Uses recorded scores and feedback to select traces, then investigates shared failure patterns |
+| Ethos.md Divergence | Where does the agent’s behavior conflict with its stated rules and goals? | Compares traces with the agent’s [ethos.md](https://github.com/NVIDIA/skills/blob/main/skills/ethos-orchestrate/README.md#how-to-use) document and investigates possible gaps |
+| Grader failures | What behaviors recur in traces with poor evaluation results? | Uses recorded scores and feedback to select traces, then investigates shared failure patterns |
 
-Learn more about each current evidence stream: [Architecture](docs/architecture.md)
+Learn more about each current Compass Signal: [Architecture](docs/architecture.md)
 
 > [!IMPORTANT]
 > **Research preview**
@@ -48,13 +48,13 @@ Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and
 | JSONL or ATIF files | [Trace files](docs/sources/files.md) |
 | Another trace store | [Convert your traces](docs/sources/custom.md) |
 
-If `insight-agent` is not found after installation, run `uv tool update-shell`
+If `compass` is not found after installation, run `uv tool update-shell`
 and restart your terminal.
 
 ## After your first run
 
-- [Read your results](docs/results.md) — understand insights, skipped evidence streams, and saved output.
-- [Evidence streams](docs/evidence-streams.md) — supply business rules, configure sentiment, or check findings against code.
+- [Read your results](docs/results.md) — understand insights, skipped Compass Signals, and saved output.
+- [Compass Signals](docs/compass-signals.md) — supply business rules, configure sentiment, or check findings against code.
 - [Data and model access](docs/model-access.md) — configure your inference endpoint and understand where data goes.
 - [Configuration reference](docs/configuration.md) — overrides, limits, and repeatable runs.
 

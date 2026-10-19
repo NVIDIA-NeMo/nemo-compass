@@ -3,14 +3,14 @@
 
 import pytest
 
-from insight_agent.config import EvidenceStreamsConfig
+from compass.config import CompassSignalsConfig
 
 
 @pytest.fixture
-def select_streams():
-    """Explicitly disable other streams in tests exercising a single integration."""
+def select_signals():
+    """Explicitly disable other signals in tests exercising a single integration."""
 
     def select(**selected):
-        return dict.fromkeys(EvidenceStreamsConfig.model_fields, False) | selected
+        return dict.fromkeys(CompassSignalsConfig.model_fields, False) | selected
 
     return select

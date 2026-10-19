@@ -1,15 +1,15 @@
 ---
 name: trace-loader
-description: Build or update a deterministic Insight Agent TraceLoader for a concrete external trace source. Use when onboarding a trace provider, dataset, SDK, or export format that is not already canonical Trace JSONL.
+description: Build or update a deterministic Compass TraceLoader for a concrete external trace source. Use when onboarding a trace provider, dataset, SDK, or export format that is not already canonical Trace JSONL.
 ---
 <!-- SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Build an Insight Agent trace loader
+# Build an Compass trace loader
 
 A loader is the source boundary. It owns every source-specific decision needed
 to turn one concrete provider format into the canonical `Trace` representation.
-Evidence streams receive only a `TraceSnapshot`; they must not contain provider
+Compass Signals receive only a `TraceSnapshot`; they must not contain provider
 field aliases, source-shape detection, or compatibility mappings.
 
 ## Start from the real source
@@ -20,7 +20,7 @@ span identity, nesting, ordering, tool calls and results, timestamps, status,
 metrics, and pagination. Do not guess fields or accept several speculative
 shapes. Reject ambiguous or incomplete input with a source-specific error.
 
-Read these contracts in `packages/trace-ingest/src/trace_ingest/`:
+Read these contracts in `src/trace_ingest/`:
 
 - `loaders/trace_loaders.py` defines `TraceLoader` and `TraceDescription`.
 - `models.py` defines `Trace`, `Span`, and `TraceSnapshot`.
@@ -60,7 +60,7 @@ belong in a typed report or extended description, as in the MLflow loader.
 
 Keep provider behavior inside the loader: pagination, SDK imports, export
 parsing, provider status translation, source pointers, and malformed parent
-handling must not leak into evidence streams.
+handling must not leak into Compass Signals.
 
 ## Integrate explicitly
 
@@ -77,9 +77,9 @@ Add realistic source fixtures and focused tests for:
 - Duplicate IDs, invalid parents, malformed source data, and empty results.
 - Pagination, limits, and deterministic ordering when the source is remote.
 - `describe()` and provider diagnostics after loading.
-- A complete CLI run through the evidence streams.
+- A complete CLI run through the Compass Signals.
 
 Run the relevant focused tests, then `uv run ruff check .` and
 `uv run pytest -q`. Inspect the emitted intermediate evidence artifacts; loader
 work is complete only when the source produces stable canonical traces and the
-downstream streams contain no source-specific logic.
+downstream signals contain no source-specific logic.

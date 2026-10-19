@@ -15,13 +15,13 @@ import pytest
 from nooa.unifiedllm import FakeLLMClient
 from pydantic import ValidationError
 
-from insight_agent.config import RunConfig, TraceConfig
-from insight_agent.trace_loaders.braintrust import (
+from compass.config import RunConfig, TraceConfig
+from compass.trace_loaders.braintrust import (
     BraintrustTraceConfig,
     BraintrustTraceLoader,
     BraintrustTraceLoadError,
 )
-from insight_agent.traces import UNSET
+from compass.traces import UNSET
 
 START = datetime(2026, 9, 1, tzinfo=timezone.utc)
 END = datetime(2026, 9, 2, tzinfo=timezone.utc)
@@ -173,7 +173,7 @@ def test_rejects_malformed_traces(rows, change, match):
     change(rows)
     # Mock the JSON decoding for the non-JSON infinite-value test separately.
     if any(s.get("metrics", {}).get("start") == float("inf") for s in rows):
-        from insight_agent.trace_loaders.braintrust import _normalize_trace
+        from compass.trace_loaders.braintrust import _normalize_trace
 
         with pytest.raises(BraintrustTraceLoadError, match=match):
             _normalize_trace("root", rows, {})
@@ -270,7 +270,7 @@ def test_invalid_time_window(start, end):
 
 
 def test_config_cli_and_source_exclusivity():
-    from insight_agent.cli.main import _configured_trace_loader
+    from compass.cli.main import _configured_trace_loader
 
     parsed = RunConfig(
         _cli_parse_args=[
@@ -294,11 +294,11 @@ def test_config_cli_and_source_exclusivity():
         )
 
 
-def test_cli_runs_evidence_streams(rows, tmp_path, monkeypatch, select_streams):
-    import insight_agent.cli.main as cli
+def test_cli_runs_compass_signals(rows, tmp_path, monkeypatch, select_signals):
+    import compass.cli.main as cli
 
     compilation = SimpleNamespace(compile_insights=AsyncMock(return_value=[]))
-    monkeypatch.setenv("INSIGHT_AGENT_API_KEY", "test-key")
+    monkeypatch.setenv("COMPASS_API_KEY", "test-key")
     monkeypatch.setenv("BRAINTRUST_API_KEY", "test-key")
     monkeypatch.setattr(cli, "_build_llm", lambda *a: FakeLLMClient())
     monkeypatch.setattr(cli, "InsightCompilation", lambda llm: compilation)
@@ -315,9 +315,9 @@ def test_cli_runs_evidence_streams(rows, tmp_path, monkeypatch, select_streams):
                     START.isoformat(),
                     "--trace.braintrust.to-timestamp",
                     END.isoformat(),
-                    "--evidence-streams",
+                    "--compass-signals",
                     json.dumps(
-                        select_streams(
+                        select_signals(
                             tool_issues={"include_audit_problems": True}, anomaly_and_patterns={}
                         )
                     ),
@@ -328,8 +328,8 @@ def test_cli_runs_evidence_streams(rows, tmp_path, monkeypatch, select_streams):
             == cli.EXIT_OK
         )
     evidence = compilation.compile_insights.await_args.args[0]
-    assert {e.stream_name for e in evidence} == {"tool-issues", "anomaly-and-patterns"}
-    findings = next(e for e in evidence if e.stream_name == "tool-issues").artifacts.findings
+    assert {e.signal_name for e in evidence} == {"tool-issues", "anomaly-and-patterns"}
+    findings = next(e for e in evidence if e.signal_name == "tool-issues").artifacts.findings
     assert any(
         f["trace_id"] == "root"
         and f["tool_name"] == "lookup"

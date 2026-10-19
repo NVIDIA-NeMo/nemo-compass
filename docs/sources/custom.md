@@ -38,7 +38,7 @@ script and the command to rerun it.
 ```
 
 The [canonical format](files.md#canonical-jsonl) and
-[Trace model](../../packages/trace-ingest/src/trace_ingest/models.py) are the conversion references.
+[Trace model](../../src/trace_ingest/models.py) are the conversion references.
 Compare a converted trace with its original before analyzing a larger export.
 
 ## Run NeMo Compass
@@ -47,15 +47,15 @@ With [uv and Git installed](../../README.md#start-here), install the CLI:
 
 ```bash
 uv tool install \
-  'insight-agent @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+  'compass @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
 ```
 
 [Configure your inference model and key](../model-access.md#choose-a-model),
 which is separate from your trace store's key. From the folder containing `traces.jsonl`, run:
 
 ```bash
-insight-agent --trace.filesystem.path traces.jsonl --max-tokens 16384
+compass --trace.filesystem.path traces.jsonl --max-tokens 16384
 ```
 
 Open `insights.yml` if the run produced insights. [Read your results](../results.md)
-for help with findings or skipped evidence streams.
+for help with findings or skipped Compass Signals.

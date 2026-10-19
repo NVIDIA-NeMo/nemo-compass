@@ -66,8 +66,8 @@ jobs:
       - name: Run tests
         run: uv run --locked pytest
 
-      - name: Build packages
-        run: uv build --all-packages --sdist --wheel --no-sources
+      - name: Build distribution
+        run: uv build --sdist --wheel --no-sources
 
       - name: Check distribution licenses
         run: uv run --locked python tools/check_distribution_licenses.py
@@ -78,7 +78,7 @@ jobs:
           trap 'rm -rf "$smoke_env"' EXIT
           uv venv "$smoke_env"
           uv pip install --no-config --no-sources --python "$smoke_env/bin/python" \
-            --find-links dist dist/insight_agent-*.whl
+            dist/compass-*.whl
           cd "$smoke_env"
-          "$smoke_env/bin/python" -I -c 'from insight_agent.traces import Trace; from trace_ingest import Trace as SharedTrace; assert Trace is SharedTrace'
-          "$smoke_env/bin/insight-agent" --help
+          "$smoke_env/bin/python" -I -c 'from compass.traces import Trace; from trace_ingest import Trace as SharedTrace; assert Trace is SharedTrace'
+          "$smoke_env/bin/compass" --help

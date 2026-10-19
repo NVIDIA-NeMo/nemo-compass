@@ -6,7 +6,7 @@ requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
 [project]
-name = "insight-agent"
+name = "compass"
 version = "0.1.0rc1"
 description = "NeMo Compass trace-evidence processing with a canonical JSONL trace contract"
 readme = "README.md"
@@ -21,11 +21,11 @@ license-files = [
     "third_party/NOTICES.txt",
     "third_party/license_texts/*.txt",
 ]
-authors = [{ name = "Insight Agent contributors" }]
+authors = [{ name = "Compass contributors" }]
 keywords = ["agent-traces", "evaluation", "anomaly-detection", "tool-use"]
 
 dependencies = [
-    "trace-ingest==0.1.0",
+    "httpx>=0.28,<1",
     "numpy>=1.26,<3",
     "scikit-learn>=1.4,<2",
     "jsonschema>=4.18,<5",
@@ -35,27 +35,29 @@ dependencies = [
     "PyYAML>=6,<7",
     "litellm>=1.55,<2",
     "tokenizers>=0.21,<1",
-    "nooa>=0.0.10,<0.1",
+    "nooa[tracing]>=0.0.10,<0.1",
     "rich>=14,<16",
+    "opentelemetry-exporter-otlp-proto-http>=1.20,<2",
+    "openinference-instrumentation>=0.1.42,<1",
 ]
 
 [project.urls]
 Repository = "https://github.com/NVIDIA-NeMo/labs-nemo-compass"
 
 [project.optional-dependencies]
-# Source adapters only. Filesystem users do not install or import provider SDKs.
-langsmith = ["trace-ingest[langsmith]==0.1.0"]
-mlflow = ["trace-ingest[mlflow]==0.1.0"]
+# Trace-source SDKs are optional; telemetry uses the standard OTLP exporter.
+langsmith = ["langsmith>=0.12,<0.13"]
+mlflow = ["mlflow-skinny>=3.6,<4"]
 local-embedding = ["torch==2.13.0", "transformers==5.17.0"]
-# Query-only adapter for the deployed Langfuse v3 API. The SDK remains optional
+# Query-only adapter for the Langfuse v3 and v4 APIs. The SDK remains optional
 # for users loading canonical JSONL or MLflow traces.
-langfuse = ["trace-ingest[langfuse]==0.1.0"]
+langfuse = ["langfuse>=4.17,<5"]
 
 [dependency-groups]
 # Exercise the optional source adapters in the standard contributor and CI test environment without
 # making them runtime dependencies for users of the canonical filesystem format.
 dev = [
-    "langfuse>=3.15,<4",
+    "langfuse>=4.17,<5",
     "langsmith>=0.12,<0.13",
     "mlflow-skinny>=3.6,<4",
     "pytest>=8.0",
@@ -64,7 +66,7 @@ dev = [
 ]
 
 [project.scripts]
-insight-agent = "insight_agent.cli.main:main"
+compass = "compass.cli.main:main"
 
 [tool.uv]
 managed = true
@@ -72,11 +74,7 @@ managed = true
 # Protobuf 7.35 contains the complete ParseDict recursion-depth fix.
 override-dependencies = ["protobuf>=7.35,<8"]
 
-[tool.uv.workspace]
-members = ["packages/trace-ingest"]
-
 [tool.uv.sources]
-trace-ingest = { workspace = true }
 # macOS wheels include MPS; other platforms only need CPU inference for this extra.
 torch = [{ index = "pytorch-cpu", marker = "sys_platform != 'darwin'" }]
 
@@ -86,7 +84,7 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/insight_agent"]
+packages = ["src/compass", "src/trace_ingest"]
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -94,7 +92,8 @@ include = [
     "/NOTICE",
     "/README.md",
     "/pyproject.toml",
-    "/src/insight_agent",
+    "/src/compass",
+    "/src/trace_ingest",
     "/third_party",
 ]
 

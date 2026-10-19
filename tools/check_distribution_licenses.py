@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Check license bytes and metadata in both distributions and wheels rebuilt from sdists."""
+"""Check license bytes and metadata in the Compass distribution and wheels rebuilt from sdists."""
 
 from __future__ import annotations
 
@@ -44,40 +44,36 @@ def main() -> None:
         if path.is_file()
     }
     assert {"LICENSE", "NOTICE"} <= expected.keys()
-    for package in (REPO_ROOT, REPO_ROOT / "packages" / "trace-ingest"):
-        project = tomllib.loads((package / "pyproject.toml").read_text())["project"]
-        stem = f"{project['name'].replace('-', '_')}-{project['version']}"
-        (wheel,) = (REPO_ROOT / "dist").glob(f"{stem}-*.whl")
-        check_wheel(wheel, expected)
-        with tempfile.TemporaryDirectory() as temporary:
-            isolated = Path(temporary)
-            with tarfile.open(REPO_ROOT / "dist" / f"{stem}.tar.gz") as archive:
-                for name, contents in expected.items():
-                    member = archive.getmember(f"{stem}/{name}")
-                    assert member.isfile(), f"{name} must contain bytes, not a symlink"
-                    source = archive.extractfile(member)
-                    assert source is not None and source.read() == contents, (
-                        f"{stem}: {name} differs"
-                    )
-                archive.extractall(isolated, filter="data")
-            source_tree = isolated / stem
-            check_metadata((source_tree / "PKG-INFO").read_bytes(), expected)
-            subprocess.run(
-                [
-                    "uv",
-                    "build",
-                    "--no-config",
-                    "--no-sources",
-                    "--wheel",
-                    "--out-dir",
-                    str(isolated),
-                ],
-                cwd=source_tree,
-                check=True,
-            )
-            (rebuilt,) = isolated.glob("*.whl")
-            check_wheel(rebuilt, expected)
-        print(f"{stem}: license files match in wheel, sdist, and rebuilt wheel")
+    stem = f"{project['name'].replace('-', '_')}-{project['version']}"
+    (wheel,) = (REPO_ROOT / "dist").glob(f"{stem}-*.whl")
+    check_wheel(wheel, expected)
+    with tempfile.TemporaryDirectory() as temporary:
+        isolated = Path(temporary)
+        with tarfile.open(REPO_ROOT / "dist" / f"{stem}.tar.gz") as archive:
+            for name, contents in expected.items():
+                member = archive.getmember(f"{stem}/{name}")
+                assert member.isfile(), f"{name} must contain bytes, not a symlink"
+                source = archive.extractfile(member)
+                assert source is not None and source.read() == contents, f"{stem}: {name} differs"
+            archive.extractall(isolated, filter="data")
+        source_tree = isolated / stem
+        check_metadata((source_tree / "PKG-INFO").read_bytes(), expected)
+        subprocess.run(
+            [
+                "uv",
+                "build",
+                "--no-config",
+                "--no-sources",
+                "--wheel",
+                "--out-dir",
+                str(isolated),
+            ],
+            cwd=source_tree,
+            check=True,
+        )
+        (rebuilt,) = isolated.glob("*.whl")
+        check_wheel(rebuilt, expected)
+    print(f"{stem}: license files match in wheel, sdist, and rebuilt wheel")
 
 
 if __name__ == "__main__":

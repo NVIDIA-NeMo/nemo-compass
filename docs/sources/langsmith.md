@@ -4,7 +4,7 @@
 # Analyze LangSmith traces
 
 Choose a project whose agent behavior you want to understand. Recorded feedback on
-root and child runs is included automatically in evaluation failure analysis.
+root and child runs is included automatically in grader failure analysis.
 
 The live adapter supports the v1 query API, tested with self-hosted LangSmith 0.15.
 The SmithDB-backed v2 query API is not yet supported.
@@ -15,7 +15,7 @@ With [uv and Git installed](../../README.md#start-here), install the CLI with La
 
 ```bash
 uv tool install \
-  'insight-agent[langsmith] @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+  'compass[langsmith] @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
 ```
 
 [Configure your inference model and key](../model-access.md#choose-a-model).
@@ -36,11 +36,11 @@ trace:
 ```
 
 ```bash
-insight-agent --config config.yaml
+compass --config config.yaml
 ```
 
 Open `insights.yml` if the run produced insights. [Read your results](../results.md)
-for help with findings or skipped evidence streams.
+for help with findings or skipped Compass Signals.
 
 When an insight identifies specific supporting spans, links open their individual
 LangSmith runs. If a run URL is unavailable, the report retains the trace link

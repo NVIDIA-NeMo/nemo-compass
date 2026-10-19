@@ -13,12 +13,12 @@ from unittest.mock import AsyncMock
 import pytest
 from nooa.unifiedllm import FakeLLMClient
 from pydantic import ValidationError
+
+import compass.cli.main as cli
+from compass.compass_signals.tool_issues.signal import to_tool_issue_trace
+from compass.config import RunConfig, TraceConfig
 from trace_ingest.loaders import GymTraceConfig, GymTraceLoader, GymTraceLoadError
 from trace_ingest.models import UNSET, SpanKind, TokenCounts
-
-import insight_agent.cli.main as cli
-from insight_agent.config import RunConfig, TraceConfig
-from insight_agent.evidence_streams.tool_issues.stream import to_tool_issue_trace
 
 
 def rollout():
@@ -269,10 +269,10 @@ def test_explicit_cli_source_selection(tmp_path):
         TraceConfig(gym={"path": path}, max_traces=2)
 
 
-def test_complete_cli_runs_real_tool_evidence(tmp_path, monkeypatch, capsys, select_streams):
+def test_complete_cli_runs_real_tool_evidence(tmp_path, monkeypatch, capsys, select_signals):
     path = loader_for(tmp_path, rollout()).config.path
     compilation = SimpleNamespace(compile_insights=AsyncMock(return_value=[]))
-    monkeypatch.setenv("INSIGHT_AGENT_API_KEY", "not-real")
+    monkeypatch.setenv("COMPASS_API_KEY", "not-real")
     monkeypatch.setattr(cli, "_build_llm", lambda config, api_key: FakeLLMClient())
     monkeypatch.setattr(cli, "InsightCompilation", lambda llm: compilation)
     output = tmp_path / "insights.yml"
@@ -281,8 +281,8 @@ def test_complete_cli_runs_real_tool_evidence(tmp_path, monkeypatch, capsys, sel
             [
                 "--trace.gym.path",
                 str(path),
-                "--evidence-streams",
-                json.dumps(select_streams(tool_issues={"include_audit_problems": True})),
+                "--compass-signals",
+                json.dumps(select_signals(tool_issues={"include_audit_problems": True})),
                 "--output-path",
                 str(output),
             ]
@@ -294,7 +294,7 @@ def test_complete_cli_runs_real_tool_evidence(tmp_path, monkeypatch, capsys, sel
     evidence, snapshot, existing, run_timestamp = compilation.compile_insights.await_args.args
     assert isinstance(run_timestamp, datetime)
     assert len(snapshot) == 1 and existing == []
-    assert evidence[0].stream_name == "tool-issues"
+    assert evidence[0].signal_name == "tool-issues"
     assert evidence[0].artifacts.findings
     assert capsys.readouterr().out == "[]\n"
 

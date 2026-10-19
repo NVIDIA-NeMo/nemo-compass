@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from insight_agent.cli.output import RunOutput, RunResult
-from insight_agent.evidence_streams.evidence_streams import EvidenceStreamResult, Problem
-from insight_agent.insight import Insight
+from compass.cli.output import RunOutput, RunResult
+from compass.compass_signals.compass_signals import CompassSignalResult, Problem
+from compass.insight import Insight
 
 
 def make_insight(name="Agent calls tools absent from the active catalog"):
@@ -31,8 +31,8 @@ def test_default_report_prioritizes_findings_and_keeps_coverage_visible(width):
         200,
         [
             *[
-                EvidenceStreamResult(
-                    stream_name=name,
+                CompassSignalResult(
+                    signal_name=name,
                     problems=tuple(
                         Problem(description=f"Candidate {i}", supporting_trace_ids=("trace-0",))
                         for i in range(candidates)
@@ -42,10 +42,10 @@ def test_default_report_prioritizes_findings_and_keeps_coverage_visible(width):
                 for name, candidates in (("anomaly-and-patterns", 5), ("tool-issues", 3))
             ],
             *[
-                EvidenceStreamResult(stream_name=name, problems=(), skip_reason=reason)
+                CompassSignalResult(signal_name=name, problems=(), skip_reason=reason)
                 for name, reason in (
                     ("ethos-divergence", "No ethos document"),
-                    ("eval-failure-patterns", "No evaluator results"),
+                    ("grader-failure-patterns", "No evaluator results"),
                     ("user-sentiment", "No embedding backend configured"),
                 )
             ],
@@ -68,11 +68,11 @@ def test_default_report_prioritizes_findings_and_keeps_coverage_visible(width):
         in normalized
     )
     assert (
-        "Skipped: Ethos — no document Evaluation — no results Sentiment — no embedding backend"
+        "Skipped: Ethos — no document Grader failures — no results Sentiment — no embedding backend"
         in normalized
     )
     assert (
-        "To run skipped analyses: https://github.com/NVIDIA-NeMo/labs-nemo-compass/blob/main/docs/evidence-streams.md"
+        "To run skipped analyses: https://github.com/NVIDIA-NeMo/labs-nemo-compass/blob/main/docs/compass-signals.md"
         in rendered
     )
     for hidden in ("trace-0", "span-0", "long explanation", "\x1b"):
@@ -85,7 +85,10 @@ def test_report_lists_all_insights_in_order_and_omits_irrelevant_guidance():
     insights = [make_insight(f"Issue {i}") for i in range(6)]
     result = RunResult(
         200,
-        [EvidenceStreamResult(stream_name="tool-issues", problems=(), finding_count=2)],
+        [
+            CompassSignalResult(signal_name="tool-issues", problems=(), finding_count=2),
+            CompassSignalResult(signal_name="grader-failure-patterns", problems=()),
+        ],
         insights,
     )
     stream = StringIO()
@@ -95,6 +98,20 @@ def test_report_lists_all_insights_in_order_and_omits_irrelevant_guidance():
         f"{i + 1}. Issue {i}" for i in range(6)
     ]
     assert "Tool issues (2 findings; no candidates)" in rendered
+    assert "grader failures (no findings)" in rendered
     assert "Skipped" not in rendered and "To run skipped analyses" not in rendered
     assert "Saved:" not in rendered
     assert result.insights == insights
+
+
+def test_report_shows_optional_severity_and_reason():
+    insight = make_insight().model_copy(
+        update={
+            "severity": "high",
+            "severity_reason": "The agent is blocked from completing the task.",
+        }
+    )
+    stream = StringIO()
+    RunOutput(Console(file=stream, width=120)).report(RunResult(3, [], [insight]), Path("-"))
+
+    assert "Severity: HIGH — The agent is blocked from completing the task." in stream.getvalue()

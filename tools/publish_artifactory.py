@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build and publish trace-ingest and an Insight Agent release candidate to NVIDIA Artifactory."""
+"""Build and publish a Compass release candidate to NVIDIA Artifactory."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ DIST_DIR = REPO_ROOT / "dist"
 ENV_PYPI_URL = "ARTIFACTORY_PYPI_URL"
 ENV_TOKEN = "ARTIFACTORY_TOKEN"
 
-_RELEASE_PACKAGES = ("trace-ingest", "insight-agent")  # Dependency first.
+_RELEASE_PACKAGE = "compass"
 _ALLOWED_HOSTS = {"artifactory.nvidia.com", "urm.nvidia.com"}
 _FORBIDDEN_ENV_FILES = {".env", ".env.local", ".env.example"}
 
@@ -94,20 +94,15 @@ def _run(command: list[str], *, env: dict[str, str] | None = None) -> None:
     subprocess.run(command, cwd=REPO_ROOT, env=env, check=True)
 
 
-def _build_wheels() -> list[Wheel]:
+def _build_wheel() -> Wheel:
     build_env = os.environ.copy()
     for name in (ENV_TOKEN, "UV_PUBLISH_PASSWORD", "UV_PUBLISH_TOKEN"):
         build_env.pop(name, None)
-    for index, name in enumerate(_RELEASE_PACKAGES):
-        command = ["uv", "build", "--package", name, "--wheel", "--no-sources"]
-        if index == 0:
-            command.append("--clear")
-        _run(command, env=build_env)
-
-    wheels = [_inspect_wheel(path) for path in sorted(DIST_DIR.glob("*.whl"))]
-    if sorted(wheel.package_name for wheel in wheels) != sorted(_RELEASE_PACKAGES):
-        raise RuntimeError(f"expected one wheel per release package in {DIST_DIR}, found {wheels}")
-    return sorted(wheels, key=lambda wheel: _RELEASE_PACKAGES.index(wheel.package_name))
+    _run(["uv", "build", "--wheel", "--no-sources", "--clear"], env=build_env)
+    wheels = list(DIST_DIR.glob("*.whl"))
+    if len(wheels) != 1:
+        raise RuntimeError(f"expected one Compass wheel in {DIST_DIR}, found {wheels}")
+    return _inspect_wheel(wheels[0])
 
 
 def _inspect_wheel(wheel: Path) -> Wheel:
@@ -127,7 +122,7 @@ def _inspect_wheel(wheel: Path) -> Wheel:
 
     package_name = metadata.get("Name", "").strip()
     version = metadata.get("Version", "").strip()
-    if package_name not in _RELEASE_PACKAGES:
+    if package_name != _RELEASE_PACKAGE:
         raise RuntimeError(f"unexpected wheel package name: {package_name!r}")
     if not version:
         raise RuntimeError(f"wheel has no version metadata: {wheel}")
@@ -234,7 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="build and validate without uploading either wheel",
+        help="build and validate without uploading the wheel",
     )
     return parser
 
@@ -246,45 +241,42 @@ def main(argv: list[str] | None = None) -> int:
     try:
         publish_url = _validate_publish_url(_required_setting(ENV_PYPI_URL))
         token = _required_setting(ENV_TOKEN)
-        wheels = _build_wheels()
-        application = next(wheel for wheel in wheels if wheel.package_name == "insight-agent")
-        if re.search(r"rc\d+(?:[.+]|$)", application.version) is None:
+        wheel = _build_wheel()
+        if re.search(r"rc\d+(?:[.+]|$)", wheel.version) is None:
             raise PublishConfigurationError(
-                f"refusing to publish non-RC insight-agent version {application.version!r}; "
-                "set an rcN version"
+                f"refusing to publish non-RC compass version {wheel.version!r}; set an rcN version"
             )
     except PublishConfigurationError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    for wheel in wheels:
-        artifact_url = _direct_artifact_url(publish_url, wheel)
-        if args.dry_run:
-            print(f"Checking {wheel.path.name} as {wheel.package_name}=={wheel.version}")
-            _publish(wheel, publish_url, token, dry_run=True)
-            print(f"Dry run complete. Artifact URL would be:\n{artifact_url}")
-            continue
+    artifact_url = _direct_artifact_url(publish_url, wheel)
+    if args.dry_run:
+        print(f"Checking {wheel.path.name} as {wheel.package_name}=={wheel.version}")
+        _publish(wheel, publish_url, token, dry_run=True)
+        print(f"Dry run complete. Artifact URL would be:\n{artifact_url}")
+        return 0
 
-        remote_contents = _download_artifact(artifact_url, token)
-        local_contents = wheel.path.read_bytes()
-        if remote_contents is not None:
-            remote_digest = hashlib.sha256(remote_contents).hexdigest()
-            local_digest = hashlib.sha256(local_contents).hexdigest()
-            if remote_digest != local_digest:
-                print(
-                    f"error: {wheel.package_name}=={wheel.version} already exists with different "
-                    "contents; bump the package version instead of overwriting it",
-                    file=sys.stderr,
-                )
-                return 2
-            print(f"Matching artifact already exists; skipping wheel upload:\n{artifact_url}")
-        else:
-            print(f"Publishing {wheel.path.name} as {wheel.package_name}=={wheel.version}")
-            _publish(wheel, publish_url, token, dry_run=False)
+    remote_contents = _download_artifact(artifact_url, token)
+    local_contents = wheel.path.read_bytes()
+    if remote_contents is not None:
+        remote_digest = hashlib.sha256(remote_contents).hexdigest()
+        local_digest = hashlib.sha256(local_contents).hexdigest()
+        if remote_digest != local_digest:
+            print(
+                f"error: {wheel.package_name}=={wheel.version} already exists with different "
+                "contents; bump the package version instead of overwriting it",
+                file=sys.stderr,
+            )
+            return 2
+        print(f"Matching artifact already exists; skipping wheel upload:\n{artifact_url}")
+    else:
+        print(f"Publishing {wheel.path.name} as {wheel.package_name}=={wheel.version}")
+        _publish(wheel, publish_url, token, dry_run=False)
 
-        _publish_checksums(artifact_url, local_contents, token)
-        _verify_artifact(artifact_url, wheel, token)
-        print(f"Published and checksum-verified:\n{artifact_url}")
+    _publish_checksums(artifact_url, local_contents, token)
+    _verify_artifact(artifact_url, wheel, token)
+    print(f"Published and checksum-verified:\n{artifact_url}")
     return 0
 
 

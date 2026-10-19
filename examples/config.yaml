@@ -1,0 +1,12 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Save alongside tau_bench_traces.jsonl and run from that folder.
+trace:
+  filesystem:
+    path: tau_bench_traces.jsonl
+max_tokens: 16384
+
+# Severity is assigned during final compilation from trace outcomes by default.
+# To enable code-aware validation and confidence review, set the agent's source directory:
+# code_base: ../my-agent

@@ -12,10 +12,10 @@ flowchart LR
     OT["Other"]:::faint
   end
   LS & LF & BT & ML & OT --> T["Normalized<br/>trace snapshot"]:::dark
-  subgraph STREAMS["Evidence streams"]
+  subgraph SIGNALS["Compass Signals"]
     A["Ethos divergence"]
     B["User sentiment"]
-    C["Evaluation failures"]
+    C["Grader failures"]
     D["Tool issues"]
     E["Anomalies & patterns"]
   end
@@ -29,4 +29,3 @@ flowchart LR
   classDef dark fill:#393254,stroke:#393254,color:#ffffff;
   classDef mint fill:#dff4eb,stroke:#78bba4,color:#245e4c;
   classDef faint fill:#ffffff,stroke:#c9c7d6,color:#626578,stroke-dasharray:5 4;
-

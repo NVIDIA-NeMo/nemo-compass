@@ -10,13 +10,13 @@ import pytest
 import yaml
 from nooa.unifiedllm import FakeLLMClient
 
-import insight_agent.cli.main as cli
-from insight_agent.config import EvidenceStreamsConfig, RunConfig
-from insight_agent.evidence_streams.evidence_streams import EvidenceStreamResult, Problem
-from insight_agent.evidence_streams.registry import EvidenceStreamRegistry
-from insight_agent.insight import Insight, load_insights
-from insight_agent.insights_generation.config import load_dotenv
-from insight_agent.traces import Trace, TraceAggregate, TraceSnapshot
+import compass.cli.main as cli
+from compass.compass_signals.compass_signals import CompassSignalResult, Problem
+from compass.compass_signals.registry import CompassSignalRegistry
+from compass.config import CompassSignalsConfig, RunConfig
+from compass.insight import Insight, load_insights
+from compass.insights_generation.config import load_dotenv
+from compass.traces import Trace, TraceAggregate, TraceSnapshot
 
 
 @pytest.fixture
@@ -31,7 +31,7 @@ def test_missing_environment_exits_before_loading_traces(
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         "trace:\n  langsmith:\n    project: production\n"
-        "evidence_streams:\n  user_sentiment:\n    litellm:\n"
+        "compass_signals:\n  user_sentiment:\n    litellm:\n"
         "      model: openai/embedding\n      api_key_env: EMBEDDING_API_KEY\n"
     )
     monkeypatch.setenv("LANGSMITH_API_KEY", "")
@@ -47,9 +47,9 @@ def test_missing_environment_exits_before_loading_traces(
     assert captured.out == ""
     assert captured.err == (
         "Missing required environment settings:\n"
-        "  INSIGHT_AGENT_API_KEY — API key for the configured model\n"
+        "  COMPASS_API_KEY — API key for the configured model\n"
         "  LANGSMITH_API_KEY — API key for LangSmith\n"
-        "  EMBEDDING_API_KEY — API key named by evidence_streams.user_sentiment.litellm.api_key_env\n\n"
+        "  EMBEDDING_API_KEY — API key named by compass_signals.user_sentiment.litellm.api_key_env\n\n"
         "Set these in .env in your working directory (NAME=value),\n"
         "or export them in your shell, then rerun the command.\n"
         "Setup: https://github.com/NVIDIA-NeMo/labs-nemo-compass/blob/main/docs/model-access.md\n"
@@ -65,9 +65,9 @@ def test_langfuse_checks_only_missing_settings_after_cli_overrides(
         "trace:\n  langfuse:\n"
         "    from_timestamp: 2026-01-01T00:00:00Z\n"
         "    to_timestamp: 2026-01-02T00:00:00Z\n"
-        "evidence_streams:\n  tool_issues: {}\n"
+        "compass_signals:\n  tool_issues: {}\n"
     )
-    monkeypatch.setenv("INSIGHT_AGENT_API_KEY", "private-model-key")
+    monkeypatch.setenv("COMPASS_API_KEY", "private-model-key")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "private-project-key")
     args = ["--config", str(config_path)]
     assert cli.main(args) == 2
@@ -92,7 +92,7 @@ def test_environment_accepts_dotenv_and_existing_key_aliases(
     )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "exported-model-key")
     config = RunConfig(
-        trace={"langsmith": {"project": "production"}}, evidence_streams={"tool_issues": {}}
+        trace={"langsmith": {"project": "production"}}, compass_signals={"tool_issues": {}}
     )
 
     assert cli._check_environment(config) == "exported-model-key"
@@ -115,7 +115,7 @@ def test_model_endpoint_does_not_inherit_another_provider_gateway(
     expected = "https://gateway.example/v1" if model.startswith("openai/") else None
     assert client.call_args.kwargs["api_base"] == expected
 
-    monkeypatch.setenv("INSIGHT_AGENT_API_BASE", "https://explicit.example/v1")
+    monkeypatch.setenv("COMPASS_API_BASE", "https://explicit.example/v1")
     cli._build_llm(config, "test-key")
     assert client.call_args.kwargs["api_base"] == "https://explicit.example/v1"
 
@@ -155,7 +155,7 @@ def test_anthropic_parameters_are_translated_to_native_fields(clean_environment,
 
 @pytest.mark.parametrize("save_file", [True, False])
 def test_cli_preserves_existing_insights_without_synthesizing_empty_evidence(
-    clean_environment, tmp_path, monkeypatch, capsys, select_streams, save_file
+    clean_environment, tmp_path, monkeypatch, capsys, select_signals, save_file
 ):
     existing = [
         Insight.model_validate(
@@ -182,7 +182,7 @@ def test_cli_preserves_existing_insights_without_synthesizing_empty_evidence(
     trace_path.write_text('{"id":"unscored","root_spans":[],"aggregate":{}}', encoding="utf-8")
     output_path = tmp_path / "results" / "insights.yml"
     compilation = SimpleNamespace(compile_insights=AsyncMock(return_value=existing))
-    monkeypatch.setenv("INSIGHT_AGENT_API_KEY", "test-key-not-real")
+    monkeypatch.setenv("COMPASS_API_KEY", "test-key-not-real")
     monkeypatch.setattr(cli, "_build_llm", lambda config, api_key: FakeLLMClient())
     monkeypatch.setattr(cli, "InsightCompilation", lambda llm: compilation)
 
@@ -190,8 +190,8 @@ def test_cli_preserves_existing_insights_without_synthesizing_empty_evidence(
         [
             "--trace.filesystem.path",
             str(trace_path),
-            "--evidence-streams",
-            json.dumps(select_streams(tool_issues={"retry_threshold": 3})),
+            "--compass-signals",
+            json.dumps(select_signals(tool_issues={"retry_threshold": 3})),
             "--existing-insights",
             str(existing_path),
             "--output-path",
@@ -218,7 +218,7 @@ def test_cli_preserves_existing_insights_without_synthesizing_empty_evidence(
         assert not output_path.exists()
 
 
-def test_code_validation_filters_problems_and_preserves_stream_result(
+def test_code_validation_filters_problems_and_preserves_signal_result(
     tmp_path, monkeypatch
 ) -> None:
     trace = Trace(id="trace-1", root_spans=[], aggregate=TraceAggregate())
@@ -231,8 +231,8 @@ def test_code_validation_filters_problems_and_preserves_stream_result(
     unsupported = Problem(description="Unsupported", supporting_trace_ids=("trace-1",))
     unknown = Problem(description="Unknown", supporting_trace_ids=("trace-1",))
     evidence = [
-        EvidenceStreamResult(
-            stream_name="test-stream",
+        CompassSignalResult(
+            signal_name="test-signal",
             problems=(supported, unsupported, unknown),
             artifacts={"kept": True},
         )
@@ -262,13 +262,88 @@ def test_code_validation_filters_problems_and_preserves_stream_result(
     ]
 
 
-def test_evidence_streams_share_cli_loop_and_run_concurrently(monkeypatch):
+def test_confidence_rating_preserves_compiled_severity(tmp_path, monkeypatch) -> None:
+    trace = Trace(id="trace-1", root_spans=[], aggregate=TraceAggregate())
+    snapshot = TraceSnapshot([trace])
+    insight = Insight(
+        name="Timeouts",
+        description="Tools time out.",
+        evidence=[{"trace_id": "trace-1"}, {"trace_id": "missing"}],
+        severity="high",
+    )
+    received = []
+
+    class FakeRater:
+        def __init__(self, code_base_path, llm):
+            assert code_base_path == tmp_path.resolve()
+
+        async def rate(self, insight, supporting_traces):
+            received.append((insight, supporting_traces))
+            return "high"
+
+    monkeypatch.setattr(cli, "InsightConfidence", FakeRater)
+
+    result = asyncio.run(
+        cli._rate_confidence_with_code([insight], snapshot, tmp_path, FakeLLMClient())
+    )
+
+    assert received == [(insight, (trace,))]
+    assert result[0].confidence == "high"
+    assert result[0].severity == "high"
+    assert insight.confidence is None
+
+
+@pytest.mark.parametrize("with_code_base", [False, True])
+def test_final_compilation_severity_does_not_require_code_base(
+    tmp_path, monkeypatch, with_code_base
+) -> None:
+    from rich.console import Console
+
+    trace = Trace(id="trace-1", root_spans=[], aggregate=TraceAggregate())
+    snapshot = TraceSnapshot([trace])
+    evidence = [
+        CompassSignalResult(
+            signal_name="test",
+            problems=(Problem(description="Timeout", supporting_trace_ids=("trace-1",)),),
+        )
+    ]
+    insight = Insight(
+        name="Timeout",
+        description="The task never completes.",
+        evidence=[{"trace_id": "trace-1"}, {"trace_id": "trace-2"}],
+        severity="high",
+    )
+    compilation = SimpleNamespace(compile_insights=AsyncMock(return_value=[insight]))
+    review = AsyncMock(return_value=[insight.model_copy(update={"confidence": "high"})])
+    monkeypatch.setattr(cli, "_check_environment", lambda config: "test-key")
+    monkeypatch.setattr(
+        cli, "_configured_trace_loader", lambda config: SimpleNamespace(load=lambda: snapshot)
+    )
+    monkeypatch.setattr(cli, "_run_compass_signals", AsyncMock(return_value=evidence))
+    monkeypatch.setattr(cli, "_validate_evidence_with_code", AsyncMock(return_value=evidence))
+    monkeypatch.setattr(cli, "_build_llm", lambda *args: FakeLLMClient())
+    monkeypatch.setattr(cli, "InsightCompilation", lambda llm: compilation)
+    monkeypatch.setattr(cli, "_rate_confidence_with_code", review)
+    config = RunConfig(
+        trace={"filesystem": {"path": "traces.jsonl"}},
+        code_base=tmp_path if with_code_base else None,
+    )
+
+    result = asyncio.run(cli._generate_insights(config, cli.RunOutput(Console(quiet=True))))
+
+    compilation.compile_insights.assert_awaited_once()
+    assert result.insights[0].severity == "high"
+    assert result.insights[0].confidence == ("high" if with_code_base else None)
+    assert review.await_count == int(with_code_base)
+
+
+def test_compass_signals_share_cli_loop_and_run_concurrently(monkeypatch):
     async def run():
         loop = asyncio.get_running_loop()
         started = asyncio.Event()
-        registry = EvidenceStreamRegistry()
+        registry = CompassSignalRegistry()
 
-        class Stream:
+        class Signal:
             def __init__(self, name):
                 self.name = name
 
@@ -281,18 +356,18 @@ def test_evidence_streams_share_cli_loop_and_run_concurrently(monkeypatch):
                     await asyncio.wait_for(started.wait(), timeout=1)
                 else:
                     started.set()
-                return EvidenceStreamResult(stream_name=self.name, problems=())
+                return CompassSignalResult(signal_name=self.name, problems=())
 
-        for stream in (Stream("first"), Stream("second")):
-            registry.register(stream)
-        monkeypatch.setattr(cli, "registered_builtin_streams", lambda **kwargs: registry)
+        for signal in (Signal("first"), Signal("second")):
+            registry.register(signal)
+        monkeypatch.setattr(cli, "registered_builtin_signals", lambda **kwargs: registry)
         progress = []
-        results = await cli._run_evidence_streams(
-            EvidenceStreamsConfig(tool_issues={}),
+        results = await cli._run_compass_signals(
+            CompassSignalsConfig(tool_issues={}),
             TraceSnapshot([Trace(id="trace-1", root_spans=[], aggregate=TraceAggregate())]),
             progress=progress.append,
         )
-        assert [result.stream_name for result in results] == ["first", "second"]
+        assert [result.signal_name for result in results] == ["first", "second"]
         assert set().union(*map(set, progress)) == {"first", "second"}
         assert progress[-1] == ()
 
@@ -300,13 +375,13 @@ def test_evidence_streams_share_cli_loop_and_run_concurrently(monkeypatch):
 
 
 def test_no_candidates_skips_synthesis_and_file_creation(
-    clean_environment, tmp_path, monkeypatch, capsys, select_streams
+    clean_environment, tmp_path, monkeypatch, capsys, select_signals
 ):
     traces = tmp_path / "traces.jsonl"
     traces.write_text('{"id":"trace-1","root_spans":[],"aggregate":{}}')
     output = tmp_path / "insights.yml"
     compilation = Mock()
-    monkeypatch.setenv("INSIGHT_AGENT_API_KEY", "test-key")
+    monkeypatch.setenv("COMPASS_API_KEY", "test-key")
     monkeypatch.setattr(cli, "InsightCompilation", compilation)
 
     assert (
@@ -314,8 +389,8 @@ def test_no_candidates_skips_synthesis_and_file_creation(
             [
                 "--trace.filesystem.path",
                 str(traces),
-                "--evidence-streams",
-                json.dumps(select_streams(tool_issues=True)),
+                "--compass-signals",
+                json.dumps(select_signals(tool_issues=True)),
                 "--output-path",
                 str(output),
             ]

@@ -9,12 +9,12 @@ from unittest.mock import AsyncMock
 import yaml
 from nooa.unifiedllm import FakeLLMClient
 
-from insight_agent.evidence_streams.evidence_streams import EvidenceStreamResult, Problem
-from insight_agent.insight import Insight, TraceEvidence, load_insights
+from compass.compass_signals.compass_signals import CompassSignalResult, Problem
+from compass.insight import Insight, TraceEvidence, load_insights
 
 
 def trace(id):
-    from insight_agent.traces import Trace
+    from compass.traces import Trace
 
     return Trace(id=id, root_spans=[], aggregate={})
 
@@ -44,12 +44,12 @@ def test_insight_without_updated_date_does_not_serialize_the_field():
     assert "updated_date" not in insight.model_dump()
 
 
-def test_cli_passes_through_updated_date_from_compilation(tmp_path, monkeypatch, select_streams):
+def test_cli_passes_through_updated_date_from_compilation(tmp_path, monkeypatch, select_signals):
     """End-to-end through cli.main(): updated_date is now set by the LLM inside
     compile_insights (given run_timestamp), not by any Python post-processing.
     This proves the CLI layer writes out exactly what compilation returned,
     unchanged, and that it actually passes compile_insights a run_timestamp."""
-    import insight_agent.cli.main as cli
+    import compass.cli.main as cli
 
     path = tmp_path / "traces.jsonl"
     path.write_text(
@@ -63,11 +63,11 @@ def test_cli_passes_through_updated_date_from_compilation(tmp_path, monkeypatch,
     monkeypatch.setattr(cli, "_build_llm", lambda *args: FakeLLMClient())
     monkeypatch.setattr(
         cli,
-        "_run_evidence_streams",
+        "_run_compass_signals",
         AsyncMock(
             return_value=[
-                EvidenceStreamResult(
-                    stream_name="tool-issues",
+                CompassSignalResult(
+                    signal_name="tool-issues",
                     problems=(Problem(description="Failure", supporting_trace_ids=("a", "b")),),
                 )
             ]
@@ -80,8 +80,8 @@ def test_cli_passes_through_updated_date_from_compilation(tmp_path, monkeypatch,
             str(path),
             "--output-path",
             str(output),
-            "--evidence-streams",
-            json.dumps(select_streams(tool_issues={})),
+            "--compass-signals",
+            json.dumps(select_signals(tool_issues={})),
         ]
 
     # First run: the mock simulates the LLM creating a new insight and

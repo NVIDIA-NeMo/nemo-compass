@@ -4,8 +4,8 @@
 
 """Generate the bundled sample corpus.
 
-The corpus has to do a specific job: make every one of the tool-issue stream's
-nineteen finding types fire, give the anomaly-and-pattern stream enough recurrence to populate all of its grouping
+The corpus has to do a specific job: make every one of the tool-issue signal's
+nineteen finding types fire, give the anomaly-and-pattern signal enough recurrence to populate all of its grouping
 sections — all while staying small enough to read. Hand-writing fourteen traces of inline JSON
 to hit those targets is where mistakes hide, so it is generated here instead
 and the output is committed. ``tests/test_sample_data.py`` regenerates into a
@@ -28,10 +28,10 @@ from typing import Any, TypedDict, Unpack
 
 from pydantic import JsonValue
 
-from insight_agent.traces import UNSET, Span, SpanKind, ToolCall, Trace, TraceAggregate
+from compass.traces import UNSET, Span, SpanKind, ToolCall, Trace, TraceAggregate
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = REPO_ROOT / "src" / "insight_agent" / "data"
+DATA_DIR = REPO_ROOT / "src" / "compass" / "data"
 
 TIMEOUT = "Error: connection timed out after 30s"
 
@@ -245,7 +245,7 @@ def search_trace(suffix: str, case: str) -> Trace:
 
     Contributes ``explicit_tool_failure`` (error_prefix) and ``unknown_tool``
     across three independent logical cases, which is what makes those two
-    cards eligible for the Analyst.
+    cards eligible for insight compilation.
     """
     task = f"Locate the {suffix} specification and remove the stale copy."
     b = TraceBuilder(f"docops-search-{suffix}", case, task)
@@ -481,7 +481,7 @@ def code_trace() -> Trace:
 def stagnation_trace(suffix: str, case: str) -> Trace:
     """The same failing search repeated with no progress between attempts.
 
-    Fires ``repeated_identical_failed_call``, and gives the anomaly-and-pattern stream a trajectory whose
+    Fires ``repeated_identical_failed_call``, and gives the anomaly-and-pattern signal a trajectory whose
     terminal evaluation claims success the calls do not support.
     """
     task = f"Find the {suffix} owner in the directory."

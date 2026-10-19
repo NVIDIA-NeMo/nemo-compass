@@ -4,7 +4,7 @@
 # Analyze MLflow traces
 
 Choose an experiment containing your agent’s traces. Recorded, named assessments
-are included automatically in evaluation failure analysis.
+are included automatically in grader failure analysis.
 
 ## Connect and run
 
@@ -12,7 +12,7 @@ With [uv and Git installed](../../README.md#start-here), install the CLI with ML
 
 ```bash
 uv tool install \
-  'insight-agent[mlflow] @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+  'compass[mlflow] @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
 ```
 
 [Configure your inference model and key](../model-access.md#choose-a-model).
@@ -37,11 +37,11 @@ trace:
 ```
 
 ```bash
-insight-agent --config config.yaml
+compass --config config.yaml
 ```
 
 Open `insights.yml` if the run produced insights. [Read your results](../results.md)
-for help with findings or skipped evidence streams.
+for help with findings or skipped Compass Signals.
 
 ## Narrow the input
 

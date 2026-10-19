@@ -9,14 +9,14 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-import insight_agent.config as app_config
-from insight_agent.cli.main import _configured_trace_loader
-from insight_agent.config import (
-    EvidenceStreamsConfig,
+import compass.config as app_config
+from compass.cli.main import _configured_trace_loader
+from compass.config import (
+    CompassSignalsConfig,
     RunConfig,
     TraceConfig,
 )
-from insight_agent.trace_loaders.langsmith import (
+from compass.trace_loaders.langsmith import (
     LANGSMITH_DEFAULT_MAX_TRACES,
     LangSmithTraceConfig,
     LangSmithTraceExportFileConfig,
@@ -26,7 +26,7 @@ from insight_agent.trace_loaders.langsmith import (
 
 
 def test_run_config_selects_langsmith_trace_loader(tmp_path):
-    config_file = tmp_path / "analyst.yaml"
+    config_file = tmp_path / "config.yaml"
     config_file.write_text(
         """trace:
   max_traces: 25
@@ -36,7 +36,7 @@ def test_run_config_selects_langsmith_trace_loader(tmp_path):
     filter: 'eq(status, "success")'
     tree_filter: 'eq(run_type, "tool")'
     start_time: 2026-09-01T00:00:00Z
-evidence_streams:
+compass_signals:
   anomaly_and_patterns: {}
 """,
         encoding="utf-8",
@@ -57,13 +57,13 @@ evidence_streams:
 
 
 def test_run_config_loads_a_langsmith_trace_export_file(tmp_path):
-    config_file = tmp_path / "analyst.yaml"
+    config_file = tmp_path / "config.yaml"
     config_file.write_text(
         """trace:
   max_traces: 25
   langsmith_trace_export_file:
     path: exports/langsmith-traces
-evidence_streams:
+compass_signals:
   anomaly_and_patterns: {}
 """,
         encoding="utf-8",
@@ -83,7 +83,7 @@ def test_langsmith_trace_loader_uses_provider_default_trace_bound():
     config = RunConfig.model_validate(
         {
             "trace": {"langsmith": {"project": "glamr-ux"}},
-            "evidence_streams": {"anomaly_and_patterns": {}},
+            "compass_signals": {"anomaly_and_patterns": {}},
         }
     )
 
@@ -98,7 +98,7 @@ def test_cli_selects_langsmith_trace_export_file_loader():
         _cli_parse_args=[
             "--trace.langsmith-trace-export-file.path",
             "exports/langsmith-traces",
-            "--evidence-streams.anomaly-and-patterns.contamination",
+            "--compass-signals.anomaly-and-patterns.contamination",
             "0.02",
         ]
     )
@@ -126,5 +126,5 @@ def test_trace_config_rejects_multiple_sources():
                     path="traces"
                 ),
             ),
-            evidence_streams=EvidenceStreamsConfig(anomaly_and_patterns={}),
+            compass_signals=CompassSignalsConfig(anomaly_and_patterns={}),
         )

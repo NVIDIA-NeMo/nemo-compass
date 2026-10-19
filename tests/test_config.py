@@ -4,11 +4,13 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from insight_agent.config import EvidenceStreamsConfig, RunConfig
+import pytest
+
+from compass.config import CompassSignalsConfig, RunConfig
 
 
 def test_cli_nested_override_preserves_yaml_siblings(tmp_path: Path) -> None:
-    config_path = tmp_path / "analyst.yaml"
+    config_path = tmp_path / "config.yaml"
     config_path.write_text(
         """
 trace:
@@ -16,7 +18,7 @@ trace:
   mlflow_experiment:
     experiment: deep_research
     tracking_uri: https://example.test
-evidence_streams:
+compass_signals:
   anomaly_and_patterns: {}
 """.lstrip(),
         encoding="utf-8",
@@ -42,9 +44,9 @@ def test_config_file_is_optional_when_cli_provides_trace_input() -> None:
         _cli_parse_args=[
             "--trace.filesystem.path",
             "traces.jsonl",
-            "--evidence-streams.anomaly-and-patterns.contamination",
+            "--compass-signals.anomaly-and-patterns.contamination",
             "0.02",
-            "--evidence-streams.eval-failure-patterns.max-tool-rounds",
+            "--compass-signals.grader-failure-patterns.max-tool-rounds",
             "72",
         ]
     )
@@ -52,8 +54,8 @@ def test_config_file_is_optional_when_cli_provides_trace_input() -> None:
     assert config.config is None
     assert config.trace.filesystem is not None
     assert config.trace.filesystem.path == Path("traces.jsonl")
-    assert config.evidence_streams.eval_failure_patterns is not None
-    assert config.evidence_streams.eval_failure_patterns.max_tool_rounds == 72
+    assert config.compass_signals.grader_failure_patterns is not None
+    assert config.compass_signals.grader_failure_patterns.max_tool_rounds == 72
 
 
 def test_cli_accepts_optional_code_base() -> None:
@@ -61,7 +63,7 @@ def test_cli_accepts_optional_code_base() -> None:
         _cli_parse_args=[
             "--trace.filesystem.path",
             "traces.jsonl",
-            "--evidence-streams.anomaly-and-patterns.contamination",
+            "--compass-signals.anomaly-and-patterns.contamination",
             "0.02",
             "--code-base",
             "../agent-source",
@@ -71,15 +73,27 @@ def test_cli_accepts_optional_code_base() -> None:
     assert config.code_base == Path("../agent-source")
 
 
-def test_langfuse_export_yaml_with_cli_limit(tmp_path: Path) -> None:
-    config_path = tmp_path / "analyst.yaml"
+def test_yaml_accepts_code_base(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "trace:\n  langfuse_export:\n    path: exports\nevidence_streams:\n  tool_issues: {}\n",
+        "trace:\n  filesystem:\n    path: traces.jsonl\ncode_base: ../my-agent\n",
+        encoding="utf-8",
+    )
+
+    config = RunConfig(_cli_parse_args=["--config", str(config_path)])
+
+    assert config.code_base == Path("../my-agent")
+
+
+def test_langfuse_trace_export_file_yaml_with_cli_limit(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "trace:\n  langfuse_trace_export_file:\n    api_version: v3\n    path: exports\ncompass_signals:\n  tool_issues: {}\n",
         encoding="utf-8",
     )
     config = RunConfig(_cli_parse_args=["--config", str(config_path), "--trace.max-traces", "200"])
-    assert config.trace.langfuse_export is not None
-    assert config.trace.langfuse_export.path == Path("exports")
+    assert config.trace.langfuse_trace_export_file is not None
+    assert config.trace.langfuse_trace_export_file.path == Path("exports")
     assert config.trace.max_traces == 200
 
 
@@ -94,7 +108,7 @@ def test_langfuse_source_can_be_configured_entirely_through_cli() -> None:
             "https://langfuse.example.com",
             "--trace.max-traces",
             "25",
-            "--evidence-streams.tool-issues",
+            "--compass-signals.tool-issues",
             "{}",
         ]
     )
@@ -106,29 +120,48 @@ def test_langfuse_source_can_be_configured_entirely_through_cli() -> None:
     assert config.trace.max_traces == 25
 
 
-def test_streams_default_on_and_false_disables_only_that_stream(tmp_path):
+def test_signals_default_on_and_false_disables_only_that_signal(tmp_path):
     config = RunConfig(_cli_parse_args=["--trace.filesystem.path", "traces.jsonl"])
     assert all(
-        getattr(config.evidence_streams, name) is not None
-        for name in EvidenceStreamsConfig.model_fields
+        getattr(config.compass_signals, name) is not None
+        for name in CompassSignalsConfig.model_fields
     )
     path = tmp_path / "config.yaml"
     path.write_text(
-        "trace:\n  filesystem:\n    path: traces.jsonl\nevidence_streams:\n  ethos_divergence: false\n  tool_issues:\n    retry_threshold: 5\n"
+        "trace:\n  filesystem:\n    path: traces.jsonl\ncompass_signals:\n  ethos_divergence: false\n  tool_issues:\n    retry_threshold: 5\n"
     )
     config = RunConfig(
         _cli_parse_args=[
             "--config",
             str(path),
-            "--evidence-streams.user-sentiment",
+            "--compass-signals.user-sentiment",
             "false",
-            "--evidence-streams.eval-failure-patterns",
+            "--compass-signals.grader-failure-patterns",
             "true",
         ]
     )
-    assert config.evidence_streams.ethos_divergence is None
-    assert config.evidence_streams.user_sentiment is None
-    assert config.evidence_streams.tool_issues is not None
-    assert config.evidence_streams.tool_issues.retry_threshold == 5
-    assert config.evidence_streams.anomaly_and_patterns is not None
-    assert config.evidence_streams.eval_failure_patterns is not None
+    assert config.compass_signals.ethos_divergence is None
+    assert config.compass_signals.user_sentiment is None
+    assert config.compass_signals.tool_issues is not None
+    assert config.compass_signals.tool_issues.retry_threshold == 5
+    assert config.compass_signals.anomaly_and_patterns is not None
+    assert config.compass_signals.grader_failure_patterns is not None
+
+
+@pytest.mark.parametrize(
+    "source,match",
+    [
+        ({"path": "traces.jsonl"}, "api_version"),
+        ({"api_version": "v3"}, "path"),
+        (
+            {"api_version": "v3", "path": "traces.jsonl", "scores_path": "scores.json"},
+            "require api_version=v4",
+        ),
+        ({"api_version": "v4"}, "path"),
+    ],
+)
+def test_langfuse_export_requires_explicit_version_and_matching_paths(source, match):
+    from compass.config import TraceConfig
+
+    with pytest.raises(ValueError, match=match):
+        TraceConfig.model_validate({"langfuse_trace_export_file": source})
