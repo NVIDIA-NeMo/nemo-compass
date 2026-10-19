@@ -13,8 +13,8 @@ All five Compass Signals are enabled by default. Each runs when its prerequisite
 
 ## Ethos divergence
 
-This Compass Signal surfaces instances where recorded agent behavior conflicts with the purpose,
-requirements, or boundaries described in its `ethos.md`.
+This Compass Signal surfaces instances where recorded agent behavior diverges from the intent
+described in its `ethos.md`.
 
 See the [ethos.md documentation](https://github.com/NVIDIA/skills/tree/main/skills/ethos-orchestrate)
 for its definition and guidance on creating one. Then configure its path:
@@ -26,7 +26,6 @@ compass_signals:
 ```
 
 The file must exist and contain text. Its path resolves from your working directory.
-Without an `ethos_path`, this signal is skipped.
 
 ## User sentiment
 
