@@ -77,7 +77,7 @@ class UserEmbeddingProjection:
 def validate_embedding_dependencies() -> None:
     if find_spec("torch") is None or find_spec("transformers") is None:
         raise ValueError(
-            'User embeddings require: uv pip install "compass[local-embedding]" '
+            'User embeddings require: uv pip install "nemo-compass[local-embedding]" '
             "(from a source checkout: uv sync --extra local-embedding)"
         )
 

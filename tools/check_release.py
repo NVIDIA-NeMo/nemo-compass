@@ -16,8 +16,8 @@ from packaging.version import Version
 def check_release(root: Path) -> tuple[str, bool]:
     project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
     version = project["version"]
-    if project["name"] != "compass":
-        raise ValueError("Rename the distribution to compass before preparing a release.")
+    if project["name"] != "nemo-compass":
+        raise ValueError("Rename the distribution to nemo-compass before preparing a release.")
     parsed_version = Version(version)
     return f"v{parsed_version}", parsed_version.is_prerelease
 

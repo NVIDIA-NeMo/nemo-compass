@@ -6,7 +6,7 @@ requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
 [project]
-name = "compass"
+name = "nemo-compass"
 version = "0.1.0"
 description = "NeMo Compass trace-evidence processing with a canonical JSONL trace contract"
 readme = "README.md"

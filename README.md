@@ -48,6 +48,7 @@ Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and
 | JSONL or ATIF files | [Trace files](docs/sources/files.md) |
 | Another trace store | [Convert your traces](docs/sources/custom.md) |
 
+The distribution is named `nemo-compass`; the command is `compass`.
 If `compass` is not found after installation, run `uv tool update-shell`
 and restart your terminal.
 

@@ -3,6 +3,8 @@
 
 # Prepare a Compass release
 
+The distribution is `nemo-compass`. The CLI and Python imports use `compass`.
+
 1. Set the version in `pyproject.toml`, run `uv lock`, and merge both files into `main`.
 2. Open [Actions → Prepare release](https://github.com/NVIDIA-NeMo/nemo-compass/actions/workflows/prepare-release.yaml)
    and select **Run workflow**. Choose `main`, optionally enter a specific commit

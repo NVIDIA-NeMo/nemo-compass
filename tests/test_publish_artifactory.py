@@ -34,7 +34,7 @@ def test_release_compass_wheel(tmp_path, monkeypatch, scenario):
 
     def run(command, *, env):
         if command[1] == "build":
-            name = "compass"
+            name = "nemo-compass"
             assert "--no-sources" in command and "--wheel" in command
             assert "--clear" in command
             assert not {"ARTIFACTORY_TOKEN", "UV_PUBLISH_TOKEN", "UV_PUBLISH_PASSWORD"} & env.keys()
@@ -48,7 +48,7 @@ def test_release_compass_wheel(tmp_path, monkeypatch, scenario):
                 remote[path.name] = path.read_bytes() if scenario == "reuse" else b"other release"
         else:
             assert command[1] == "publish"
-            assert builds == ["compass"]
+            assert builds == ["nemo-compass"]
             assert env["UV_PUBLISH_PASSWORD"] == "test-secret"
             assert "UV_PUBLISH_TOKEN" not in env
             path = Path(command[-1])
@@ -77,16 +77,16 @@ def test_release_compass_wheel(tmp_path, monkeypatch, scenario):
         result = publisher.main(["--dry-run"] if scenario == "dry-run" else [])
         assert result == (2 if scenario in {"conflict", "stable-app"} else 0)
 
-    assert builds == ["compass"]
+    assert builds == ["nemo-compass"]
     if scenario == "stable-app":
         assert events == []
     elif scenario == "dry-run":
-        assert events == [("dry-run", "compass")]
+        assert events == [("dry-run", "nemo-compass")]
     elif scenario == "conflict":
-        assert events == [("download", "compass")]
+        assert events == [("download", "nemo-compass")]
     else:
-        expected = [("download", "compass")]
+        expected = [("download", "nemo-compass")]
         if scenario != "reuse":
-            expected.append(("upload", "compass"))
-        expected.extend([("checksums", "compass"), ("download", "compass")])
+            expected.append(("upload", "nemo-compass"))
+        expected.extend([("checksums", "nemo-compass"), ("download", "nemo-compass")])
         assert events == expected

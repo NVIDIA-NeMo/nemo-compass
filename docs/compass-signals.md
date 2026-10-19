@@ -56,7 +56,7 @@ install command. Keep your source extra too. For LangSmith:
 
 ```bash
 uv tool install \
-  'compass[langsmith,local-embedding] @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+  'nemo-compass[langsmith,local-embedding] @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
 compass --config config.yaml --compass-signals.user-sentiment.local-embeddings
 ```
 

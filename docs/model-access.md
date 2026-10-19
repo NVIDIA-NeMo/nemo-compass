@@ -69,7 +69,7 @@ compass --config config.yaml
 Or select an environment file explicitly with uv:
 
 ```bash
-uv tool run --env-file /path/to/.env compass --config config.yaml
+uv tool run --from nemo-compass --env-file /path/to/.env compass --config config.yaml
 ```
 
 Exported variables take priority over values in either file.
