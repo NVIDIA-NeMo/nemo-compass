@@ -13,6 +13,8 @@ All five Compass Signals are enabled by default. Each runs when its prerequisite
 
 ## Ethos divergence
 
+`ethos.md` is a Markdown document describing what an agent is for, what it must not do, and what success looks like.
+
 This Compass Signal surfaces instances where recorded agent behavior diverges from the intent
 described in its `ethos.md`.
 
