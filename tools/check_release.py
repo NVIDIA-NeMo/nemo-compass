@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Check release identity and print the GitHub tag and prerelease flag."""
+"""Check release identity and print the GitHub tag."""
 
 from __future__ import annotations
 
@@ -13,23 +13,23 @@ import tomllib
 from packaging.version import Version
 
 
-def check_release(root: Path) -> tuple[str, bool]:
+def check_release(root: Path) -> str:
     project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
     version = project["version"]
     if project["name"] != "nemo-compass":
         raise ValueError("Rename the distribution to nemo-compass before preparing a release.")
     parsed_version = Version(version)
-    return f"v{parsed_version}", parsed_version.is_prerelease
+    return f"v{parsed_version}"
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.parse_args()
     try:
-        tag, prerelease = check_release(Path.cwd())
+        tag = check_release(Path.cwd())
     except (ValueError, KeyError, FileNotFoundError) as error:
         parser.error(str(error))
-    print(f"tag={tag}\nprerelease={str(prerelease).lower()}")
+    print(f"tag={tag}")
 
 
 if __name__ == "__main__":

@@ -10,10 +10,12 @@ The distribution is `nemo-compass`. The CLI and Python imports use `compass`.
    and select **Run workflow**. Choose `main`, optionally enter a specific commit
    SHA, and start the run.
 3. Wait for CI to pass. The action tags the checked commit and creates a draft
-   release with the wheel, source archive, and checksums. Version `0.1.0`, for
+   pre-release with the wheel, source archive, and checksums. Version `0.1.0`, for
    example, produces tag `v0.1.0`.
 4. Review the draft's notes and files before publishing the GitHub release.
+   For a stable release, clear **This is a pre-release**.
 
+The pre-release flag only applies to GitHub; it does not change the package version.
 The action does not publish to PyPI.
 
 If a run fails, open it in Actions and choose **Re-run failed jobs**. If it left an

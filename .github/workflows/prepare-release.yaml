@@ -49,12 +49,11 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
-          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
         working-directory: dist
         run: |
           sha256sum --check SHA256SUMS
           git push origin "$RELEASE_COMMIT:refs/tags/$RELEASE_TAG"
           gh release create "$RELEASE_TAG" \
             --title "nemo-compass $RELEASE_TAG" \
-            --verify-tag --draft --generate-notes --prerelease="$PRERELEASE" \
+            --verify-tag --draft --generate-notes --prerelease \
             -- *.whl *.tar.gz SHA256SUMS
