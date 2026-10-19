@@ -15,10 +15,10 @@ from nooa.strategy_validation import InvariantError
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.json_schema import SkipJsonSchema
 
+from insight_agent import telemetry_phases as telemetry
 from insight_agent.compass_signals._trace import walk_spans
 from insight_agent.compass_signals.compass_signals import CompassSignalResult
 from insight_agent.insight import Insight, SpanEvidence, TraceEvidence
-from insight_agent.telemetry import span
 from insight_agent.traces import Trace, TraceSnapshot
 
 Decision = Literal["match", "no_match", "unknown"]
@@ -115,8 +115,7 @@ class EvidenceCompletion(BaseModel):
         limitations: list[str] | None = None,
     ) -> Insight:
         """Add matching evidence, or keep the insight unchanged if the scan fails."""
-        with span("evidence_scan") as record:
-            record.set_input({"insight_name": self.insight.name, "trace_count": len(snapshot)})
+        with telemetry.evidence_scan(self.insight, len(snapshot)) as record:
             try:
                 matches, unknown = self.scan(snapshot)
             except Exception as error:
@@ -127,13 +126,7 @@ class EvidenceCompletion(BaseModel):
                 )
                 status = "skipped" if skipped else "failed"
                 reason = str(error)[:300]
-                record.set_output(
-                    {
-                        "status": status,
-                        "reason": reason,
-                        "error_type": None if skipped else type(error).__name__,
-                    }
-                )
+                telemetry.record_scan_failure(record, error, skipped=skipped)
                 if limitations is not None:
                     limitations.append(
                         f"Evidence scan {status} for {self.insight.name!r}: {reason}. Existing references were retained."
@@ -145,13 +138,7 @@ class EvidenceCompletion(BaseModel):
                     stacklevel=2,
                 )
                 return self.insight
-            record.set_output(
-                {
-                    "status": "incomplete" if unknown else "complete",
-                    "match_count": len(matches),
-                    "unknown_count": unknown,
-                }
-            )
+            telemetry.record_scan_result(record, len(matches), unknown)
         if unknown:
             if limitations is not None:
                 limitations.append(

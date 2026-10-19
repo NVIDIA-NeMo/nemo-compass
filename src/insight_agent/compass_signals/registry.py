@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 
+from pydantic import BaseModel
+
 from insight_agent.compass_signals.compass_signals import CompassSignal, CompassSignalResult
 from insight_agent.traces import TraceSnapshot
 
@@ -21,18 +23,24 @@ class CompassSignalRegistry:
 
     def __init__(self) -> None:
         self._signals: dict[str, CompassSignal] = {}
+        self._configurations: dict[str, BaseModel | None] = {}
 
     @property
     def names(self) -> tuple[str, ...]:
         return tuple(self._signals)
 
-    def register(self, signal: CompassSignal) -> None:
+    def configuration(self, name: str) -> BaseModel | None:
+        """Return the configuration explicitly associated with a registered signal."""
+        return self._configurations[name]
+
+    def register(self, signal: CompassSignal, *, config: BaseModel | None = None) -> None:
         name = signal.name.strip()
         if not name:
             raise ValueError("Compass Signal name must not be empty")
         if name in self._signals:
             raise ValueError(f"Compass Signal {name!r} is already registered")
         self._signals[name] = signal
+        self._configurations[name] = config
 
     async def analyze(
         self,

@@ -54,6 +54,16 @@ class RunResult:
     limitations: list[str] = field(default_factory=list)
 
 
+def signal_limitations(evidence: list[CompassSignalResult]) -> list[str]:
+    """Collect run limitations using the signal's canonical identifier."""
+    limitations = []
+    for result in evidence:
+        if result.skip_reason:
+            limitations.append(f"{result.signal_name}: {result.skip_reason}")
+        limitations.extend(f"{result.signal_name}: {reason}" for reason in result.limitations)
+    return limitations
+
+
 class RunOutput:
     def __init__(self, console: Console) -> None:
         self.console = console

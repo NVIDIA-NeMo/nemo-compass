@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from nooa import Agent, no_trace, strategy
@@ -15,12 +16,40 @@ from nooa.strategies import CodeActStrategy
 from nooa.unifiedllm import UnifiedLLM
 from pydantic import BaseModel, ConfigDict
 
-from insight_agent.compass_signals.compass_signals import Problem
+from insight_agent.compass_signals.compass_signals import CompassSignalResult, Problem
 from insight_agent.insights_generation.codebase import CodebaseTools
 from insight_agent.traces import Trace
 
 _MAX_ITERATIONS = 25
 _MAX_TRACE_CONTEXT_CHARS = 100_000
+
+
+@dataclass
+class EvidenceValidation:
+    """Validation decisions in the same order as the original signals and problems."""
+
+    evidence: list[CompassSignalResult]
+    decisions: list[list[bool | None]]
+
+    def retained_evidence(self) -> list[CompassSignalResult]:
+        """Reject only unsupported problems; keep unresolved candidates."""
+        retained = []
+        for result, decisions in zip(self.evidence, self.decisions, strict=True):
+            problems = tuple(
+                problem
+                for problem, decision in zip(result.problems, decisions, strict=True)
+                if decision is not False
+            )
+            retained.append(result.model_copy(update={"problems": problems}))
+        return retained
+
+    @property
+    def rejected_count(self) -> int:
+        return sum(decision is False for decisions in self.decisions for decision in decisions)
+
+    @property
+    def unresolved_count(self) -> int:
+        return sum(decision is None for decisions in self.decisions for decision in decisions)
 
 
 def _trace_context(supporting_traces: tuple[Trace, ...]) -> str:

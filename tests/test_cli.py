@@ -253,8 +253,10 @@ def test_code_validation_filters_problems_and_preserves_signal_result(
         cli._validate_evidence_with_code(evidence, snapshot, tmp_path, FakeLLMClient())
     )
 
-    assert result[0].problems == (supported, unknown)
-    assert result[0].artifacts == {"kept": True}
+    assert result.retained_evidence()[0].problems == (supported, unknown)
+    assert result.rejected_count == 1
+    assert result.unresolved_count == 1
+    assert result.retained_evidence()[0].artifacts == {"kept": True}
     assert received == [
         (supported, (trace,)),
         (unsupported, (trace,)),
@@ -320,7 +322,15 @@ def test_final_compilation_severity_does_not_require_code_base(
         cli, "_configured_trace_loader", lambda config: SimpleNamespace(load=lambda: snapshot)
     )
     monkeypatch.setattr(cli, "_run_compass_signals", AsyncMock(return_value=evidence))
-    monkeypatch.setattr(cli, "_validate_evidence_with_code", AsyncMock(return_value=evidence))
+    monkeypatch.setattr(
+        cli,
+        "_validate_evidence_with_code",
+        AsyncMock(
+            return_value=cli.EvidenceValidation(
+                evidence, [[True for _ in item.problems] for item in evidence]
+            )
+        ),
+    )
     monkeypatch.setattr(cli, "_build_llm", lambda *args: FakeLLMClient())
     monkeypatch.setattr(cli, "InsightCompilation", lambda llm: compilation)
     monkeypatch.setattr(cli, "_rate_confidence_with_code", review)
