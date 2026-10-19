@@ -3,4 +3,4 @@
 
 from importlib.metadata import version
 
-__version__ = version("compass")
+__version__ = version("nemo-compass")

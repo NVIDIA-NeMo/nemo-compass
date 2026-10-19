@@ -33,13 +33,13 @@ distribution = load_tool("check_distribution_licenses")
 
 def test_distribution_identity_and_dependencies():
     metadata = (
-        b"Name: compass\nVersion: 0.1.0\n"
+        b"Name: nemo-compass\nVersion: 0.1.0\n"
         b"License-Expression: Apache-2.0\nLicense-File: LICENSE\n"
         b"Requires-Dist: pydantic>=2\n"
     )
-    distribution.check_metadata(metadata, {"LICENSE": b"license"}, "compass", "0.1.0")
+    distribution.check_metadata(metadata, {"LICENSE": b"license"}, "nemo-compass", "0.1.0")
     for invalid, error in [
-        (metadata.replace(b"Name: compass", b"Name: other"), "Package name differs"),
+        (metadata.replace(b"Name: nemo-compass", b"Name: other"), "Package name differs"),
         (metadata.replace(b"Version: 0.1.0", b"Version: 9.0.0"), "Package version differs"),
         (
             metadata + b'Requires-Dist: Trace_Ingest[langsmith]>=0.1; extra == "langsmith"\n',
@@ -47,7 +47,7 @@ def test_distribution_identity_and_dependencies():
         ),
     ]:
         with pytest.raises(AssertionError, match=error):
-            distribution.check_metadata(invalid, {"LICENSE": b"license"}, "compass", "0.1.0")
+            distribution.check_metadata(invalid, {"LICENSE": b"license"}, "nemo-compass", "0.1.0")
 
 
 def test_inventory_preserves_platform_versions(tmp_path, monkeypatch):
