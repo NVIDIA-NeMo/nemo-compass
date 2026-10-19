@@ -6,8 +6,8 @@ requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
 [project]
-name = "insight-agent"
-version = "0.1.0rc1"
+name = "compass"
+version = "0.1.0"
 description = "NeMo Compass trace-evidence processing with a canonical JSONL trace contract"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
@@ -21,7 +21,7 @@ license-files = [
     "third_party/NOTICES.txt",
     "third_party/license_texts/*.txt",
 ]
-authors = [{ name = "Insight Agent contributors" }]
+authors = [{ name = "Compass contributors" }]
 keywords = ["agent-traces", "evaluation", "anomaly-detection", "tool-use"]
 
 dependencies = [
@@ -60,13 +60,14 @@ dev = [
     "langfuse>=4.17,<5",
     "langsmith>=0.12,<0.13",
     "mlflow-skinny>=3.6,<4",
+    "packaging>=25",
     "pytest>=8.0",
     "ruff>=0.6",
     "ty>=0.0.80",
 ]
 
 [project.scripts]
-insight-agent = "insight_agent.cli.main:main"
+compass = "compass.cli.main:main"
 
 [tool.uv]
 managed = true
@@ -84,7 +85,7 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/insight_agent", "src/trace_ingest"]
+packages = ["src/compass", "src/trace_ingest"]
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -92,7 +93,7 @@ include = [
     "/NOTICE",
     "/README.md",
     "/pyproject.toml",
-    "/src/insight_agent",
+    "/src/compass",
     "/src/trace_ingest",
     "/third_party",
 ]

@@ -246,7 +246,7 @@ class _DiskTraceIndex(Mapping[str, Trace]):
     """Temporary SQLite storage for normalized traces."""
 
     def __init__(self, traces: Iterable[Trace]) -> None:
-        self._directory = TemporaryDirectory(prefix="insight-agent-traces-")
+        self._directory = TemporaryDirectory(prefix="compass-traces-")
         self._path = Path(self._directory.name) / "traces.sqlite3"
         try:
             with closing(sqlite3.connect(self._path)) as connection, connection:

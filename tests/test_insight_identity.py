@@ -4,7 +4,7 @@
 import pytest
 from pydantic import ValidationError
 
-from insight_agent.insight import Insight, load_insights
+from compass.insight import Insight, load_insights
 
 
 def test_existing_identity_survives_artifact_round_trip(tmp_path):

@@ -9,13 +9,13 @@ from datetime import datetime, timezone
 import pytest
 from nooa.unifiedllm import FakeLLMClient, LLMResponse, ToolCall
 
-from insight_agent.insight import Insight, SpanEvidence, TraceEvidence
-from insight_agent.insights_generation.insight_compilation import (
+from compass.insight import Insight, SpanEvidence, TraceEvidence
+from compass.insights_generation.insight_compilation import (
     EvidenceCompletion,
     EvidenceDecision,
     InsightCompilation,
 )
-from insight_agent.traces import UNSET, Span, SpanKind, Trace, TraceAggregate, TraceSnapshot
+from compass.traces import UNSET, Span, SpanKind, Trace, TraceAggregate, TraceSnapshot
 
 RUN_TIMESTAMP = datetime(2026, 10, 2, tzinfo=timezone.utc)
 
@@ -187,7 +187,7 @@ def test_invalid_return_can_be_fixed_in_same_python_session(
 ):
     insight, checks, snapshot = completion_case
     prepare = (
-        "import json\nfrom insight_agent.traces import UNSET\n"
+        "import json\nfrom compass.traces import UNSET\n"
         + inspect.getsource(truncated_enrich)
         + "\nchecks = [(trace_snapshot.get_trace_by_id(i), expected) for i, expected in "
         + repr([(t.id, expected) for t, expected in checks])

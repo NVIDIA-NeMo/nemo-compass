@@ -9,26 +9,26 @@ recurring problems. It has three stages: ingestion, evidence discovery, and insi
 Five Compass Signals analyze business requirements, user complaints, evaluation results, tool
 behavior, and statistical patterns. They use deterministic checks, learned classifiers, and LLM
 investigation, with each signal implementing the same
-[interface](../src/insight_agent/compass_signals/compass_signals.py): check prerequisites, analyze
+[interface](../src/compass/compass_signals/compass_signals.py): check prerequisites, analyze
 the snapshot, and return candidate `Problem` objects containing a description and supporting trace
 IDs. Results can also include analysis artifacts, coverage limitations, and reasons for skipping
 analysis. Partners can run the NeMo Compass pipeline, reuse individual Compass Signals or trace loaders.
 
-[Insight compilation](../src/insight_agent/insights_generation/insight_compilation.py) investigates
+[Insight compilation](../src/compass/insights_generation/insight_compilation.py) investigates
 candidates in their original traces, assesses their impact and whether a developer can fix them,
 merges duplicates across signals and existing insights, and ranks the results. Its instructions
 require each new insight to have support from more than one trace and to merge symptoms only when
 they establish the same problem. These decisions rely on model judgment.
 
 When `code_base` is configured, a [code-aware
-validator](../src/insight_agent/insights_generation/validation.py) runs before compilation and
+validator](../src/compass/insights_generation/validation.py) runs before compilation and
 removes candidate problems contradicted by the agent’s source while retaining problems the source
 cannot resolve. Compilation then merges the retained evidence into insights, attaches supporting
 trace references, and assigns severity from observed consequences and recovery independently of
 occurrence count.
 
 When `code_base` is configured, a [second code-aware
-review](../src/insight_agent/insights_generation/confidence.py) runs after compilation. It evaluates
+review](../src/compass/insights_generation/confidence.py) runs after compilation. It evaluates
 each final insight’s behavior, root cause, scope, and implied remediation, assigning confidence
 without changing severity. Validation and confidence are separate NOOA agents with read-only access
 to the codebase and separate decision contracts, because they operate on different artifacts at
@@ -43,7 +43,8 @@ The ethos-divergence signal compares observed behavior with a document describin
 business purpose, requirements, and limits. This document, called `ETHOS.md`, defines expected
 behavior independently of the implementation. For example, a support agent might be allowed to
 explain refund policy but forbidden to issue refunds. The signal would investigate a recorded refund
-action as a possible violation, even if the tool call succeeded.
+action as a possible violation, even if the tool call succeeded. ETHOS.md can be generated with the 
+help of the [Ethos skills](https://github.com/NVIDIA/skills/blob/main/skills/ethos-orchestrate/README.md#how-to-use). 
 
 The signal supplies the document and trace snapshot to an LLM issue detector. Its instructions
 require reviewing the visible conversation and identifying which requirement was violated and how.
@@ -64,9 +65,9 @@ needs to change.
 The signal requires a non-empty requirements document and skips analysis when none is configured. An
 observability platform could store this document at the project level and display findings against
 the relevant requirements. The [ethos-divergence
-implementation](../src/insight_agent/compass_signals/ethos_divergence/ethos_divergence_detector.py)
+implementation](../src/compass/compass_signals/ethos_divergence/ethos_divergence_detector.py)
 defines configuration and evaluation instructions; the shared [issue
-detector](../src/insight_agent/compass_signals/issue_detector.py) defines the output descriptions
+detector](../src/compass/compass_signals/issue_detector.py) defines the output descriptions
 and supporting trace references.
 
 ## User sentiment
@@ -104,10 +105,10 @@ Screening reduces the set of conversations sent for detailed review. The separat
 classification components also allow partners to train and evaluate additional heads for other
 tasks. Running the current signal requires preserved human messages and a compatible embedding
 backend; its results report coverage for traces lacking user text. The [signal
-implementation](../src/insight_agent/compass_signals/user_sentiment/signal.py) handles extraction
+implementation](../src/compass/compass_signals/user_sentiment/signal.py) handles extraction
 and review, with the [embedding
-pipeline](../src/insight_agent/compass_signals/user_embedding/embedding.py) and
-[classifier](../src/insight_agent/compass_signals/user_sentiment/classifier.py) implemented
+pipeline](../src/compass/compass_signals/user_embedding/embedding.py) and
+[classifier](../src/compass/compass_signals/user_sentiment/classifier.py) implemented
 separately.
 
 ## Grader failures
@@ -137,7 +138,7 @@ quality and coverage, and the result reports how many traces lack evaluation sig
 Integration requires preserving evaluator names and values during normalization, along with
 execution details that can explain the results. The compact index and trace-retrieval pattern can
 also support other investigations over large traces. The [grader-failure
-implementation](../src/insight_agent/compass_signals/grader_failure_patterns.py) contains the index,
+implementation](../src/compass/compass_signals/grader_failure_patterns.py) contains the index,
 bounded retrieval tool, citation postcondition, and investigation instructions. The signal skips
 when no non-null evaluator results are available.
 
@@ -169,7 +170,7 @@ Instrumentation findings can also identify incomplete or inconsistent trace reco
 Partners can run the audit independently of LLM analysis, display evidence cards beside tool spans,
 or pass eligible problems to NeMo Compass. Integration should preserve tool names, arguments,
 results, identifiers, schemas when available, and logical case identity. The [tool-issue
-implementation](../src/insight_agent/compass_signals/tool_issues/signal.py) contains normalization,
+implementation](../src/compass/compass_signals/tool_issues/signal.py) contains normalization,
 detection rules, card construction, and problem promotion. Its artifacts retain both individual
 findings and the recurring groups used for insight generation.
 
@@ -204,7 +205,7 @@ Features, clusters, verdict groups, and an evidence digest remain available for 
 Partners can reuse feature extraction, trajectory grouping, and failure-signature analysis
 separately and configure them for their own trace populations. These methods can surface behavior
 that existing rubrics and complaint classifiers do not cover. The [anomaly-and-pattern
-implementation](../src/insight_agent/compass_signals/anomaly_and_patterns/signal.py) contains the
+implementation](../src/compass/compass_signals/anomaly_and_patterns/signal.py) contains the
 analysis methods and shared-signal adapter. In the full NeMo Compass pipeline, compilation reviews these
 candidates alongside findings from the other signals to determine which problems have sufficient
 support and a practical remedy.

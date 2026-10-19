@@ -685,8 +685,8 @@ wheels = [
 ]
 
 [[package]]
-name = "insight-agent"
-version = "0.1.0rc1"
+name = "compass"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
@@ -726,6 +726,7 @@ dev = [
     { name = "langfuse" },
     { name = "langsmith" },
     { name = "mlflow-skinny" },
+    { name = "packaging" },
     { name = "pytest" },
     { name = "ruff" },
     { name = "ty" },
@@ -761,6 +762,7 @@ dev = [
     { name = "langfuse", specifier = ">=4.17,<5" },
     { name = "langsmith", specifier = ">=0.12,<0.13" },
     { name = "mlflow-skinny", specifier = ">=3.6,<4" },
+    { name = "packaging", specifier = ">=25" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = ">=0.6" },
     { name = "ty", specifier = ">=0.0.80" },

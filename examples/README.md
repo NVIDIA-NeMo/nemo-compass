@@ -10,7 +10,7 @@ With [uv and Git installed](../README.md#start-here), install the CLI:
 
 ```bash
 uv tool install \
-  'insight-agent @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+  'compass @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
 ```
 
 Download the [example traces](tau_bench_traces.jsonl) and
@@ -18,7 +18,7 @@ Download the [example traces](tau_bench_traces.jsonl) and
 In that folder, [configure your model and API key](../docs/model-access.md#choose-a-model), then run:
 
 ```bash
-insight-agent --config config.yaml
+compass --config config.yaml
 ```
 
 The terminal reports completed and skipped Compass Signals. If it finds actionable insights,

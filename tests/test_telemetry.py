@@ -8,15 +8,15 @@ import sys
 import pytest
 import yaml
 
-from insight_agent.traces import Trace, TraceAggregate
+from compass.traces import Trace, TraceAggregate
 
 
 def test_execution_metadata_tracks_compass_checkout(monkeypatch, tmp_path):
-    from insight_agent import telemetry
+    from compass import telemetry
 
     checkout = tmp_path / "compass"
     checkout.mkdir()
-    monkeypatch.setattr(telemetry, "__file__", str(checkout / "src/insight_agent/telemetry.py"))
+    monkeypatch.setattr(telemetry, "__file__", str(checkout / "src/compass/telemetry.py"))
     monkeypatch.chdir(tmp_path)
 
     def git(*args):
@@ -49,12 +49,12 @@ def test_execution_metadata_tracks_compass_checkout(monkeypatch, tmp_path):
 
     # A wheel inside another checkout must not claim that repository's identity.
     monkeypatch.setattr(
-        telemetry, "__file__", str(checkout / ".venv/lib/site-packages/insight_agent/telemetry.py")
+        telemetry, "__file__", str(checkout / ".venv/lib/site-packages/compass/telemetry.py")
     )
     metadata = telemetry._execution_metadata()
     assert set(metadata) == {"compass.version", "nooa.version", "python.version"}
     assert all(metadata.values())
-    monkeypatch.setattr(telemetry, "__file__", str(checkout / "src/insight_agent/telemetry.py"))
+    monkeypatch.setattr(telemetry, "__file__", str(checkout / "src/compass/telemetry.py"))
     monkeypatch.setenv("PATH", "")
     assert telemetry._execution_metadata() == metadata
 
@@ -63,8 +63,8 @@ def test_execution_metadata_tracks_compass_checkout(monkeypatch, tmp_path):
 def test_analyzing_telemetry_project_checks_source_endpoint(monkeypatch, capsys, same_endpoint):
     from unittest.mock import patch
 
-    from insight_agent.config import RunConfig
-    from insight_agent.telemetry import telemetry_session
+    from compass.config import RunConfig
+    from compass.telemetry import telemetry_session
 
     monkeypatch.setenv("COMPASS_TELEMETRY_LANGSMITH_API_KEY", "test-key")
     monkeypatch.setenv("COMPASS_TELEMETRY_LANGSMITH_PROJECT", "custom-project")
@@ -82,9 +82,9 @@ def test_analyzing_telemetry_project_checks_source_endpoint(monkeypatch, capsys,
         }
     )
     with (
-        patch("insight_agent.telemetry.enable_tracing") as enable,
-        patch("insight_agent.telemetry.OTLPSpanExporter"),
-        patch("insight_agent.telemetry.shutdown_traces"),
+        patch("compass.telemetry.enable_tracing") as enable,
+        patch("compass.telemetry.OTLPSpanExporter"),
+        patch("compass.telemetry.shutdown_traces"),
     ):
         with telemetry_session(config):
             pass
@@ -110,7 +110,7 @@ def test_cli_telemetry_in_fresh_process(tmp_path, api_key, project):
         [sys.executable, __file__, str(source), str(bool(api_key and project))],
         env={
             **os.environ,
-            "INSIGHT_AGENT_API_KEY": "dummy",
+            "COMPASS_API_KEY": "dummy",
             "LANGSMITH_API_KEY": "source-key",
             "LANGCHAIN_API_KEY": "legacy-source-key",
             "LANGSMITH_ENDPOINT": "https://source.example.com",
@@ -142,9 +142,9 @@ def _run_cli(source, enabled):
     from opentelemetry.exporter.otlp.proto.http import Compression
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-    from insight_agent.cli.main import main
-    from insight_agent.compass_signals.compass_signals import CompassSignalResult
-    from insight_agent.telemetry import span
+    from compass.cli.main import main
+    from compass.compass_signals.compass_signals import CompassSignalResult
+    from compass.telemetry import span
 
     class SmallAgent(Agent):
         @strategy(CodeActStrategy())
@@ -189,8 +189,8 @@ def _run_cli(source, enabled):
 
     exporter = InMemorySpanExporter()
     args = ["--trace.filesystem.path", str(source)]
-    with patch("insight_agent.telemetry.OTLPSpanExporter", return_value=exporter) as factory:
-        with patch("insight_agent.cli.main._run_compass_signals", analyze):
+    with patch("compass.telemetry.OTLPSpanExporter", return_value=exporter) as factory:
+        with patch("compass.cli.main._run_compass_signals", analyze):
             assert main(args) == 0
         assert factory.called == enabled
     records = exporter.get_finished_spans()

@@ -13,16 +13,16 @@ import pytest
 from mlflow import MlflowClient
 from mlflow.entities import Feedback
 
-from insight_agent.compass_signals.anomaly_and_patterns.signal import to_anomaly_and_patterns_trace
-from insight_agent.compass_signals.tool_issues.signal import MISSING, to_tool_issue_trace
-from insight_agent.trace_loaders.mlflow import (
+from compass.compass_signals.anomaly_and_patterns.signal import to_anomaly_and_patterns_trace
+from compass.compass_signals.tool_issues.signal import MISSING, to_tool_issue_trace
+from compass.trace_loaders.mlflow import (
     MLflowFileTraceConfig,
     MLflowFileTraceLoader,
     MLflowTraceConfig,
     MLflowTraceLoader,
     MLflowTraceLoadError,
 )
-from insight_agent.traces import UNSET, SpanKind
+from compass.traces import UNSET, SpanKind
 
 MLFLOW_TRACE_FIXTURE = Path(__file__).parent / "data" / "mlflow_trace_v3.json"
 

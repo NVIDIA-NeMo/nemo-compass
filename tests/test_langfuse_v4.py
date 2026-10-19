@@ -12,8 +12,8 @@ import pytest
 from langfuse import Langfuse
 from langfuse.api.core.api_error import ApiError
 
-from insight_agent.cli.main import _configured_trace_loader
-from insight_agent.config import LangfuseConfig, TraceConfig
+from compass.cli.main import _configured_trace_loader
+from compass.config import LangfuseConfig, TraceConfig
 from trace_ingest.loaders.langfuse import (
     LangfuseTraceConfig,
     LangfuseTraceLoader,
@@ -300,7 +300,7 @@ def test_v4_cli_runs_evidence(tmp_path, monkeypatch, select_signals, offline):
 
     from nooa.unifiedllm import FakeLLMClient
 
-    import insight_agent.cli.main as cli
+    import compass.cli.main as cli
     import trace_ingest.loaders.langfuse.loader as adapter
 
     tool = observation(
@@ -316,7 +316,7 @@ def test_v4_cli_runs_evidence(tmp_path, monkeypatch, select_signals, offline):
     client = loader(handler).client
     monkeypatch.setattr(adapter, "_new_langfuse_client", lambda base_url: client)
     compilation = SimpleNamespace(compile_insights=AsyncMock(return_value=[]))
-    monkeypatch.setenv("INSIGHT_AGENT_API_KEY", "test-key")
+    monkeypatch.setenv("COMPASS_API_KEY", "test-key")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
     monkeypatch.setattr(cli, "_build_llm", lambda *a: FakeLLMClient())
@@ -723,7 +723,7 @@ def test_v4_file_rejects_invalid_observations(tmp_path, case, match):
 
 
 def test_v4_file_config_and_successful_empty_exports(tmp_path):
-    from insight_agent.config import LangfuseTraceExportFileConfig
+    from compass.config import LangfuseTraceExportFileConfig
     from trace_ingest.loaders.langfuse import LangfuseV4FileTraceConfig, LangfuseV4FileTraceLoader
 
     observations, scores = write_exports(tmp_path)
@@ -815,8 +815,8 @@ def test_v4_without_score_file_skips_requested_evaluation(tmp_path, select_signa
 
     from nooa.unifiedllm import FakeLLMClient
 
-    from insight_agent.cli.main import _run_compass_signals
-    from insight_agent.config import CompassSignalsConfig
+    from compass.cli.main import _run_compass_signals
+    from compass.config import CompassSignalsConfig
     from trace_ingest.loaders.langfuse import LangfuseV4FileTraceLoader
 
     observations = tmp_path / "observations.json"

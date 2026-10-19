@@ -15,7 +15,7 @@ With [uv and Git installed](../../README.md#start-here), install the CLI with La
 
 ```bash
 uv tool install \
-  'insight-agent[langsmith] @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+  'compass[langsmith] @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
 ```
 
 [Configure your inference model and key](../model-access.md#choose-a-model).
@@ -36,7 +36,7 @@ trace:
 ```
 
 ```bash
-insight-agent --config config.yaml
+compass --config config.yaml
 ```
 
 Open `insights.yml` if the run produced insights. [Read your results](../results.md)

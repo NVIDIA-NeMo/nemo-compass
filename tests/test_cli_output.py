@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from insight_agent.cli.output import RunOutput, RunResult
-from insight_agent.compass_signals.compass_signals import CompassSignalResult, Problem
-from insight_agent.insight import Insight
+from compass.cli.output import RunOutput, RunResult
+from compass.compass_signals.compass_signals import CompassSignalResult, Problem
+from compass.insight import Insight
 
 
 def make_insight(name="Agent calls tools absent from the active catalog"):

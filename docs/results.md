@@ -129,7 +129,7 @@ By default, a non-empty collection is written to `insights.yml`.
 per run, or capture stdout to receive the current result, including `[]`:
 
 ```bash
-insight-agent --config config.yaml --output-path - > run-insights.yml
+compass --config config.yaml --output-path - > run-insights.yml
 ```
 
 Progress and the report go to stderr. Piped stdout contains YAML.

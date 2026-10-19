@@ -18,19 +18,19 @@ from langfuse.api.commons.types.trace_with_full_details import TraceWithFullDeta
 from langfuse.api.commons.types.usage import Usage
 from langfuse.api.core.pydantic_utilities import parse_obj_as
 
-from insight_agent.compass_signals.tool_issues.signal import (
+from compass.compass_signals.tool_issues.signal import (
     detect_trace,
     to_tool_issue_trace,
 )
-from insight_agent.config import LangfuseConfig
-from insight_agent.trace_loaders.langfuse import (
+from compass.config import LangfuseConfig
+from compass.trace_loaders.langfuse import (
     LangfuseFileTraceConfig,
     LangfuseTraceConfig,
     LangfuseTraceLoadError,
     LangfuseV3FileTraceLoader,
     LangfuseV3TraceLoader,
 )
-from insight_agent.traces import UNSET, SpanKind
+from compass.traces import UNSET, SpanKind
 
 START = datetime(2026, 8, 1, 12, tzinfo=timezone.utc)
 END = START + timedelta(hours=1)
@@ -166,7 +166,7 @@ def test_export_cli_runs_evidence_without_langfuse_client(tmp_path, monkeypatch,
 
     from nooa.unifiedllm import FakeLLMClient
 
-    import insight_agent.cli.main as cli
+    import compass.cli.main as cli
 
     native = provider_trace(
         observations=[
@@ -183,7 +183,7 @@ def test_export_cli_runs_evidence_without_langfuse_client(tmp_path, monkeypatch,
     export_path = tmp_path / "trace.json"
     export_path.write_text(native.json(exclude_unset=True))
     compilation = SimpleNamespace(compile_insights=AsyncMock(return_value=[]))
-    monkeypatch.setenv("INSIGHT_AGENT_API_KEY", "test-key")
+    monkeypatch.setenv("COMPASS_API_KEY", "test-key")
     monkeypatch.setattr(Langfuse, "__init__", lambda *a, **kw: pytest.fail("offline client"))
     monkeypatch.setattr(cli, "_build_llm", lambda *a: FakeLLMClient())
     monkeypatch.setattr(cli, "InsightCompilation", lambda llm: compilation)
@@ -268,7 +268,7 @@ def test_live_order_uses_query_summary_timestamps():
 
 @pytest.mark.parametrize("offline", [False, True])
 def test_scores_reach_evaluation_index_without_losing_repeated_names(tmp_path, offline):
-    from insight_agent.compass_signals.grader_failure_patterns import _trace_index
+    from compass.compass_signals.grader_failure_patterns import _trace_index
 
     scores = [
         {"id": "numeric", "name": "quality", "dataType": "NUMERIC", "value": 0.25},
@@ -334,7 +334,7 @@ def test_scores_reach_evaluation_index_without_losing_repeated_names(tmp_path, o
 def test_export_config_is_exclusive():
     from pydantic import ValidationError
 
-    from insight_agent.config import TraceConfig
+    from compass.config import TraceConfig
 
     with pytest.raises(ValidationError, match="exactly one loader"):
         TraceConfig.model_validate(

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from insight_agent.config import CompassSignalsConfig, RunConfig
+from compass.config import CompassSignalsConfig, RunConfig
 
 
 def test_cli_nested_override_preserves_yaml_siblings(tmp_path: Path) -> None:
@@ -161,7 +161,7 @@ def test_signals_default_on_and_false_disables_only_that_signal(tmp_path):
     ],
 )
 def test_langfuse_export_requires_explicit_version_and_matching_paths(source, match):
-    from insight_agent.config import TraceConfig
+    from compass.config import TraceConfig
 
     with pytest.raises(ValueError, match=match):
         TraceConfig.model_validate({"langfuse_trace_export_file": source})

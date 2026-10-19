@@ -12,7 +12,7 @@ With [uv and Git installed](../../README.md#start-here), install the CLI with La
 
 ```bash
 uv tool install \
-  'insight-agent[langfuse] @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+  'compass[langfuse] @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
 ```
 
 [Configure your inference model and key](../model-access.md#choose-a-model).
@@ -38,7 +38,7 @@ trace:
 ```
 
 ```bash
-insight-agent --config config.yaml
+compass --config config.yaml
 ```
 
 Open `insights.yml` if the run produced insights. [Read your results](../results.md)
@@ -150,4 +150,4 @@ compass_signals:
   grader_failure_patterns: {}
 ```
 
-Run `insight-agent --config config.yaml` as above.
+Run `compass --config config.yaml` as above.
