@@ -27,10 +27,10 @@ cannot resolve. Compilation then merges the retained evidence into insights, att
 trace references, and assigns severity from observed consequences and recovery independently of
 occurrence count.
 
-When an ETHOS document is configured, an [ETHOS validator](../src/compass/insights_generation/ethos_validation.py)
+When an ethos document is configured, an [ethos validator](../src/compass/insights_generation/ethos_validation.py)
 checks candidates from all signals against explicit intended behavior. It runs concurrently
 with code validation when both are enabled. A candidate is removed if either check
-establishes a contradiction; inconclusive checks retain it. ETHOS rejections preserve
+establishes a contradiction; inconclusive checks retain it. Rejections based on ethos preserve
 an exact document passage and an explanation. This checks whether a candidate is a
 problem, leaving priority and severity decisions to compilation.
 
@@ -47,10 +47,10 @@ problem and confidence is left unset.
 ## Ethos divergence
 
 The ethos-divergence signal compares observed behavior with a document describing the agent’s
-business purpose, requirements, and limits. This document, called `ETHOS.md`, defines expected
+business purpose, requirements, and limits. This document, called `ethos.md`, defines expected
 behavior independently of the implementation. For example, a support agent might be allowed to
 explain refund policy but forbidden to issue refunds. The signal would investigate a recorded refund
-action as a possible violation, even if the tool call succeeded. ETHOS.md can be generated with the 
+action as a possible violation, even if the tool call succeeded. `ethos.md` can be generated with the
 help of the [Ethos skills](https://github.com/NVIDIA/skills/blob/main/skills/ethos-orchestrate/README.md#how-to-use). 
 
 The signal supplies the document and trace snapshot to an LLM issue detector. Its instructions

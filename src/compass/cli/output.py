@@ -119,12 +119,12 @@ class RunOutput:
             self.console.print(f"{count(candidate_count, 'candidate issue')} found; {reason}.")
         if result.ethos_rejections:
             self.console.print(
-                f"ETHOS excluded {count(len(result.ethos_rejections), 'candidate issue')}."
+                f"ethos excluded {count(len(result.ethos_rejections), 'candidate issue')}."
             )
             for rejection in result.ethos_rejections:
                 self.console.print(Text(f"  {rejection.problem.description}"))
                 self.console.print(Text(f"  {rejection.decision.explanation}"))
-                self.console.print(Text(f"  ETHOS: {rejection.decision.passage}"))
+                self.console.print(Text(f"  ethos: {rejection.decision.passage}"))
         retained = len(result.insights) - new_count
         if retained:
             self.console.print(f"{count(retained, 'existing insight')} retained.")

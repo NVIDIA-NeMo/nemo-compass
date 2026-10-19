@@ -12,7 +12,7 @@ from compass.compass_signals.compass_signals import Problem
 from compass.insights_generation.ethos_validation import EthosDecision, EthosValidation
 from compass.traces import Trace, TraceAggregate
 
-ETHOS = "Ask for approval before issuing any refund."
+ethos = "Ask for approval before issuing any refund."
 
 
 def response(decision):
@@ -30,7 +30,7 @@ def response(decision):
 @pytest.mark.parametrize(
     "contradicted,passage,expected",
     [
-        (True, ETHOS, True),
+        (True, ethos, True),
         (False, None, False),
         (True, "All refunds require approval.", False),
     ],
@@ -49,10 +49,10 @@ def test_ethos_decision_requires_grounding(contradicted, passage, expected):
     )
     problem = Problem(description="Approval adds unnecessary friction", supporting_trace_ids=("t",))
     trace = Trace(id="t", root_spans=[], aggregate=TraceAggregate())
-    decision = asyncio.run(EthosValidation(ETHOS, llm).validate(problem, (trace,)))
+    decision = asyncio.run(EthosValidation(ethos, llm).validate(problem, (trace,)))
     assert decision.contradicted is expected
     assert decision.explanation
-    assert ETHOS in str(llm.last_messages)
+    assert ethos in str(llm.last_messages)
     assert problem.description in str(llm.last_messages)
 
 
@@ -81,6 +81,6 @@ def test_generation_error_retains_candidate(monkeypatch):
         ethos_validation, "_EthosValidationAgent", lambda **kwargs: SimpleNamespace(decide=fail)
     )
     problem = Problem(description="Problem", supporting_trace_ids=("t",))
-    decision = asyncio.run(EthosValidation(ETHOS, FakeLLMClient()).validate(problem, ()))
+    decision = asyncio.run(EthosValidation(ethos, FakeLLMClient()).validate(problem, ()))
     assert not decision.contradicted
     assert "inconclusive" in decision.explanation

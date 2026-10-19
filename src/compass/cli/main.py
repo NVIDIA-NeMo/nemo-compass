@@ -280,7 +280,7 @@ async def _validate_evidence(
     llm: UnifiedLLM,
     ethos: str | None = None,
 ) -> tuple[list[CompassSignalResult], int, list[EthosRejection]]:
-    """Run independent code and ETHOS checks concurrently; reject only contradictions."""
+    """Run independent code and ethos checks concurrently; reject only contradictions."""
     code_validator = None
     if code_base_path is not None:
         code_base_path = code_base_path.expanduser().resolve()
@@ -460,9 +460,9 @@ async def _compile_evidence(
         ethos = ethos_path.read_text(encoding="utf-8") if ethos_path is not None else None
         if config.code_base is not None or ethos is not None:
             output.activity = (
-                "Checking candidate issues against the codebase and ETHOS"
+                "Checking candidate issues against the codebase and ethos"
                 if config.code_base is not None and ethos is not None
-                else "Checking candidate issues against ETHOS"
+                else "Checking candidate issues against ethos"
                 if ethos is not None
                 else "Checking candidate issues against the codebase"
             )

@@ -139,7 +139,7 @@ def test_ethos_rejections_report_passage_and_reason():
     stream = StringIO()
     RunOutput(Console(file=stream, width=120)).report(result, Path("insights.yml"))
     rendered = stream.getvalue()
-    assert "ETHOS excluded 1 candidate issue." in rendered
+    assert "ethos excluded 1 candidate issue." in rendered
     assert "Require [explicit] approval." in rendered
     assert "The reported friction is required." in rendered
     assert "none were retained after validation and review" in rendered

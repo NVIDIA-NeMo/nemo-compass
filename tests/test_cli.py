@@ -486,7 +486,7 @@ def test_ethos_validation_can_skip_compilation_and_preserve_existing(tmp_path, m
 
     from compass.insights_generation.ethos_validation import EthosDecision
 
-    ethos_path = tmp_path / "ETHOS.md"
+    ethos_path = tmp_path / "ethos.md"
     ethos_path.write_text("Require approval.")
     config = RunConfig(
         trace={"filesystem": {"path": "unused.jsonl"}},
