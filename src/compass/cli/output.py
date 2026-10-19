@@ -19,6 +19,7 @@ from rich.text import Text
 
 from compass.compass_signals.compass_signals import CompassSignalResult
 from compass.insight import Insight
+from compass.insights_generation.ethos_validation import EthosRejection
 
 _SIGNAL_LABELS = {
     "anomaly-and-patterns": "Anomalies and patterns",
@@ -51,6 +52,7 @@ class RunResult:
     insights: list[Insight]
     existing_insights: list[Insight] = field(default_factory=list)
     rejected_by_code: int = 0
+    ethos_rejections: list[EthosRejection] = field(default_factory=list)
 
 
 class RunOutput:
@@ -111,10 +113,18 @@ class RunOutput:
                 "none were supported by the codebase"
                 if result.rejected_by_code == candidate_count
                 else "none were retained after validation and review"
-                if result.rejected_by_code
+                if result.rejected_by_code or result.ethos_rejections
                 else "none met the actionability criteria"
             )
             self.console.print(f"{count(candidate_count, 'candidate issue')} found; {reason}.")
+        if result.ethos_rejections:
+            self.console.print(
+                f"ETHOS excluded {count(len(result.ethos_rejections), 'candidate issue')}."
+            )
+            for rejection in result.ethos_rejections:
+                self.console.print(Text(f"  {rejection.problem.description}"))
+                self.console.print(Text(f"  {rejection.decision.explanation}"))
+                self.console.print(Text(f"  ETHOS: {rejection.decision.passage}"))
         retained = len(result.insights) - new_count
         if retained:
             self.console.print(f"{count(retained, 'existing insight')} retained.")

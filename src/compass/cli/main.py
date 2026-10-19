@@ -45,6 +45,7 @@ from compass.insights_generation.config import (
     resolve,
 )
 from compass.insights_generation.defaults import DEFAULT_MAX_TOKENS, DEFAULT_MODEL
+from compass.insights_generation.ethos_validation import EthosRejection, EthosValidation
 from compass.insights_generation.insight_compilation import InsightCompilation
 from compass.insights_generation.validation import ProblemValidation
 from compass.telemetry import span, telemetry_session
@@ -272,45 +273,77 @@ async def _run_compass_signals(
     return [task.result() for task in tasks]
 
 
-async def _validate_evidence_with_code(
+async def _validate_evidence(
     evidence: list[CompassSignalResult],
     snapshot: TraceSnapshot,
-    code_base_path: Path,
+    code_base_path: Path | None,
     llm: UnifiedLLM,
-) -> list[CompassSignalResult]:
-    """Keep only Problems that the supplied codebase supports."""
+    ethos: str | None = None,
+) -> tuple[list[CompassSignalResult], int, list[EthosRejection]]:
+    """Run independent code and ETHOS checks concurrently; reject only contradictions."""
+    code_validator = None
+    if code_base_path is not None:
+        code_base_path = code_base_path.expanduser().resolve()
+        if not code_base_path.is_dir():
+            raise ValueError(f"code_base must be an existing directory: {code_base_path}")
+        code_validator = ProblemValidation(code_base_path, llm)
+    ethos_validator = EthosValidation(ethos, llm) if ethos is not None else None
+    rejected_by_code = 0
+    ethos_rejections: list[EthosRejection] = []
 
-    code_base_path = code_base_path.expanduser().resolve()
-    if not code_base_path.is_dir():
-        raise ValueError(f"code_base must be an existing directory: {code_base_path}")
-    validator = ProblemValidation(code_base_path, llm)
+    async def validate_problem(signal_name: str, problem: Problem) -> bool:
+        supporting_traces = tuple(
+            snapshot.get_trace_by_id(trace_id) for trace_id in problem.supporting_trace_ids
+        )
 
-    async def validate_problem(
-        problem: Problem, supporting_traces: tuple[Trace, ...]
-    ) -> bool | None:
-        with span("validate_problem") as record:
-            record.set_input({"problem": problem, "code_base": str(code_base_path)})
-            decision = await validator.is_supported(problem, supporting_traces)
-            record.set_output({"supported": decision})
-            return decision
+        async def check_code() -> bool | None:
+            if code_validator is None:
+                return None
+            with span("validate_problem") as record:
+                record.set_input({"problem": problem, "code_base": str(code_base_path)})
+                decision = await code_validator.is_supported(problem, supporting_traces)
+                record.set_output({"supported": decision})
+                return decision
+
+        async def check_ethos() -> bool:
+            if ethos_validator is None:
+                return False
+            with span("validate_problem_ethos") as record:
+                record.set_input({"signal_name": signal_name, "problem": problem, "ethos": ethos})
+                decision = await ethos_validator.validate(problem, supporting_traces)
+                record.set_output(decision)
+                if decision.contradicted:
+                    ethos_rejections.append(
+                        EthosRejection(signal_name=signal_name, problem=problem, decision=decision)
+                    )
+                return decision.contradicted
+
+        async with asyncio.TaskGroup() as group:
+            code_task = group.create_task(check_code())
+            ethos_task = group.create_task(check_ethos())
+        nonlocal rejected_by_code
+        rejected_by_code += code_task.result() is False
+        return code_task.result() is not False and not ethos_task.result()
 
     async def validate_result(result: CompassSignalResult) -> CompassSignalResult:
-        validations = []
-        for problem in result.problems:
-            supporting_traces = tuple(
-                snapshot.get_trace_by_id(trace_id) for trace_id in problem.supporting_trace_ids
-            )
-            validations.append(validate_problem(problem, supporting_traces))
-
-        decisions = await asyncio.gather(*validations)
-        retained_problems = tuple(
-            problem
-            for problem, decision in zip(result.problems, decisions, strict=True)
-            if decision is not False
+        async with asyncio.TaskGroup() as group:
+            tasks = [
+                group.create_task(validate_problem(result.signal_name, problem))
+                for problem in result.problems
+            ]
+        return result.model_copy(
+            update={
+                "problems": tuple(
+                    problem
+                    for problem, task in zip(result.problems, tasks, strict=True)
+                    if task.result()
+                )
+            }
         )
-        return result.model_copy(update={"problems": retained_problems})
 
-    return list(await asyncio.gather(*(validate_result(result) for result in evidence)))
+    async with asyncio.TaskGroup() as group:
+        tasks = [group.create_task(validate_result(result)) for result in evidence]
+    return [task.result() for task in tasks], rejected_by_code, ethos_rejections
 
 
 async def _rate_confidence_with_code(
@@ -422,11 +455,19 @@ async def _compile_evidence(
 ) -> list[Insight]:
     evidence = result.evidence
     async with _build_llm(config, api_key) as llm:
-        if config.code_base is not None:
-            output.activity = "Checking candidate issues against the codebase"
-            evidence = await _validate_evidence_with_code(evidence, snapshot, config.code_base, llm)
-            result.rejected_by_code = sum(len(item.problems) for item in result.evidence) - sum(
-                len(item.problems) for item in evidence
+        ethos_config = config.compass_signals.ethos_divergence
+        ethos_path = ethos_config.ethos_path if ethos_config is not None else None
+        ethos = ethos_path.read_text(encoding="utf-8") if ethos_path is not None else None
+        if config.code_base is not None or ethos is not None:
+            output.activity = (
+                "Checking candidate issues against the codebase and ETHOS"
+                if config.code_base is not None and ethos is not None
+                else "Checking candidate issues against ETHOS"
+                if ethos is not None
+                else "Checking candidate issues against the codebase"
+            )
+            evidence, result.rejected_by_code, result.ethos_rejections = await _validate_evidence(
+                evidence, snapshot, config.code_base, llm, ethos
             )
         if not any(item.problems for item in evidence):
             return result.existing_insights
@@ -513,6 +554,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "trace_count": result.trace_count,
                     "insights": result.insights,
                     "rejected_by_code": result.rejected_by_code,
+                    "ethos_rejections": result.ethos_rejections,
                 },
             )
         return EXIT_OK

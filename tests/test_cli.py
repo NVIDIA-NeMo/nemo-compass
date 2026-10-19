@@ -249,8 +249,8 @@ def test_code_validation_filters_problems_and_preserves_signal_result(
 
     monkeypatch.setattr(cli, "ProblemValidation", FakeValidator)
 
-    result = asyncio.run(
-        cli._validate_evidence_with_code(evidence, snapshot, tmp_path, FakeLLMClient())
+    result, rejected, ethos_rejections = asyncio.run(
+        cli._validate_evidence(evidence, snapshot, tmp_path, FakeLLMClient())
     )
 
     assert result[0].problems == (supported, unknown)
@@ -320,7 +320,7 @@ def test_final_compilation_severity_does_not_require_code_base(
         cli, "_configured_trace_loader", lambda config: SimpleNamespace(load=lambda: snapshot)
     )
     monkeypatch.setattr(cli, "_run_compass_signals", AsyncMock(return_value=evidence))
-    monkeypatch.setattr(cli, "_validate_evidence_with_code", AsyncMock(return_value=evidence))
+    monkeypatch.setattr(cli, "_validate_evidence", AsyncMock(return_value=(evidence, 0, [])))
     monkeypatch.setattr(cli, "_build_llm", lambda *args: FakeLLMClient())
     monkeypatch.setattr(cli, "InsightCompilation", lambda llm: compilation)
     monkeypatch.setattr(cli, "_rate_confidence_with_code", review)
@@ -402,3 +402,129 @@ def test_no_candidates_skips_synthesis_and_file_creation(
     captured = capsys.readouterr()
     assert captured.out == "[]\n"
     assert "Saved:" not in captured.err
+
+
+@pytest.mark.parametrize(
+    "code_enabled,ethos_enabled", [(True, True), (True, False), (False, True), (False, False)]
+)
+def test_candidate_validators_run_independently_and_concurrently(
+    tmp_path, monkeypatch, code_enabled, ethos_enabled
+):
+    from compass.insights_generation.ethos_validation import EthosDecision
+
+    trace = Trace(id="t", root_spans=[], aggregate=TraceAggregate())
+    problems = tuple(
+        Problem(description=name, supporting_trace_ids=("t",))
+        for name in ("code", "ethos", "both", "unknown")
+    )
+    evidence = [CompassSignalResult(signal_name="test", problems=problems, artifacts={"keep": 1})]
+    code_started = asyncio.Event()
+    ethos_started = asyncio.Event()
+    calls = []
+
+    class CodeValidator:
+        def __init__(self, *args):
+            pass
+
+        async def is_supported(self, problem, traces):
+            code_started.set()
+            if ethos_enabled:
+                await ethos_started.wait()
+            calls.append(("code", problem.description))
+            return False if problem.description in ("code", "both") else None
+
+    class EthosValidator:
+        def __init__(self, ethos, llm):
+            assert ethos == "Explicit permission."
+
+        async def validate(self, problem, traces):
+            ethos_started.set()
+            if code_enabled:
+                await code_started.wait()
+            calls.append(("ethos", problem.description))
+            return EthosDecision(
+                contradicted=problem.description in ("ethos", "both"),
+                explanation="Explicitly allowed within scope.",
+                passage="Explicit permission.",
+            )
+
+    monkeypatch.setattr(cli, "ProblemValidation", CodeValidator)
+    monkeypatch.setattr(cli, "EthosValidation", EthosValidator)
+
+    async def run():
+        return await asyncio.wait_for(
+            cli._validate_evidence(
+                evidence,
+                TraceSnapshot([trace]),
+                tmp_path if code_enabled else None,
+                FakeLLMClient(),
+                "Explicit permission." if ethos_enabled else None,
+            ),
+            timeout=2,
+        )
+
+    filtered, code_count, rejections = asyncio.run(run())
+    expected = [
+        p
+        for p in problems
+        if not (code_enabled and p.description in ("code", "both"))
+        and not (ethos_enabled and p.description in ("ethos", "both"))
+    ]
+    assert list(filtered[0].problems) == expected
+    assert filtered[0].artifacts == {"keep": 1}
+    assert evidence[0].problems == problems
+    assert code_count == (2 if code_enabled else 0)
+    assert len(rejections) == (2 if ethos_enabled else 0)
+    assert len(calls) == 4 * (int(code_enabled) + int(ethos_enabled))
+    assert all(r.decision.passage == "Explicit permission." for r in rejections)
+
+
+def test_ethos_validation_can_skip_compilation_and_preserve_existing(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+
+    from rich.console import Console
+
+    from compass.insights_generation.ethos_validation import EthosDecision
+
+    ethos_path = tmp_path / "ETHOS.md"
+    ethos_path.write_text("Require approval.")
+    config = RunConfig(
+        trace={"filesystem": {"path": "unused.jsonl"}},
+        compass_signals={"ethos_divergence": {"ethos_path": ethos_path}},
+    )
+    problem = Problem(description="Approval is unnecessary", supporting_trace_ids=("t",))
+    evidence = [CompassSignalResult(signal_name="test", problems=(problem,))]
+    existing = Insight(
+        name="Existing", description="Keep", evidence=[{"trace_id": "t"}, {"trace_id": "t2"}]
+    )
+    result = cli.RunResult(
+        trace_count=1, evidence=evidence, insights=[existing], existing_insights=[existing]
+    )
+    compilation = AsyncMock()
+
+    class Validator:
+        def __init__(self, ethos, llm):
+            assert ethos == "Require approval."
+
+        async def validate(self, *args):
+            return EthosDecision(
+                contradicted=True, passage="Require approval.", explanation="Required behavior."
+            )
+
+    monkeypatch.setattr(cli, "EthosValidation", Validator)
+    monkeypatch.setattr(cli, "_build_llm", lambda *args: FakeLLMClient())
+    monkeypatch.setattr(cli, "InsightCompilation", compilation)
+    insights = asyncio.run(
+        cli._compile_evidence(
+            config,
+            "key",
+            TraceSnapshot([Trace(id="t", root_spans=[], aggregate=TraceAggregate())]),
+            result,
+            cli.RunOutput(Console(quiet=True)),
+            datetime.now(timezone.utc),
+        )
+    )
+    assert insights == [existing]
+    compilation.assert_not_called()
+    assert len(result.ethos_rejections) == 1
+    assert result.rejected_by_code == 0

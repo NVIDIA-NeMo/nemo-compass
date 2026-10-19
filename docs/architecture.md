@@ -27,6 +27,13 @@ cannot resolve. Compilation then merges the retained evidence into insights, att
 trace references, and assigns severity from observed consequences and recovery independently of
 occurrence count.
 
+When an ETHOS document is configured, an [ETHOS validator](../src/compass/insights_generation/ethos_validation.py)
+checks candidates from all signals against explicit intended behavior. It runs concurrently
+with code validation when both are enabled. A candidate is removed if either check
+establishes a contradiction; inconclusive checks retain it. ETHOS rejections preserve
+an exact document passage and an explanation. This checks whether a candidate is a
+problem, leaving priority and severity decisions to compilation.
+
 When `code_base` is configured, a [second code-aware
 review](../src/compass/insights_generation/confidence.py) runs after compilation. It evaluates
 each final insight’s behavior, root cause, scope, and implied remediation, assigning confidence

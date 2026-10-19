@@ -39,6 +39,18 @@ characters of supporting traces plus tool results. Time and token usage depend o
 trace size, and investigation length. This is in addition to candidate validation when `code_base`
 is supplied.
 
+## ETHOS-aware candidate validation
+
+When `compass_signals.ethos_divergence.ethos_path` is configured, Compass also checks
+candidates from every signal against that document before compilation. This check runs
+without `code_base`; when code review is enabled, both checks run concurrently.
+
+Only an explicit ETHOS provision that invalidates the candidate's actual claim can
+remove it. Permission to retry, for example, does not excuse an unbounded retry loop.
+Ambiguous cases and inconclusive checks are retained. Rejections include an exact
+ETHOS passage and an explanation in the terminal report and run telemetry. Each
+candidate adds an independent model investigation, with a limit of 25 iterations.
+
 ## One-run overrides
 
 CLI options override individual YAML values. YAML uses underscores; CLI options use hyphens:
