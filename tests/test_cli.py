@@ -402,3 +402,24 @@ def test_no_candidates_skips_synthesis_and_file_creation(
     captured = capsys.readouterr()
     assert captured.out == "[]\n"
     assert "Saved:" not in captured.err
+
+
+@pytest.mark.parametrize("missing_ethos", [False, True])
+def test_configuration_errors_are_reported_together(tmp_path, monkeypatch, capsys, missing_ethos):
+    monkeypatch.chdir(tmp_path)
+    loader = Mock()
+    monkeypatch.setattr(cli, "_configured_trace_loader", loader)
+    args = ["--max-tokens", "0"]
+    if missing_ethos:
+        args += ["--ethos-path", str(tmp_path / "missing.md")]
+    assert cli.main(args) == cli.EXIT_SETUP
+    loader.assert_not_called()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Invalid configuration:" in captured.err
+    assert "trace: Field required" in captured.err
+    assert "max_tokens: Input should be greater than or equal to 1" in captured.err
+    if missing_ethos:
+        assert "ethos_path: ETHOS.md not found or not a regular file" in captured.err
+        assert "--ethos-path" in captured.err
+    assert "Traceback" not in captured.err

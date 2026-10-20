@@ -469,21 +469,11 @@ def get_config(argv: Sequence[str] | None = None) -> RunConfig:
     try:
         return RunConfig(_cli_parse_args=list(sys.argv[1:] if argv is None else argv))
     except ValidationError as error:
-        errors = error.errors()
-        if len(errors) == 1 and errors[0]["type"] in ("ethos_path_required", "ethos_empty"):
-            raise SetupError(errors[0]["msg"]) from error
-        if (
-            len(errors) == 1
-            and errors[0]["loc"] == ("ethos_path",)
-            and errors[0]["type"] == "path_not_file"
-        ):
-            raise SetupError(
-                f"ETHOS.md not found or not a regular file: {errors[0]['input']}\n"
-                "Set ethos_path in YAML or --ethos-path to an existing file. "
-                "Relative paths resolve from the working directory. "
-                "To run without ethos divergence, remove ethos_path and set compass_signals.ethos_divergence to false."
-            ) from error
-        raise
+        messages = ["Invalid configuration:"]
+        for problem in error.errors():
+            field = ".".join(str(part) for part in problem["loc"]) or "configuration"
+            messages.append(f"  {field}: {problem['msg']}")
+        raise SetupError("\n".join(messages)) from error
 
 
 # Pydantic hooks accept parser/group objects and argparse's heterogeneous keyword arguments.

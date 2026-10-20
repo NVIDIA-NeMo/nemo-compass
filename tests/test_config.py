@@ -210,7 +210,7 @@ def test_explicit_ethos_path_overrides_discovery(tmp_path, monkeypatch):
     explicit.write_text("Custom requirements")
     config = RunConfig(trace={"filesystem": {"path": "traces.jsonl"}}, ethos_path=explicit)
     assert config.ethos_path == explicit
-    with pytest.raises(ValueError, match="Path does not point to a file"):
+    with pytest.raises(ValueError, match="ETHOS.md not found or not a regular file"):
         RunConfig(trace={"filesystem": {"path": "traces.jsonl"}}, ethos_path="missing.md")
 
 

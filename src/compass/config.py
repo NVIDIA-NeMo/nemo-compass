@@ -7,7 +7,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, FilePath, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    FilePath,
+    ValidationError,
+    ValidatorFunctionWrapHandler,
+    field_validator,
+    model_validator,
+)
 from pydantic_core import PydanticCustomError
 from pydantic_settings import (
     BaseSettings,
@@ -338,6 +347,24 @@ class RunConfig(BaseSettings):
                 if path.is_file():
                     return path
         return value
+
+    @field_validator("ethos_path", mode="wrap")
+    @classmethod
+    def validate_ethos_file(
+        cls, value: object, handler: ValidatorFunctionWrapHandler
+    ) -> Path | None:
+        try:
+            return handler(value)
+        except ValidationError as error:
+            if any(problem["type"] == "path_not_file" for problem in error.errors()):
+                raise PydanticCustomError(
+                    "ethos_not_found",
+                    "ETHOS.md not found or not a regular file: {path}. "
+                    "Set ethos_path in YAML or --ethos-path to an existing file. "
+                    "Relative paths resolve from the working directory.",
+                    {"path": str(value)},
+                ) from error
+            raise
 
     @field_validator("ethos_path")
     @classmethod
