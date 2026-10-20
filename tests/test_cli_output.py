@@ -68,7 +68,7 @@ def test_default_report_prioritizes_findings_and_keeps_coverage_visible(width):
         in normalized
     )
     assert (
-        "Skipped: Ethos divergence — ethos_path not specified Grader failures — no results Sentiment — no embedding backend"
+        "Skipped: Ethos divergence — no ETHOS document found Grader failures — no results Sentiment — no embedding backend"
         in normalized
     )
     assert (

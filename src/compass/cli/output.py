@@ -28,7 +28,7 @@ _SIGNAL_LABELS = {
     "user-sentiment": "Sentiment",
 }
 _SKIP_LABELS = {
-    "No ethos document": "ethos_path not specified",
+    "No ethos document": "no ETHOS document found",
     "No evaluator results": "no results",
     "No embedding backend configured": "no embedding backend",
 }
@@ -172,7 +172,7 @@ class RunOutput:
             self.console.print(
                 Text(
                     "\nTo enable ethos divergence, set ethos_path: ETHOS.md in YAML "
-                    "or pass --ethos-path ETHOS.md. Paths are relative to the working directory."
+                    "or pass --ethos-path ETHOS.md, or place ETHOS.md or ethos.md in the working directory."
                 )
             )
         if skipped:

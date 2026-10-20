@@ -302,7 +302,8 @@ class RunConfig(BaseSettings):
     )
     trace: TraceConfig = Field(description="Trace source and loading settings")
     ethos_path: FilePath | None = Field(
-        default=None, description="Agent purpose and behavioral requirements document"
+        default=None,
+        description="Agent purpose and behavioral requirements document; defaults to ETHOS.md or ethos.md in the working directory",
     )
     output_path: Path = Field(default=Path("insights.yml"), description="Output path")
     compass_signals: CompassSignalsConfig = Field(
@@ -328,6 +329,16 @@ class RunConfig(BaseSettings):
         description="Existing insights.json to reconcile with newly generated Insights",
     )
 
+    @field_validator("ethos_path", mode="before")
+    @classmethod
+    def discover_ethos_document(cls, value: object) -> object:
+        if value is None:
+            for name in ("ETHOS.md", "ethos.md"):
+                path = Path.cwd() / name
+                if path.is_file():
+                    return path
+        return value
+
     @model_validator(mode="after")
     def explicit_ethos_requires_document(self) -> RunConfig:
         if (
@@ -337,8 +348,9 @@ class RunConfig(BaseSettings):
         ):
             raise PydanticCustomError(
                 "ethos_path_required",
-                "Ethos divergence was explicitly enabled but ethos_path is not specified. "
-                "Set ethos_path in YAML or pass --ethos-path to an existing ETHOS file.",
+                "Ethos divergence was explicitly enabled but no ETHOS document was found. "
+                "Place ETHOS.md or ethos.md in the working directory, set ethos_path in YAML, "
+                "or pass --ethos-path to an existing ETHOS file.",
             )
         return self
 

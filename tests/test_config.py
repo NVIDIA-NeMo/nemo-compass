@@ -186,3 +186,40 @@ def test_langfuse_export_requires_explicit_version_and_matching_paths(source, ma
 
     with pytest.raises(ValueError, match=match):
         TraceConfig.model_validate({"langfuse_trace_export_file": source})
+
+
+@pytest.mark.parametrize("names", [("ETHOS.md",), ("ethos.md",), ("ETHOS.md", "ethos.md")])
+@pytest.mark.parametrize("selection", [{}, {"ethos_divergence": True}, {"ethos_divergence": False}])
+def test_discovers_ethos_in_working_directory(tmp_path, monkeypatch, names, selection):
+    monkeypatch.chdir(tmp_path)
+    for name in names:
+        (tmp_path / name).write_text("Agent requirements")
+    config = RunConfig(trace={"filesystem": {"path": "traces.jsonl"}}, compass_signals=selection)
+    # Case-insensitive filesystems may resolve ETHOS.md even when only ethos.md was written.
+    expected = tmp_path / ("ETHOS.md" if (tmp_path / "ETHOS.md").is_file() else "ethos.md")
+    assert config.ethos_path == expected
+    assert (config.compass_signals.ethos_divergence is None) is (
+        selection.get("ethos_divergence") is False
+    )
+
+
+def test_explicit_ethos_path_overrides_discovery(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ETHOS.md").write_text("Default requirements")
+    explicit = tmp_path / "custom.md"
+    explicit.write_text("Custom requirements")
+    config = RunConfig(trace={"filesystem": {"path": "traces.jsonl"}}, ethos_path=explicit)
+    assert config.ethos_path == explicit
+    with pytest.raises(ValueError, match="Path does not point to a file"):
+        RunConfig(trace={"filesystem": {"path": "traces.jsonl"}}, ethos_path="missing.md")
+
+
+def test_ethos_discovery_does_not_search_config_directory(tmp_path, monkeypatch):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "ETHOS.md").write_text("Agent requirements")
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("trace:\n  filesystem:\n    path: traces.jsonl\n")
+    monkeypatch.chdir(tmp_path)
+    config = RunConfig(_cli_parse_args=["--config", str(config_file)])
+    assert config.ethos_path is None
