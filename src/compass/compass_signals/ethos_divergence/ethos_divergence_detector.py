@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from nooa.unifiedllm import UnifiedLLM
-from pydantic import BaseModel, ConfigDict, FilePath
+from pydantic import BaseModel, ConfigDict
 
 from compass.compass_signals.compass_signals import CompassSignalResult, Problem
 from compass.compass_signals.issue_detector import IssueDetector
@@ -48,23 +50,24 @@ async def detect_ethos_divergence(
 class EthosDivergenceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    ethos_path: FilePath | None = None
-
 
 class EthosDivergenceCompassSignal:
     name = "ethos-divergence"
 
-    def __init__(self, config: EthosDivergenceConfig, llm: UnifiedLLM) -> None:
+    def __init__(
+        self, config: EthosDivergenceConfig, llm: UnifiedLLM, *, ethos_path: Path | None = None
+    ) -> None:
         self.config = config
+        self.ethos_path = ethos_path
         self.llm = llm
         self.ethos = ""
 
     def check_prerequisites(self, snapshot: TraceSnapshot) -> str | None:
-        if self.config.ethos_path is None:
-            return "No ethos document"
-        self.ethos = self.config.ethos_path.read_text(encoding="utf-8")
+        if self.ethos_path is None:
+            return "No ETHOS.md"
+        self.ethos = self.ethos_path.read_text(encoding="utf-8")
         if not self.ethos.strip():
-            raise ValueError("ethos-divergence requires a non-empty ethos document")
+            raise ValueError("ethos-divergence requires a non-empty ETHOS.md")
         return None
 
     async def analyze(self, snapshot: TraceSnapshot) -> CompassSignalResult:

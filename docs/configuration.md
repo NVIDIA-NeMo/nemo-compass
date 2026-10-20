@@ -15,6 +15,7 @@ in the environment or `.env`.
 | --- | --- |
 | `trace` | Exactly one source; see the [source guides](../README.md#start-here). |
 | `trace.max_traces` | Limit complete traces from a provider or native export. Unsupported for canonical JSONL, ATIF, and Gym rollouts. |
+| `ethos_path` | Optional path to [ETHOS.md](https://github.com/NVIDIA/skills/tree/main/skills/ethos-orchestrate), which defines the agent’s purpose and behavioral requirements. Defaults to `ETHOS.md` in the current working directory. Used by the ethos divergence signal and candidate validation. |
 | `output_path` | YAML output file; defaults to `insights.yml`. Use `-` for stdout. |
 | `model`, `api_base`, `max_tokens` | [Inference settings](model-access.md#choose-a-model). |
 | `compass_signals` | [Compass Signals and their prerequisites](compass-signals.md). All five are enabled by default. |
@@ -41,9 +42,11 @@ is supplied.
 
 ## ethos-aware candidate validation
 
-When `compass_signals.ethos_divergence.ethos_path` is configured, Compass also checks
+When `ethos_path` is configured or an ethos document is discovered, Compass also checks
 candidates from every signal against that document before compilation. This check runs
 without `code_base`; when code review is enabled, both checks run concurrently.
+
+This validation also runs when the ethos divergence signal is disabled.
 
 Only an explicit ethos provision that invalidates the candidate's actual claim can
 remove it. Permission to retry, for example, does not excuse an unbounded retry loop.

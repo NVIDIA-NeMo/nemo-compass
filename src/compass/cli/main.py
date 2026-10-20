@@ -28,6 +28,7 @@ from typing import Any
 
 import yaml
 from nooa.unifiedllm import CompletionClient, UnifiedLLM
+from pydantic import ValidationError
 from pydantic_settings import CliSettingsSource
 from rich.console import Console
 
@@ -234,6 +235,8 @@ async def _run_compass_signals(
     snapshot: TraceSnapshot,
     llm_factory: Callable[[], UnifiedLLM] | None = None,
     progress: Callable[[Sequence[str]], None] | None = None,
+    *,
+    ethos_path: Path | None = None,
 ) -> list[CompassSignalResult]:
     """Run the configured Compass Signals concurrently in registration order."""
 
@@ -241,6 +244,7 @@ async def _run_compass_signals(
         anomaly_and_patterns=config.anomaly_and_patterns,
         tool_issues=config.tool_issues,
         ethos_divergence=config.ethos_divergence,
+        ethos_path=ethos_path,
         user_sentiment=config.user_sentiment,
         grader_failure_patterns=config.grader_failure_patterns,
         llm_factory=llm_factory,
@@ -422,6 +426,7 @@ async def _generate_insights(config: RunConfig, output: RunOutput) -> RunResult:
             snapshot,
             lambda: _build_llm(config, api_key),
             progress,
+            ethos_path=config.ethos_path,
         )
         existing = load_insights(config.existing_insights) if config.existing_insights else []
         result = RunResult(
@@ -455,8 +460,7 @@ async def _compile_evidence(
 ) -> list[Insight]:
     evidence = result.evidence
     async with _build_llm(config, api_key) as llm:
-        ethos_config = config.compass_signals.ethos_divergence
-        ethos_path = ethos_config.ethos_path if ethos_config is not None else None
+        ethos_path = config.ethos_path
         ethos = ethos_path.read_text(encoding="utf-8") if ethos_path is not None else None
         if config.code_base is not None or ethos is not None:
             output.activity = (
@@ -502,7 +506,14 @@ def _write_insights(output_path: Path, rendered: str) -> None:
 def get_config(argv: Sequence[str] | None = None) -> RunConfig:
     """Load run settings from optional YAML and generated CLI arguments."""
 
-    return RunConfig(_cli_parse_args=list(sys.argv[1:] if argv is None else argv))
+    try:
+        return RunConfig(_cli_parse_args=list(sys.argv[1:] if argv is None else argv))
+    except ValidationError as error:
+        messages = ["Invalid configuration:"]
+        for problem in error.errors():
+            field = ".".join(str(part) for part in problem["loc"]) or "configuration"
+            messages.append(f"  {field}: {problem['msg']}")
+        raise SetupError("\n".join(messages)) from error
 
 
 # Pydantic hooks accept parser/group objects and argparse's heterogeneous keyword arguments.
@@ -541,6 +552,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         config = get_config(argv)
         _check_environment(config)
+        if config.ethos_path is None and config.compass_signals.ethos_divergence is not None:
+            output.console.print(
+                "Warning: skipping ethos divergence because no ethos_path was specified and no "
+                "ETHOS.md or ethos.md was found in the working directory. "
+                "Set ethos_path in YAML or pass --ethos-path to enable it.",
+                soft_wrap=True,
+            )
         with telemetry_session(config) as record:
             result = asyncio.run(_generate_insights(config, output))
             rendered = _render_insights(result.insights)

@@ -479,7 +479,10 @@ def test_candidate_validators_run_independently_and_concurrently(
     assert all(r.decision.passage == "Explicit permission." for r in rejections)
 
 
-def test_ethos_validation_can_skip_compilation_and_preserve_existing(tmp_path, monkeypatch):
+@pytest.mark.parametrize("signal_enabled", [True, False])
+def test_ethos_validation_can_skip_compilation_and_preserve_existing(
+    tmp_path, monkeypatch, signal_enabled
+):
     from datetime import datetime, timezone
 
     from rich.console import Console
@@ -490,7 +493,8 @@ def test_ethos_validation_can_skip_compilation_and_preserve_existing(tmp_path, m
     ethos_path.write_text("Require approval.")
     config = RunConfig(
         trace={"filesystem": {"path": "unused.jsonl"}},
-        compass_signals={"ethos_divergence": {"ethos_path": ethos_path}},
+        ethos_path=ethos_path,
+        compass_signals={"ethos_divergence": {} if signal_enabled else None},
     )
     problem = Problem(description="Approval is unnecessary", supporting_trace_ids=("t",))
     evidence = [CompassSignalResult(signal_name="test", problems=(problem,))]
@@ -528,3 +532,24 @@ def test_ethos_validation_can_skip_compilation_and_preserve_existing(tmp_path, m
     compilation.assert_not_called()
     assert len(result.ethos_rejections) == 1
     assert result.rejected_by_code == 0
+
+
+@pytest.mark.parametrize("missing_ethos", [False, True])
+def test_configuration_errors_are_reported_together(tmp_path, monkeypatch, capsys, missing_ethos):
+    monkeypatch.chdir(tmp_path)
+    loader = Mock()
+    monkeypatch.setattr(cli, "_configured_trace_loader", loader)
+    args = ["--max-tokens", "0"]
+    if missing_ethos:
+        args += ["--ethos-path", str(tmp_path / "missing.md")]
+    assert cli.main(args) == cli.EXIT_SETUP
+    loader.assert_not_called()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Invalid configuration:" in captured.err
+    assert "trace: Field required" in captured.err
+    assert "max_tokens: Input should be greater than or equal to 1" in captured.err
+    if missing_ethos:
+        assert "ethos_path: ETHOS.md not found or not a regular file" in captured.err
+        assert "--ethos-path" in captured.err
+    assert "Traceback" not in captured.err

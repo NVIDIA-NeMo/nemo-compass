@@ -24,12 +24,12 @@ from compass.insights_generation.ethos_validation import EthosRejection
 _SIGNAL_LABELS = {
     "anomaly-and-patterns": "Anomalies and patterns",
     "tool-issues": "Tool issues",
-    "ethos-divergence": "Ethos",
+    "ethos-divergence": "Ethos divergence",
     "grader-failure-patterns": "Grader failures",
     "user-sentiment": "Sentiment",
 }
 _SKIP_LABELS = {
-    "No ethos document": "no document",
+    "No ETHOS.md": "no ETHOS.md found",
     "No evaluator results": "no results",
     "No embedding backend configured": "no embedding backend",
 }
@@ -178,6 +178,13 @@ class RunOutput:
         for index, reason in enumerate(skipped):
             table.add_row(Text("Skipped:" if index == 0 else ""), Text(reason))
         self.console.print(table)
+        if any(item.skip_reason == "No ETHOS.md" for item in evidence):
+            self.console.print(
+                Text(
+                    "\nTo enable ethos divergence, set ethos_path: ETHOS.md in YAML "
+                    "or pass --ethos-path ETHOS.md, or place ETHOS.md or ethos.md in the working directory."
+                )
+            )
         if skipped:
             self.console.print(
                 "\nTo run skipped analyses: "

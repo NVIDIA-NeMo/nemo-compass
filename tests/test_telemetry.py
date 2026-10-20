@@ -151,7 +151,7 @@ def _run_cli(source, enabled):
             """Return 7."""
             ...
 
-    async def analyze(*args):
+    async def analyze(*args, **kwargs):
         fake = FakeLLMClient(
             [
                 LLMResponse(

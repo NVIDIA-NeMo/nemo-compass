@@ -13,21 +13,16 @@ All five Compass Signals are enabled by default. Each runs when its prerequisite
 
 ## Ethos divergence
 
-`ethos.md` is the **intent layer** for a production agent: a Markdown snapshot
-of what the agent is for, what it must not do, and what success looks like.
-This Compass Signal surfaces instances where recorded agent behavior diverges from the intent
-described in its `ethos.md`.
+[ETHOS.md](https://github.com/NVIDIA/skills/tree/main/skills/ethos-orchestrate) describes
+what an agent is for, what it must not do, and what success looks like. This Compass Signal
+finds recorded behavior that diverges from those requirements.
 
-See the [ethos.md documentation](https://github.com/NVIDIA/skills/tree/main/skills/ethos-orchestrate)
-for its definition and guidance on creating one. Then configure its path:
+Compass looks for `ETHOS.md` in the current working directory.
+To use a different file, set `ethos_path`:
 
 ```yaml
-compass_signals:
-  ethos_divergence:
-    ethos_path: ethos.md
+ethos_path: path/to/ETHOS.md
 ```
-
-The file must exist and contain text. Its path resolves from your working directory.
 
 ## User sentiment
 
