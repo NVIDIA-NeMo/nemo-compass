@@ -4,6 +4,8 @@
 """Compatibility exports; implementation lives in trace_ingest.loaders.intake."""
 
 from trace_ingest.loaders.intake import (
+    IntakeFileTraceConfig,
+    IntakeFileTraceLoader,
     IntakeLoadError,
     IntakeStatus,
     IntakeTraceDescription,
@@ -13,6 +15,8 @@ from trace_ingest.loaders.intake import (
 )
 
 __all__ = [
+    "IntakeFileTraceConfig",
+    "IntakeFileTraceLoader",
     "IntakeLoadError",
     "IntakeStatus",
     "IntakeTraceDescription",
