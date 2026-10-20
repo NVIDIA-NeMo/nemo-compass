@@ -30,7 +30,7 @@ DIST_DIR = REPO_ROOT / "dist"
 ENV_PYPI_URL = "ARTIFACTORY_PYPI_URL"
 ENV_TOKEN = "ARTIFACTORY_TOKEN"
 
-_RELEASE_PACKAGE = "compass"
+_RELEASE_PACKAGE = "nemo-compass"
 _ALLOWED_HOSTS = {"artifactory.nvidia.com", "urm.nvidia.com"}
 _FORBIDDEN_ENV_FILES = {".env", ".env.local", ".env.example"}
 
@@ -244,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
         wheel = _build_wheel()
         if re.search(r"rc\d+(?:[.+]|$)", wheel.version) is None:
             raise PublishConfigurationError(
-                f"refusing to publish non-RC compass version {wheel.version!r}; set an rcN version"
+                f"refusing to publish non-RC nemo-compass version {wheel.version!r}; set an rcN version"
             )
     except PublishConfigurationError as exc:
         print(f"error: {exc}", file=sys.stderr)

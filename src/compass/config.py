@@ -7,7 +7,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    FilePath,
+    ValidationError,
+    ValidatorFunctionWrapHandler,
+    field_validator,
+    model_validator,
+)
+from pydantic_core import PydanticCustomError
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -300,6 +310,10 @@ class RunConfig(BaseSettings):
         description="Optional YAML configuration file",
     )
     trace: TraceConfig = Field(description="Trace source and loading settings")
+    ethos_path: FilePath | None = Field(
+        default=None,
+        description="Agent purpose and behavioral requirements document; defaults to ETHOS.md or ethos.md in the working directory",
+    )
     output_path: Path = Field(default=Path("insights.yml"), description="Output path")
     compass_signals: CompassSignalsConfig = Field(
         default_factory=CompassSignalsConfig, description="Compass Signal selection and settings"
@@ -323,6 +337,62 @@ class RunConfig(BaseSettings):
         default=None,
         description="Existing insights.json to reconcile with newly generated Insights",
     )
+
+    @field_validator("ethos_path", mode="before")
+    @classmethod
+    def discover_ethos_document(cls, value: object) -> object:
+        if value is None:
+            for name in ("ETHOS.md", "ethos.md"):
+                path = Path.cwd() / name
+                if path.is_file():
+                    return path
+        return value
+
+    @field_validator("ethos_path", mode="wrap")
+    @classmethod
+    def validate_ethos_file(
+        cls, value: object, handler: ValidatorFunctionWrapHandler
+    ) -> Path | None:
+        try:
+            return handler(value)
+        except ValidationError as error:
+            if any(problem["type"] == "path_not_file" for problem in error.errors()):
+                raise PydanticCustomError(
+                    "ethos_not_found",
+                    "ETHOS.md not found or not a regular file: {path}. "
+                    "Set ethos_path in YAML or --ethos-path to an existing file. "
+                    "Relative paths resolve from the working directory.",
+                    {"path": str(value)},
+                ) from error
+            raise
+
+    @field_validator("ethos_path")
+    @classmethod
+    def validate_ethos_content(cls, path: Path | None) -> Path | None:
+        if path is not None and not path.read_text(encoding="utf-8").strip():
+            raise PydanticCustomError(
+                "ethos_empty",
+                "ETHOS.md is empty or contains only whitespace: {path}. "
+                "Add your agent's purpose and behavioral requirements, or select a non-empty file "
+                "with ethos_path in YAML or --ethos-path.",
+                {"path": str(path)},
+            )
+        return path
+
+    @model_validator(mode="after")
+    def explicit_ethos_requires_document(self) -> RunConfig:
+        if (
+            "ethos_divergence" in self.compass_signals.model_fields_set
+            and self.compass_signals.ethos_divergence is not None
+            and self.ethos_path is None
+        ):
+            raise PydanticCustomError(
+                "ethos_path_required",
+                "Ethos divergence was explicitly enabled but no ETHOS.md was found. "
+                "Place ETHOS.md or ethos.md in the working directory, set ethos_path in YAML, "
+                "or pass --ethos-path to an existing ETHOS.md.",
+            )
+        return self
 
     @classmethod
     def settings_customise_sources(

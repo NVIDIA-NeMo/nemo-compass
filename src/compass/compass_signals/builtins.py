@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 
 from nooa.unifiedllm import UnifiedLLM
 
@@ -52,6 +53,7 @@ def registered_builtin_signals(
     ethos_divergence: EthosDivergenceConfig | None = None,
     grader_failure_patterns: GraderFailurePatternsConfig | None = None,
     user_sentiment: UserSentimentConfig | None = None,
+    ethos_path: Path | None = None,
     llm_factory: Callable[[], UnifiedLLM] | None = None,
 ) -> CompassSignalRegistry:
     """Construct and register the built-ins with supplied typed configuration."""
@@ -64,7 +66,11 @@ def registered_builtin_signals(
     if ethos_divergence is not None:
         if llm_factory is None:
             raise ValueError("ethos-divergence requires an LLM client factory")
-        registry.register(EthosDivergenceCompassSignal(config=ethos_divergence, llm=llm_factory()))
+        registry.register(
+            EthosDivergenceCompassSignal(
+                config=ethos_divergence, llm=llm_factory(), ethos_path=ethos_path
+            )
+        )
     if grader_failure_patterns is not None:
         if llm_factory is None:
             raise ValueError("grader-failure-patterns requires an LLM client factory")

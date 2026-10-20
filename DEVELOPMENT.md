@@ -4,7 +4,7 @@
 # Development
 
 Models and loaders live in [trace_ingest](src/trace_ingest/), independent of
-`compass`. Both Python packages ship in the `compass` distribution.
+`compass`. Both Python packages ship in the `nemo-compass` distribution.
 `uv sync` installs the project locally.
 
 ## Validation
@@ -62,7 +62,7 @@ imports and the CLI.
 
 ## Publish an internal release candidate
 
-The `compass` version must be a PEP 440 release candidate such as `0.1.0rc1`.
+The `nemo-compass` version must be a PEP 440 release candidate such as `0.1.0rc1`.
 Put the internal Artifactory upload endpoint
 and your access or identity token in the gitignored `.env`:
 

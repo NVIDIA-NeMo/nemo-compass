@@ -15,7 +15,7 @@ With [uv and Git installed](../../README.md#start-here), install the CLI with La
 
 ```bash
 uv tool install \
-  'compass[langsmith] @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+  'nemo-compass[langsmith] @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
 ```
 
 [Configure your inference model and key](../model-access.md#choose-a-model).
