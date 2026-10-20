@@ -91,11 +91,3 @@ verifies the downloaded bytes, and prints
 the direct URL to register with nSpect. Matching existing artifacts are reused; different bytes
 require a version bump. It rejects environment files and non-NVIDIA upload endpoints and disables
 trusted/public publishing.
-
-## Breaking changes
-
-Include a migration guide in `skills/compass-migrate/references/` with each breaking
-configuration, CLI, or Python API change, and link it from the
-[Compass migration skill](skills/compass-migrate/SKILL.md). Describe how to identify
-applicable revisions, before/after usage, downstream impact, and verification.
-Keep earlier guides available for consumers upgrading across multiple changes.

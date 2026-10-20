@@ -90,11 +90,3 @@ output_path: updated-insights.yml
 
 NeMo Compass reconciles old and new findings into a complete collection.
 See [output behavior](results.md#saved-output) before using the files in a pipeline.
-
-## Upgrading existing integrations
-
-The ETHOS document path is now top-level `ethos_path` (`--ethos-path` on the CLI).
-The former `compass_signals.ethos_divergence.ethos_path` setting is rejected.
-See the [migration guide](../skills/compass-migrate/references/top-level-ethos-path.md)
-for YAML and Python changes. Coding agents can use the committed
-[Compass migration skill](../skills/compass-migrate/SKILL.md) when upgrading a consumer.
