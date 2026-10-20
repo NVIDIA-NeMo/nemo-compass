@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from itertools import permutations
+from pathlib import Path
 
 import httpx
 import pytest
@@ -17,6 +18,8 @@ from compass.cli.main import (
 )
 from compass.config import TraceConfig
 from compass.trace_loaders.intake import (
+    IntakeFileTraceConfig,
+    IntakeFileTraceLoader,
     IntakeLoadError,
     IntakeStatus,
     IntakeTraceLoader,
@@ -789,3 +792,161 @@ def test_experiment_id_cli_overrides_yaml(tmp_path):
     assert isinstance(loader, IntakeTraceLoader)
     assert loader.config.query.experiment_id == "from-cli"
     assert "filter[experiment_id]" not in loader.config.query.params()
+
+
+def _cli_spans() -> list[dict]:
+    """The span pages `_handler` serves, as `--all-pages` would collect them."""
+    params = {"filter[trace_id]": TRACE_ID, "sort": "started_at", "mode": "detailed"}
+    return [
+        _handler(httpx.Request("GET", f"{BASE_URL}/spans", params={**params, "page": page})).json()
+        for page in (1, 2)
+    ]
+
+
+def _trace_shapes() -> dict[str, object]:
+    return {
+        "object": _trace_record(),
+        "page": {
+            "data": [_trace_record()],
+            "pagination": _pagination(page=1, total_pages=1, total_results=1, size=1),
+        },
+    }
+
+
+def _span_shapes() -> dict[str, object]:
+    pages = _cli_spans()
+    spans = [span for page in pages for span in page["data"]]
+    return {
+        "list": spans,
+        "page": {
+            "data": spans,
+            "pagination": _pagination(page=1, total_pages=1, total_results=2, size=2),
+        },
+        "pages": pages,
+    }
+
+
+def _file_loader(
+    tmp_path, trace_payload: object, spans_payload: object, **overrides: object
+) -> IntakeFileTraceLoader:
+    trace_path = tmp_path / "intake-trace.json"
+    spans_path = tmp_path / "intake-spans.json"
+    trace_path.write_text(json.dumps(trace_payload, indent=2))
+    spans_path.write_text(json.dumps(spans_payload, indent=2))
+    values: dict[str, object] = {
+        "trace_path": trace_path,
+        "spans_path": spans_path,
+        "workspace": WORKSPACE,
+    }
+    values.update(overrides)
+    return IntakeFileTraceLoader(config=IntakeFileTraceConfig.model_validate(values))
+
+
+def _without_base_url(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _without_base_url(item)
+            for key, item in value.items()
+            if key not in {"base_url", "source_url"}
+        }
+    if isinstance(value, list):
+        return [_without_base_url(item) for item in value]
+    return value
+
+
+def _walk(spans):
+    for span in spans:
+        yield span
+        yield from _walk(span.children)
+
+
+@pytest.mark.parametrize("trace_shape", ["object", "page"])
+@pytest.mark.parametrize("spans_shape", ["list", "page", "pages"])
+def test_intake_file_loader_matches_online_loader(tmp_path, trace_shape, spans_shape):
+    online = IntakeTraceLoader(config=_config(page_size=1), transport=_mock_transport(_handler))
+    expected = online.load().get_trace_by_id(TRACE_ID)
+
+    with_url = _file_loader(
+        tmp_path,
+        _trace_shapes()[trace_shape],
+        _span_shapes()[spans_shape],
+        base_url=f"{BASE_URL}/",
+    )
+    assert with_url.load().get_trace_by_id(TRACE_ID).model_dump() == expected.model_dump()
+
+    loader = _file_loader(tmp_path, _trace_shapes()[trace_shape], _span_shapes()[spans_shape])
+    snapshot = loader.load()
+    assert loader.load() is snapshot
+    trace = snapshot.get_trace_by_id(TRACE_ID)
+    assert _without_base_url(trace.model_dump()) == _without_base_url(expected.model_dump())
+
+    pointer = trace.attributes["source_pointer"]
+    assert isinstance(pointer, dict)
+    assert "base_url" not in pointer
+    assert trace.source_url is None
+    for span in _walk(trace.root_spans):
+        assert span.source_url is None
+        span_pointer = span.attributes["source_pointer"]
+        assert isinstance(span_pointer, dict)
+        assert "base_url" not in span_pointer
+        if span.kind is SpanKind.TOOL:
+            assert span.tool_call is not None
+            assert len(span.tool_call.results) == span.tool_call.result_count == 1
+    assert tool_catalog(trace) == {
+        "search": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        }
+    }
+
+    description = loader.describe()
+    assert description["source"] == f"intake-file:{(tmp_path / 'intake-trace.json').resolve()}"
+    assert description["trace_count"] == 1
+    assert description["span_count"] == 2
+    assert description["call_count"] == 1
+    assert description["distinct_logical_cases"] == 1
+    assert description["workspace"] == WORKSPACE
+    assert description["query"]["trace_id"] == TRACE_ID
+
+
+def test_intake_file_loader_rejects_span_from_another_trace(tmp_path):
+    spans = _span_shapes()["list"]
+    assert isinstance(spans, list)
+    spans[0]["trace_id"] = "trace-2"
+
+    with pytest.raises(
+        IntakeLoadError, match="^.*span trace_id does not match the selected trace$"
+    ):
+        _file_loader(tmp_path, _trace_record(), spans).load()
+
+
+@pytest.mark.parametrize(
+    ("trace_payload", "spans_payload"),
+    [
+        ([_trace_record()], []),
+        ({"data": []}, []),
+        ({"data": [_trace_record(), _trace_record("trace-2")]}, []),
+        (_trace_record(), {"spans": []}),
+        (_trace_record(), "spans"),
+        (_trace_record(), [{"data": "spans"}]),
+        (_trace_record(), [["span"]]),
+    ],
+)
+def test_intake_file_loader_rejects_unsupported_shapes(tmp_path, trace_payload, spans_payload):
+    with pytest.raises(IntakeLoadError, match="unsupported nemo intake JSON shape"):
+        _file_loader(tmp_path, trace_payload, spans_payload).load()
+
+
+def test_intake_file_config_is_strict():
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        IntakeFileTraceConfig.model_validate(
+            {"trace_path": "t.json", "spans_path": "s.json", "workspace": WORKSPACE, "x": 1}
+        )
+    with pytest.raises(ValueError, match="absolute HTTP"):
+        IntakeFileTraceConfig(
+            trace_path=Path("t.json"),
+            spans_path=Path("s.json"),
+            workspace=WORKSPACE,
+            base_url="platform.example.test",
+        )

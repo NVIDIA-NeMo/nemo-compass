@@ -11,10 +11,11 @@ from __future__ import annotations
 import heapq
 import json
 import os
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Literal, TypeVar
 from urllib.parse import quote, urlsplit
 
@@ -227,27 +228,59 @@ class IntakeTraceLoaderConfig(_StrictModel):
     @field_validator("base_url")
     @classmethod
     def valid_http_base_url(cls, value: str) -> str:
-        normalized = value.strip().rstrip("/")
-        parsed = urlsplit(normalized)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError("base_url must be an absolute HTTP(S) URL")
-        if parsed.username is not None or parsed.password is not None:
-            raise ValueError("base_url must not contain credentials")
-        if parsed.query or parsed.fragment:
-            raise ValueError("base_url must not include a query or fragment")
-        return normalized
+        return _http_base_url(value)
 
     @field_validator("workspace")
     @classmethod
     def non_empty_workspace(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("workspace must not be blank")
-        return normalized
+        return _non_blank_workspace(value)
+
+
+class IntakeFileTraceConfig(_StrictModel):
+    """Files written by the `nemo intake` CLI for one trace.
+
+    `trace_path` holds `nemo intake traces get --output-format=json --mode=detailed TRACE_ID`;
+    `spans_path` holds `nemo intake spans list --output-format=json --mode=detailed
+    --filter.trace-id=TRACE_ID --sort=started_at --all-pages`.
+    """
+
+    trace_path: Path
+    spans_path: Path
+    workspace: str = Field(min_length=1)
+    base_url: str | None = None
+
+    @field_validator("base_url")
+    @classmethod
+    def valid_http_base_url(cls, value: str | None) -> str | None:
+        return None if value is None else _http_base_url(value)
+
+    @field_validator("workspace")
+    @classmethod
+    def non_empty_workspace(cls, value: str) -> str:
+        return _non_blank_workspace(value)
+
+
+def _http_base_url(value: str) -> str:
+    normalized = value.strip().rstrip("/")
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("base_url must be an absolute HTTP(S) URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("base_url must not contain credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError("base_url must not include a query or fragment")
+    return normalized
+
+
+def _non_blank_workspace(value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("workspace must not be blank")
+    return normalized
 
 
 class IntakeTraceDescription(TraceDescription):
-    """Run metadata for a live Intake query."""
+    """Run metadata for a live Intake query or a CLI-exported Intake trace."""
 
     span_count: int
     workspace: str
@@ -457,29 +490,132 @@ class IntakeTraceLoader:
 
     def describe(self) -> IntakeTraceDescription:
         """Describe the configured source and most recently loaded corpus."""
-        traces = self._snapshot or ()
-        span_count = call_count = 0
-        for trace in traces:
-            pending = list(trace.root_spans)
-            while pending:
-                span = pending.pop()
-                span_count += 1
-                call_count += span.kind is SpanKind.TOOL
-                pending.extend(span.children)
-        return {
-            "source": (
+        return _describe(
+            self._snapshot or (),
+            source=(
                 f"intake:{self.config.base_url}/apis/intake/v2/workspaces/"
                 f"{quote(self.config.workspace, safe='')}"
             ),
-            "trace_count": len(traces),
-            "call_count": call_count,
-            "distinct_logical_cases": len(
-                {str(trace.attributes.get("logical_case_id") or trace.id) for trace in traces}
-            ),
-            "span_count": span_count,
-            "workspace": self.config.workspace,
-            "query": self.config.query.describe(),
-        }
+            workspace=self.config.workspace,
+            query=self.config.query.describe(),
+        )
+
+
+_UNSUPPORTED_SHAPE = "unsupported nemo intake JSON shape"
+
+
+@dataclass
+class IntakeFileTraceLoader:
+    """Normalize one trace exported with the `nemo intake` CLI."""
+
+    config: IntakeFileTraceConfig
+    _snapshot: TraceSnapshot | None = field(default=None, init=False, repr=False)
+
+    def load(self) -> TraceSnapshot:
+        if self._snapshot is not None:
+            return self._snapshot
+        try:
+            raw_trace = _IntakeTrace.model_validate(
+                _trace_record(_read_json(self.config.trace_path))
+            )
+            raw_spans = [
+                _IntakeSpan.model_validate(span)
+                for span in _span_records(_read_json(self.config.spans_path))
+            ]
+            if any(span.trace_id not in (None, raw_trace.id) for span in raw_spans):
+                raise ValueError("span trace_id does not match the selected trace")
+            trace = _normalize_trace(
+                raw_trace,
+                raw_spans,
+                [],
+                base_url=self.config.base_url,
+                workspace=self.config.workspace,
+            )
+        except (OSError, ValueError, TypeError) as error:
+            raise IntakeLoadError(f"Failed to load Intake trace files: {error}") from error
+        self._snapshot = TraceSnapshot([trace])
+        return self._snapshot
+
+    def describe(self) -> IntakeTraceDescription:
+        """Describe the configured files and most recently loaded trace."""
+        traces = self._snapshot or ()
+        return _describe(
+            traces,
+            source=f"intake-file:{self.config.trace_path.resolve()}",
+            workspace=self.config.workspace,
+            query={
+                "trace_path": str(self.config.trace_path.resolve()),
+                "spans_path": str(self.config.spans_path.resolve()),
+                **({"trace_id": next(iter(traces)).id} if traces else {}),
+            },
+        )
+
+
+def _read_json(path: Path) -> JsonValue:
+    with path.open("rb") as handle:
+        return json.load(handle)
+
+
+def _trace_record(value: JsonValue) -> Mapping[str, JsonValue]:
+    """Accept one trace object or a `{"data": [trace]}` page."""
+    if not isinstance(value, Mapping):
+        raise ValueError(_UNSUPPORTED_SHAPE)
+    if "data" not in value:
+        return value
+    data = value["data"]
+    if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], Mapping):
+        raise ValueError(_UNSUPPORTED_SHAPE)
+    return data[0]
+
+
+def _span_records(value: JsonValue) -> list[Mapping[str, JsonValue]]:
+    """Accept a span list, a `{"data": [...]}` page, or a list of such pages."""
+    if isinstance(value, Mapping):
+        pages: list[JsonValue] = [value]
+    elif (
+        isinstance(value, list)
+        and value
+        and all(isinstance(item, Mapping) and "data" in item for item in value)
+    ):
+        pages = value
+    else:
+        pages = [{"data": value}]
+    records: list[Mapping[str, JsonValue]] = []
+    for page in pages:
+        data = page.get("data") if isinstance(page, Mapping) else None
+        if not isinstance(data, list) or not all(isinstance(item, Mapping) for item in data):
+            raise ValueError(_UNSUPPORTED_SHAPE)
+        records.extend(data)
+    return records
+
+
+def _describe(
+    traces: Iterable[Trace],
+    *,
+    source: str,
+    workspace: str,
+    query: dict[str, JsonValue],
+) -> IntakeTraceDescription:
+    trace_count = span_count = call_count = 0
+    cases: set[str] = set()
+    for trace in traces:
+        trace_count += 1
+        cases.add(str(trace.attributes.get("logical_case_id") or trace.id))
+        pending = list(trace.root_spans)
+        while pending:
+            span = pending.pop()
+            span_count += 1
+            call_count += span.kind is SpanKind.TOOL
+            pending.extend(span.children)
+    return {
+        "source": source,
+        "trace_count": trace_count,
+        "call_count": call_count,
+        "distinct_logical_cases": len(cases),
+        "span_count": span_count,
+        "workspace": workspace,
+        "query": query,
+    }
 
 
 def _aware_utc(value: datetime) -> datetime:
@@ -519,7 +655,7 @@ def _normalize_trace(
     raw_spans: list[_IntakeSpan],
     raw_results: list[_EvaluatorResult],
     *,
-    base_url: str,
+    base_url: str | None,
     workspace: str,
 ) -> Trace:
     for span in raw_spans:
@@ -529,9 +665,10 @@ def _normalize_trace(
             )
 
     ordered = _canonical_spans(raw.id, raw_spans)
+    # Without a base URL (CLI file exports) the pointer omits the platform location.
     base_pointer: dict[str, JsonValue] = {
         "provider": "nemo-platform-intake",
-        "base_url": base_url.rstrip("/"),
+        **({} if base_url is None else {"base_url": base_url.rstrip("/")}),
         "workspace": workspace,
         "trace_id": raw.id,
     }
