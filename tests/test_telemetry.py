@@ -144,7 +144,7 @@ def _run_cli(source, enabled):
 
     from compass.cli.main import main
     from compass.compass_signals.compass_signals import CompassSignalResult
-    from compass.telemetry import span
+    from compass.telemetry import record_span
 
     class SmallAgent(Agent):
         @strategy(CodeActStrategy())
@@ -170,7 +170,7 @@ def _run_cli(source, enabled):
                 )
             ]
         )
-        with span("evidence.test") as record:
+        with record_span("evidence.test") as record:
             assert await SmallAgent(llm=fake).answer() == 7
             async with CompletionClient(
                 model="openai/gpt-4o-mini", api_key="dummy", mock_response="Hello"
@@ -179,7 +179,7 @@ def _run_cli(source, enabled):
                     await llm.acall([{"role": "user", "content": "Say hello"}])
                 ).content == "Hello"
             try:
-                with span("failed_tool"):
+                with record_span("failed_tool"):
                     raise ValueError("expected test failure")
             except ValueError:
                 pass

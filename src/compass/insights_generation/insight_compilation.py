@@ -111,8 +111,6 @@ class EvidenceCompletion(BaseModel):
         self,
         snapshot: TraceSnapshot,
         run_timestamp: datetime,
-        *,
-        limitations: list[str] | None = None,
     ) -> Insight:
         """Add matching evidence, or keep the insight unchanged if the scan fails."""
         with telemetry.evidence_scan(self.insight, len(snapshot)) as record:
@@ -124,13 +122,8 @@ class EvidenceCompletion(BaseModel):
                     and bool(self.unresolved_reason and self.unresolved_reason.strip())
                     and not self.checks
                 )
-                status = "skipped" if skipped else "failed"
                 reason = str(error)[:300]
                 telemetry.record_scan_failure(record, error, skipped=skipped)
-                if limitations is not None:
-                    limitations.append(
-                        f"Evidence scan {status} for {self.insight.name!r}: {reason}. Existing references were retained."
-                    )
                 warnings.warn(
                     f"The evidence scan did not complete for {self.insight.name!r}: "
                     f"{type(error).__name__}: {reason}. "
@@ -140,10 +133,6 @@ class EvidenceCompletion(BaseModel):
                 return self.insight
             telemetry.record_scan_result(record, len(matches), unknown)
         if unknown:
-            if limitations is not None:
-                limitations.append(
-                    f"Evidence scan incomplete for {self.insight.name!r}: {unknown} of {len(snapshot)} source traces could not be classified; additional supporting traces may exist."
-                )
             warnings.warn(
                 f"Evidence scan incomplete for {self.insight.name!r}: "
                 f"The function could not decide whether {unknown} of {len(snapshot)} traces match. "
@@ -190,16 +179,11 @@ class InsightCompilation(Agent):
         trace_snapshot: TraceSnapshot,
         existing_insights: list[Insight],
         run_timestamp: datetime,
-        *,
-        limitations: list[str] | None = None,
     ) -> list[Insight]:
         completions = await self._compile_insights(
             compass_signals, trace_snapshot, existing_insights, run_timestamp
         )
-        return [
-            completion.apply(trace_snapshot, run_timestamp, limitations=limitations)
-            for completion in completions
-        ]
+        return [completion.apply(trace_snapshot, run_timestamp) for completion in completions]
 
     @no_trace
     @strategy(CodeActStrategy(config=CodeActConfig(postconditions=[_validate_completions])))

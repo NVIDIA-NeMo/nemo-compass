@@ -33,7 +33,7 @@ tracer = OITracer(trace.get_tracer("compass", __version__), config=TraceConfig()
 
 
 @contextmanager
-def span(name: str) -> Iterator[OpenInferenceSpan]:
+def record_span(name: str) -> Iterator[OpenInferenceSpan]:
     """Record one Compass operation, including cancellation as interrupted work."""
     with tracer.start_as_current_span(name, openinference_span_kind="chain") as record:
         try:
@@ -126,7 +126,7 @@ def telemetry_session(config: RunConfig) -> Iterator[OpenInferenceSpan]:
                 ],
             )
     try:
-        with span("compass") as root:
+        with record_span("compass") as root:
             root.set_input(config.model_dump(mode="json", exclude={"api_base"}))
             if api_key:
                 # Use OpenInference span metadata for LangSmith compatibility.

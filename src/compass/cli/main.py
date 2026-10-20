@@ -51,7 +51,7 @@ from compass.insights_generation.config import (
 from compass.insights_generation.defaults import DEFAULT_MAX_TOKENS, DEFAULT_MODEL
 from compass.insights_generation.insight_compilation import InsightCompilation
 from compass.insights_generation.validation import EvidenceValidation, ProblemValidation
-from compass.telemetry import record_input_metadata, span, telemetry_session
+from compass.telemetry import record_input_metadata, record_span, telemetry_session
 from compass.trace_loaders.atif import ATIFTraceLoader
 from compass.trace_loaders.braintrust import (
     BRAINTRUST_DEFAULT_MAX_TRACES,
@@ -378,7 +378,7 @@ def _build_llm(config: RunConfig, api_key: str) -> CompletionClient:
 async def _generate_insights(config: RunConfig, output: RunOutput) -> RunResult:
     api_key = _check_environment(config)
     async with output.progress():
-        with span("ingestion") as record:
+        with record_span("ingestion") as record:
             record.set_input(config.trace)
             loader = _configured_trace_loader(config.trace)
             snapshot = await asyncio.to_thread(loader.load)
@@ -457,7 +457,6 @@ async def _compile_evidence(
                 snapshot,
                 result.existing_insights,
                 run_timestamp,
-                limitations=result.limitations,
             )
             telemetry.record_insights(record, insights)
             return insights

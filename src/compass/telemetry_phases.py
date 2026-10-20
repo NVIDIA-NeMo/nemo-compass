@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openinference.instrumentation._spans import OpenInferenceSpan
+from opentelemetry.trace import StatusCode
 from pydantic import BaseModel
 
 from compass.compass_signals.builtins import (
@@ -29,7 +30,7 @@ from compass.compass_signals.compass_signals import (
     Problem,
 )
 from compass.insight import Insight, Rating
-from compass.telemetry import span
+from compass.telemetry import record_span
 
 if TYPE_CHECKING:
     from compass.cli.output import RunResult
@@ -51,7 +52,7 @@ def _signal_name(name: str) -> str:
 
 @contextmanager
 def _phase(name: str, inputs: dict) -> Iterator[OpenInferenceSpan]:
-    with span(name) as record:
+    with record_span(name) as record:
         record.set_input(inputs)
         yield record
 
@@ -195,6 +196,9 @@ def evidence_scan(insight: Insight, trace_count: int) -> AbstractContextManager[
 
 
 def record_scan_failure(record: OpenInferenceSpan, error: Exception, *, skipped: bool) -> None:
+    if not skipped:
+        record.record_exception(error)
+        record.set_status(StatusCode.ERROR)
     record.set_output(
         {
             "status": "skipped" if skipped else "failed",
