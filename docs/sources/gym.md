@@ -10,11 +10,10 @@ Recorded rewards are included in grader failure analysis.
 
 ## Configure and run
 
-With [uv and Git installed](../../README.md#start-here), install the CLI:
+With [uv installed](../../README.md#start-here), install the CLI:
 
 ```bash
-uv tool install \
-  'nemo-compass @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+uv tool install nemo-compass
 ```
 
 No Gym installation or optional extra is required.

@@ -8,11 +8,10 @@ selected traces are included automatically.
 
 ## Connect and run
 
-With [uv and Git installed](../../README.md#start-here), install the CLI:
+With [uv installed](../../README.md#start-here), install the CLI:
 
 ```bash
-uv tool install \
-  'nemo-compass @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+uv tool install nemo-compass
 ```
 
 [Configure your inference model and key](../model-access.md#choose-a-model).

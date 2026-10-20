@@ -11,11 +11,10 @@ The SmithDB-backed v2 query API is not yet supported.
 
 ## Connect and run
 
-With [uv and Git installed](../../README.md#start-here), install the CLI with LangSmith support:
+With [uv installed](../../README.md#start-here), install the CLI with LangSmith support:
 
 ```bash
-uv tool install \
-  'nemo-compass[langsmith] @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+uv tool install 'nemo-compass[langsmith]'
 ```
 
 [Configure your inference model and key](../model-access.md#choose-a-model).
