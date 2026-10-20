@@ -24,10 +24,6 @@ To use a different file, set `ethos_path`:
 ethos_path: path/to/ETHOS.md
 ```
 
-If you explicitly enable `compass_signals.ethos_divergence` or set `ethos_path`, a missing
-or empty ETHOS.md causes the run to fail. Otherwise, a missing ETHOS.md produces a warning
-and the run continues without ethos divergence.
-
 ## User sentiment
 
 This Compass Signal looks for recurring user complaints. It needs recorded user messages and
