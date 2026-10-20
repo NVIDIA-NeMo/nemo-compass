@@ -18,6 +18,7 @@ from compass.config import RunConfig, TraceConfig
 from compass.trace_loaders import ATIFTraceConfig, ATIFTraceLoader, ATIFTraceLoadError
 from compass.traces import UNSET, Span, SpanKind, TokenCounts, Trace, TraceAggregate
 from trace_ingest.catalog import tool_catalog
+from trace_ingest.exporters.atif import to_atif
 from trace_ingest.loaders.atif import tool_definitions_from_atif
 from trace_ingest.models import ToolDefinition
 
@@ -350,58 +351,6 @@ def test_complete_cli_runs_real_compass_signal(tmp_path, monkeypatch, capsys, se
     assert capsys.readouterr().out == "[]\n"
 
 
-def _subagent_spans(span):
-    for child in span.children:
-        if "subagent_index" in child.attributes.get("atif_layout", {}):
-            yield child
-        else:
-            yield from _subagent_spans(child)
-
-
-def rebuild(span):
-    """Reference rebuild of an ATIF trajectory from the loader's round-trip layout."""
-    trajectory = dict(span.attributes["atif"])
-    trajectory["steps"] = []
-    for step_span in span.children:
-        if not step_span.id.startswith(f"{span.id}/step/"):
-            continue
-        step = dict(step_span.attributes["atif"])
-        layout = step_span.attributes["atif_layout"]
-        step["message"] = (
-            step_span.output["content"]
-            if step["source"] == "agent"
-            else step_span.input["messages"][0]["content"]
-        )
-        tools = [child for child in step_span.children if child.kind is SpanKind.TOOL]
-        if layout["tool_calls_key"]:
-            step["tool_calls"] = [tool.attributes["atif"]["call"] for tool in tools]
-        if layout["observation"] is not None:
-            indexed = [
-                pair
-                for tool in tools
-                for pair in zip(
-                    tool.attributes["atif_layout"]["result_indexes"],
-                    tool.attributes["atif"]["results"],
-                    strict=True,
-                )
-            ] + [
-                (child.attributes["atif_layout"]["result_index"], child.attributes["atif"])
-                for child in step_span.children
-                if child.kind is SpanKind.CHAIN
-            ]
-            step["observation"] = {
-                **layout["observation"],
-                "results": [result for _, result in sorted(indexed, key=lambda pair: pair[0])],
-            }
-        trajectory["steps"].append(step)
-    subagents = sorted(
-        _subagent_spans(span), key=lambda child: child.attributes["atif_layout"]["subagent_index"]
-    )
-    if subagents:
-        trajectory["subagent_trajectories"] = [rebuild(child) for child in subagents]
-    return trajectory
-
-
 def canonical(trajectory):
     trajectory = dict(trajectory)
     if trajectory.get("subagent_trajectories") == []:
@@ -479,7 +428,7 @@ def test_round_trip_layout_rebuilds_every_source_record(tmp_path):
     traces = list(loader_for(tmp_path, *records).load())
     assert len(traces) == len(records)
     for record, trace in zip(records, traces, strict=True):
-        assert canonical(rebuild(trace.root_spans[0])) == canonical(record)
+        assert canonical(to_atif(trace)) == canonical(record)
 
 
 def test_round_trip_record_tool_results_and_errors(tmp_path):

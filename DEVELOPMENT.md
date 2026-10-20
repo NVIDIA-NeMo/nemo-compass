@@ -7,6 +7,10 @@ Models and loaders live in [trace_ingest](src/trace_ingest/), independent of
 `compass`. Both Python packages ship in the `nemo-compass` distribution.
 `uv sync` installs the project locally.
 
+`trace_ingest.exporters.atif.to_atif` writes a `Trace` as an ATIF trajectory. Traces
+loaded from ATIF are rebuilt exactly; other traces are linearized depth-first, and
+each information loss is listed in `extra.compass.loss_codes`.
+
 ## Validation
 
 When adding NVIDIA-authored files or changing dependencies, update the tracked
