@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 import yaml
 from nooa.unifiedllm import FakeLLMClient
+from pydantic import BaseModel
 
 import compass.cli.main as cli
 from compass.compass_signals.compass_signals import CompassSignalResult, Problem
@@ -253,8 +254,10 @@ def test_code_validation_filters_problems_and_preserves_signal_result(
         cli._validate_evidence_with_code(evidence, snapshot, tmp_path, FakeLLMClient())
     )
 
-    assert result[0].problems == (supported, unknown)
-    assert result[0].artifacts == {"kept": True}
+    assert result.retained_evidence()[0].problems == (supported, unknown)
+    assert result.rejected_count == 1
+    assert result.unresolved_count == 1
+    assert result.retained_evidence()[0].artifacts == {"kept": True}
     assert received == [
         (supported, (trace,)),
         (unsupported, (trace,)),
@@ -320,7 +323,15 @@ def test_final_compilation_severity_does_not_require_code_base(
         cli, "_configured_trace_loader", lambda config: SimpleNamespace(load=lambda: snapshot)
     )
     monkeypatch.setattr(cli, "_run_compass_signals", AsyncMock(return_value=evidence))
-    monkeypatch.setattr(cli, "_validate_evidence_with_code", AsyncMock(return_value=evidence))
+    monkeypatch.setattr(
+        cli,
+        "_validate_evidence_with_code",
+        AsyncMock(
+            return_value=cli.EvidenceValidation(
+                evidence, [[True for _ in item.problems] for item in evidence]
+            )
+        ),
+    )
     monkeypatch.setattr(cli, "_build_llm", lambda *args: FakeLLMClient())
     monkeypatch.setattr(cli, "InsightCompilation", lambda llm: compilation)
     monkeypatch.setattr(cli, "_rate_confidence_with_code", review)
@@ -343,22 +354,26 @@ def test_compass_signals_share_cli_loop_and_run_concurrently(monkeypatch):
         started = asyncio.Event()
         registry = CompassSignalRegistry()
 
+        class SignalConfig(BaseModel):
+            pass
+
         class Signal:
             def __init__(self, name):
                 self.name = name
+                self.config = SignalConfig()
 
             def check_prerequisites(self, snapshot):
                 pass
 
             async def analyze(self, snapshot):
                 assert asyncio.get_running_loop() is loop
-                if self.name == "first":
+                if self.name == "anomaly-and-patterns":
                     await asyncio.wait_for(started.wait(), timeout=1)
                 else:
                     started.set()
                 return CompassSignalResult(signal_name=self.name, problems=())
 
-        for signal in (Signal("first"), Signal("second")):
+        for signal in (Signal("anomaly-and-patterns"), Signal("tool-issues")):
             registry.register(signal)
         monkeypatch.setattr(cli, "registered_builtin_signals", lambda **kwargs: registry)
         progress = []
@@ -367,8 +382,8 @@ def test_compass_signals_share_cli_loop_and_run_concurrently(monkeypatch):
             TraceSnapshot([Trace(id="trace-1", root_spans=[], aggregate=TraceAggregate())]),
             progress=progress.append,
         )
-        assert [result.signal_name for result in results] == ["first", "second"]
-        assert set().union(*map(set, progress)) == {"first", "second"}
+        assert [result.signal_name for result in results] == ["anomaly-and-patterns", "tool-issues"]
+        assert set().union(*map(set, progress)) == {"anomaly-and-patterns", "tool-issues"}
         assert progress[-1] == ()
 
     asyncio.run(run())

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nooa import Agent, strategy
+from nooa import Agent, no_trace, strategy
 from nooa.agentdoc import truncating_pformat
 from nooa.config import CodeActConfig
 from nooa.errors import GenerationAborted, GenerationError
@@ -45,6 +45,7 @@ class _ConfidenceAgent(Agent):
         super().__init__(llm=llm)
         self.codebase = codebase
 
+    @no_trace  # The Compass confidence.insight span owns this operation.
     @strategy(CodeActStrategy(config=CodeActConfig(max_iterations=_MAX_ITERATIONS)))
     async def rate(self, insight: Insight, supporting_traces: str) -> _Confidence:  # ty: ignore[empty-body] -- Nooa implements the ellipsis method.
         """Score the provided insight on confidence. The insight is derived from the

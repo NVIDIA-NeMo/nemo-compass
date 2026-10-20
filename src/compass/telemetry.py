@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import platform
@@ -16,20 +17,49 @@ from functools import partial
 from pathlib import Path
 
 import nooa
-from nooa.tracing import enable_tracing, exporters, shutdown_traces
+from nooa.tracing import enable_tracing, shutdown_traces
 from openinference.instrumentation import OITracer, TraceConfig
 from openinference.instrumentation._spans import OpenInferenceSpan
 from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http import Compression
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
 from compass.config import RunConfig
+from compass.telemetry_export import CompassSpanExporter
 from compass.version import __version__
+from trace_ingest.loaders.trace_loaders import TraceLoader
 
 tracer = OITracer(trace.get_tracer("compass", __version__), config=TraceConfig())
-span = partial(tracer.start_as_current_span, openinference_span_kind="chain")
+
+
+@contextmanager
+def record_span(name: str) -> Iterator[OpenInferenceSpan]:
+    """Record one Compass operation, including cancellation as interrupted work."""
+    with tracer.start_as_current_span(name, openinference_span_kind="chain") as record:
+        try:
+            yield record
+        except asyncio.CancelledError as error:
+            # OTel intentionally ignores BaseException subclasses. Cancellation is
+            # not a completed Compass operation, so retain the actual exception.
+            record.record_exception(error)
+            record.set_status(trace.StatusCode.ERROR)
+            raise
+
+
+def record_input_metadata(config: RunConfig, loader: TraceLoader) -> None:
+    """Attach provenance to the current Compass root after its ingestion span closes."""
+    root = trace.get_current_span()
+    if root.is_recording():
+        root_input = {
+            **config.model_dump(mode="json", exclude={"api_base"}),
+            "input_source": loader.describe(),
+        }
+        root.set_attribute("input.value", json.dumps(root_input))
+        root.set_attribute("input.mime_type", "application/json")
 
 
 def _execution_metadata() -> dict[str, str | bool]:
-    metadata: dict[str, str | bool] = {
+    metadata = {
         "compass.version": __version__,
         "nooa.version": nooa.__version__,
         "python.version": platform.python_version(),
@@ -47,7 +77,8 @@ def _execution_metadata() -> dict[str, str | bool]:
         try:
             sha = git(["git", "rev-parse", "HEAD"]).strip()
             dirty = bool(git(["git", "status", "--porcelain", "--untracked-files=normal"]))
-            metadata.update({"compass.git_sha": sha, "compass.git_dirty": dirty})
+            metadata["compass.git_sha"] = sha
+            metadata["compass.git_dirty"] = dirty
         except (OSError, subprocess.SubprocessError):
             pass  # Git is optional; installed wheels need only their package version.
     return metadata
@@ -79,16 +110,29 @@ def telemetry_session(config: RunConfig) -> Iterator[OpenInferenceSpan]:
         # Nooa prints initialization messages; stdout belongs to the CLI's YAML output.
         with redirect_stdout(sys.stderr):
             enable_tracing(
-                exporters=[exporters.otlp(f"{endpoint}/otel/v1/traces", headers)],
+                exporters=[
+                    CompassSpanExporter(
+                        OTLPSpanExporter(
+                            endpoint=f"{endpoint}/otel/v1/traces",
+                            headers=headers,
+                            compression=Compression.Gzip,
+                            timeout=float(
+                                os.getenv("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT")
+                                or os.getenv("OTEL_EXPORTER_OTLP_TIMEOUT")
+                                or "60"
+                            ),
+                        )
+                    )
+                ],
             )
     try:
-        with span("compass") as root:
+        with record_span("compass") as root:
             root.set_input(config.model_dump(mode="json", exclude={"api_base"}))
             if api_key:
                 # Use OpenInference span metadata for LangSmith compatibility.
                 root.set_attribute("metadata", json.dumps(_execution_metadata()))
                 print(
-                    f"Compass telemetry: full content to {project}; OTLP trace ID {root.get_span_context().trace_id:032x}",
+                    f"Compass telemetry: execution content and source provenance to {project}; OTLP trace ID {root.get_span_context().trace_id:032x}",
                     file=sys.stderr,
                 )
             yield root
