@@ -23,12 +23,12 @@ from compass.insight import Insight
 _SIGNAL_LABELS = {
     "anomaly-and-patterns": "Anomalies and patterns",
     "tool-issues": "Tool issues",
-    "ethos-divergence": "Ethos",
+    "ethos-divergence": "Ethos divergence",
     "grader-failure-patterns": "Grader failures",
     "user-sentiment": "Sentiment",
 }
 _SKIP_LABELS = {
-    "No ethos document": "no document",
+    "No ethos document": "ethos_path not specified",
     "No evaluator results": "no results",
     "No embedding backend configured": "no embedding backend",
 }
@@ -168,6 +168,13 @@ class RunOutput:
         for index, reason in enumerate(skipped):
             table.add_row(Text("Skipped:" if index == 0 else ""), Text(reason))
         self.console.print(table)
+        if any(item.skip_reason == "No ethos document" for item in evidence):
+            self.console.print(
+                Text(
+                    "\nTo enable ethos divergence, set ethos_path: ETHOS.md in YAML "
+                    "or pass --ethos-path ETHOS.md. Paths are relative to the working directory."
+                )
+            )
         if skipped:
             self.console.print(
                 "\nTo run skipped analyses: "

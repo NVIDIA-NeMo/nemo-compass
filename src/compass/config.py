@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, FilePath, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -326,6 +327,20 @@ class RunConfig(BaseSettings):
         default=None,
         description="Existing insights.json to reconcile with newly generated Insights",
     )
+
+    @model_validator(mode="after")
+    def explicit_ethos_requires_document(self) -> RunConfig:
+        if (
+            "ethos_divergence" in self.compass_signals.model_fields_set
+            and self.compass_signals.ethos_divergence is not None
+            and self.ethos_path is None
+        ):
+            raise PydanticCustomError(
+                "ethos_path_required",
+                "Ethos divergence was explicitly enabled but ethos_path is not specified. "
+                "Set ethos_path in YAML or pass --ethos-path to an existing ETHOS file.",
+            )
+        return self
 
     @classmethod
     def settings_customise_sources(

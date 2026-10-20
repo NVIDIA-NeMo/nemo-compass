@@ -68,13 +68,14 @@ def test_default_report_prioritizes_findings_and_keeps_coverage_visible(width):
         in normalized
     )
     assert (
-        "Skipped: Ethos — no document Grader failures — no results Sentiment — no embedding backend"
+        "Skipped: Ethos divergence — ethos_path not specified Grader failures — no results Sentiment — no embedding backend"
         in normalized
     )
     assert (
         "To run skipped analyses: https://github.com/NVIDIA-NeMo/labs-nemo-compass/blob/main/docs/compass-signals.md"
         in rendered
     )
+    assert "set ethos_path: ETHOS.md in YAML or pass --ethos-path ETHOS.md" in normalized
     for hidden in ("trace-0", "span-0", "long explanation", "\x1b"):
         assert hidden not in rendered
     # Keep the setup URL intact for copying; other content wraps to the terminal width.

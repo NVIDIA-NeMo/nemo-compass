@@ -26,6 +26,10 @@ ethos_path: ethos.md
 ```
 
 The file must exist and contain text. Its path resolves from your working directory.
+If `ethos_path` is omitted, the default ethos divergence signal is skipped with a warning.
+If you explicitly enable `compass_signals.ethos_divergence` with `true` or `{}`, you must
+provide `ethos_path`; otherwise Compass exits with a setup error before loading traces.
+A supplied path that does not point to a file is also a setup error.
 
 ## User sentiment
 

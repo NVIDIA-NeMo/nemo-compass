@@ -28,6 +28,7 @@ from typing import Any
 
 import yaml
 from nooa.unifiedllm import CompletionClient, UnifiedLLM
+from pydantic import ValidationError
 from pydantic_settings import CliSettingsSource
 from rich.console import Console
 
@@ -465,7 +466,24 @@ def _write_insights(output_path: Path, rendered: str) -> None:
 def get_config(argv: Sequence[str] | None = None) -> RunConfig:
     """Load run settings from optional YAML and generated CLI arguments."""
 
-    return RunConfig(_cli_parse_args=list(sys.argv[1:] if argv is None else argv))
+    try:
+        return RunConfig(_cli_parse_args=list(sys.argv[1:] if argv is None else argv))
+    except ValidationError as error:
+        errors = error.errors()
+        if len(errors) == 1 and errors[0]["type"] == "ethos_path_required":
+            raise SetupError(errors[0]["msg"]) from error
+        if (
+            len(errors) == 1
+            and errors[0]["loc"] == ("ethos_path",)
+            and errors[0]["type"] == "path_not_file"
+        ):
+            raise SetupError(
+                f"ETHOS file not found or not a regular file: {errors[0]['input']}\n"
+                "Set ethos_path in YAML or --ethos-path to an existing file. "
+                "Relative paths resolve from the working directory. "
+                "To run without ethos divergence, remove ethos_path and set compass_signals.ethos_divergence to false."
+            ) from error
+        raise
 
 
 # Pydantic hooks accept parser/group objects and argparse's heterogeneous keyword arguments.
@@ -504,6 +522,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         config = get_config(argv)
         _check_environment(config)
+        if config.ethos_path is None and config.compass_signals.ethos_divergence is not None:
+            output.console.print(
+                "Warning: skipping ethos divergence because ethos_path was not specified. "
+                "Set ethos_path in YAML or pass --ethos-path to enable it.",
+                soft_wrap=True,
+            )
         with telemetry_session(config) as record:
             result = asyncio.run(_generate_insights(config, output))
             rendered = _render_insights(result.insights)
