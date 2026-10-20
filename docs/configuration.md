@@ -15,7 +15,7 @@ in the environment or `.env`.
 | --- | --- |
 | `trace` | Exactly one source; see the [source guides](../README.md#start-here). |
 | `trace.max_traces` | Limit complete traces from a provider or native export. Unsupported for canonical JSONL, ATIF, and Gym rollouts. |
-| `ethos_path` | Optional agent purpose and behavioral requirements document. Defaults to `ETHOS.md`, then `ethos.md`, in the current working directory. Used by the ethos divergence signal; support for validating potential problems and shaping insights is planned. |
+| `ethos_path` | Optional path to [ETHOS.md](https://github.com/NVIDIA/skills/tree/main/skills/ethos-orchestrate), which defines the agent’s purpose and behavioral requirements. Defaults to `ETHOS.md`, then `ethos.md`, in the current working directory. Used by the ethos divergence signal; support for validating potential problems and shaping insights is planned. |
 | `output_path` | YAML output file; defaults to `insights.yml`. Use `-` for stdout. |
 | `model`, `api_base`, `max_tokens` | [Inference settings](model-access.md#choose-a-model). |
 | `compass_signals` | [Compass Signals and their prerequisites](compass-signals.md). All five are enabled by default. |

@@ -13,27 +13,16 @@ All five Compass Signals are enabled by default. Each runs when its prerequisite
 
 ## Ethos divergence
 
-`ethos.md` is the **intent layer** for a production agent: a Markdown snapshot
-of what the agent is for, what it must not do, and what success looks like.
-This Compass Signal surfaces instances where recorded agent behavior diverges from the intent
-described in its `ethos.md`.
+[ETHOS.md](https://github.com/NVIDIA/skills/tree/main/skills/ethos-orchestrate) describes
+what an agent is for, what it must not do, and what success looks like. This Compass Signal
+finds recorded behavior that diverges from those requirements.
 
-See the [ethos.md documentation](https://github.com/NVIDIA/skills/tree/main/skills/ethos-orchestrate)
-for its definition and guidance on creating one. Then configure its path:
+Compass looks for `ETHOS.md` in the current working directory, falling back to `ethos.md`.
+To use a different file, set `ethos_path`:
 
 ```yaml
-ethos_path: ethos.md
+ethos_path: path/to/ETHOS.md
 ```
-
-The file must exist and contain text. Its path resolves from your working directory.
-If `ethos_path` is omitted, Compass looks for `ETHOS.md`, then `ethos.md`, in the current
-working directory (not the configuration file’s directory). An explicit path takes precedence.
-If neither file exists, the default ethos divergence signal is skipped with a warning.
-If you explicitly enable `compass_signals.ethos_divergence` with `true` or `{}`, you must
-provide `ethos_path` or one of those files; otherwise Compass exits with a setup error before loading traces.
-A supplied path that does not point to a file is a setup error. An empty or whitespace-only
-ETHOS.md also fails during setup, including when discovered automatically. The error names
-the path and distinguishes a missing file from an empty file.
 
 ## User sentiment
 
