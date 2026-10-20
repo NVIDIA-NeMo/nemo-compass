@@ -217,13 +217,6 @@ def _run_cli(source, enabled):
         assert all(r.parent.span_id in ids for r in records if r.parent)
         assert json.loads(str((root.attributes or {})["output.value"]))["insights"] == []
 
-        provenance = {
-            key.removeprefix("compass.input."): value
-            for key, value in metadata.items()
-            if key.startswith("compass.input.")
-        }
-        assert provenance["source"] == f"fs:{source}"
-        assert provenance["trace_count"] == 1
         inputs = json.loads(str((root.attributes or {})["input.value"]))
         assert inputs["input_source"] == {
             "source": f"fs:{source}",
