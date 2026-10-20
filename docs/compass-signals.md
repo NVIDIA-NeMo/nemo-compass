@@ -17,12 +17,16 @@ All five Compass Signals are enabled by default. Each runs when its prerequisite
 what an agent is for, what it must not do, and what success looks like. This Compass Signal
 finds recorded behavior that diverges from those requirements.
 
-Compass looks for `ETHOS.md` in the current working directory, falling back to `ethos.md`.
+Compass looks for `ETHOS.md` in the current working directory.
 To use a different file, set `ethos_path`:
 
 ```yaml
 ethos_path: path/to/ETHOS.md
 ```
+
+If you explicitly enable `compass_signals.ethos_divergence` or set `ethos_path`, a missing
+or empty ETHOS.md causes the run to fail. Otherwise, a missing ETHOS.md produces a warning
+and the run continues without ethos divergence.
 
 ## User sentiment
 
