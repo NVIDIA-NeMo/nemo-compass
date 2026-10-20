@@ -96,7 +96,7 @@ Return to your [source guide](../README.md#start-here) to finish setup.
 | --- | --- |
 | A live trace source | NeMo Compass reads traces and recorded evaluation signals from that service. |
 | Model-based analysis | Trace content, evaluation signals, and candidate findings may be sent to your configured inference provider. |
-| An ethos document | Its contents are included in model-based analysis. |
+| ETHOS.md | Its contents are included in model-based analysis. |
 | Code validation | Selected source excerpts are sent to the inference provider. The validator has read-only file tools. |
 | Remote sentiment embeddings | Extracted user messages are sent to the configured embedding endpoint. |
 | Local sentiment embeddings | The embedding model runs on your machine; model and tokenizer files may download on first use. |

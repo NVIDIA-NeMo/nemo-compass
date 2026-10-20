@@ -122,7 +122,7 @@ def test_invalid_ethos_path_has_actionable_cli_error(tmp_path, capsys, is_direct
     captured = capsys.readouterr()
     assert captured.out == ""
     assert str(path) in captured.err
-    assert "ETHOS file not found or not a regular file" in captured.err
+    assert "ETHOS.md not found or not a regular file" in captured.err
     assert "working directory" in captured.err
     assert "--ethos-path" in captured.err
     assert "Traceback" not in captured.err
@@ -130,7 +130,7 @@ def test_invalid_ethos_path_has_actionable_cli_error(tmp_path, capsys, is_direct
 
 def test_no_ethos_path_skips_default_detector(monkeypatch):
     async def unexpected(*args, **kwargs):
-        pytest.fail("Detector must not run without an ETHOS document")
+        pytest.fail("Detector must not run without ETHOS.md")
 
     monkeypatch.setattr(ethos, "detect_ethos_divergence", unexpected)
     config = RunConfig(
@@ -144,7 +144,7 @@ def test_no_ethos_path_skips_default_detector(monkeypatch):
     )
     snapshot = TraceSnapshot([Trace(id="trace-1", root_spans=[], aggregate=TraceAggregate())])
     results = asyncio.run(_run_compass_signals(config.compass_signals, snapshot, FakeLLMClient))
-    assert results[0].skip_reason == "No ethos document"
+    assert results[0].skip_reason == "No ETHOS.md"
     assert not results[0].problems
 
 
@@ -195,3 +195,29 @@ def test_default_ethos_warning_only_when_skipped(monkeypatch, capsys, disabled):
     assert ("Warning: skipping ethos divergence" in captured.err) is (not disabled)
     if not disabled:
         assert "--ethos-path" in captured.err
+
+
+@pytest.mark.parametrize("content", ["", " \n\t"])
+@pytest.mark.parametrize("source", ["cli", "yaml", "discovery"])
+def test_empty_ethos_fails_before_loading(tmp_path, monkeypatch, capsys, content, source):
+    from unittest.mock import Mock
+
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "ETHOS.md"
+    path.write_text(content)
+    args = ["--trace.filesystem.path", "unused.jsonl"]
+    if source == "cli":
+        args += ["--ethos-path", str(path)]
+    elif source == "yaml":
+        config = tmp_path / "config.yaml"
+        config.write_text(f"ethos_path: {path}\n")
+        args += ["--config", str(config)]
+    loader = Mock()
+    monkeypatch.setattr(cli, "_configured_trace_loader", loader)
+    assert cli.main(args) == 2
+    loader.assert_not_called()
+    error = capsys.readouterr().err
+    assert "ETHOS.md is empty or contains only whitespace" in error
+    assert str(path) in error
+    assert "not found" not in error
+    assert "Traceback" not in error

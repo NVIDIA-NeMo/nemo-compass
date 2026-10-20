@@ -339,6 +339,19 @@ class RunConfig(BaseSettings):
                     return path
         return value
 
+    @field_validator("ethos_path")
+    @classmethod
+    def validate_ethos_content(cls, path: Path | None) -> Path | None:
+        if path is not None and not path.read_text(encoding="utf-8").strip():
+            raise PydanticCustomError(
+                "ethos_empty",
+                "ETHOS.md is empty or contains only whitespace: {path}. "
+                "Add your agent's purpose and behavioral requirements, or select a non-empty file "
+                "with ethos_path in YAML or --ethos-path.",
+                {"path": str(path)},
+            )
+        return path
+
     @model_validator(mode="after")
     def explicit_ethos_requires_document(self) -> RunConfig:
         if (
@@ -348,9 +361,9 @@ class RunConfig(BaseSettings):
         ):
             raise PydanticCustomError(
                 "ethos_path_required",
-                "Ethos divergence was explicitly enabled but no ETHOS document was found. "
+                "Ethos divergence was explicitly enabled but no ETHOS.md was found. "
                 "Place ETHOS.md or ethos.md in the working directory, set ethos_path in YAML, "
-                "or pass --ethos-path to an existing ETHOS file.",
+                "or pass --ethos-path to an existing ETHOS.md.",
             )
         return self
 

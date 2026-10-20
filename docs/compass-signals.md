@@ -31,7 +31,9 @@ working directory (not the configuration file’s directory). An explicit path t
 If neither file exists, the default ethos divergence signal is skipped with a warning.
 If you explicitly enable `compass_signals.ethos_divergence` with `true` or `{}`, you must
 provide `ethos_path` or one of those files; otherwise Compass exits with a setup error before loading traces.
-A supplied path that does not point to a file is also a setup error.
+A supplied path that does not point to a file is a setup error. An empty or whitespace-only
+ETHOS.md also fails during setup, including when discovered automatically. The error names
+the path and distinguishes a missing file from an empty file.
 
 ## User sentiment
 

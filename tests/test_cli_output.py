@@ -44,7 +44,7 @@ def test_default_report_prioritizes_findings_and_keeps_coverage_visible(width):
             *[
                 CompassSignalResult(signal_name=name, problems=(), skip_reason=reason)
                 for name, reason in (
-                    ("ethos-divergence", "No ethos document"),
+                    ("ethos-divergence", "No ETHOS.md"),
                     ("grader-failure-patterns", "No evaluator results"),
                     ("user-sentiment", "No embedding backend configured"),
                 )
@@ -68,7 +68,7 @@ def test_default_report_prioritizes_findings_and_keeps_coverage_visible(width):
         in normalized
     )
     assert (
-        "Skipped: Ethos divergence — no ETHOS document found Grader failures — no results Sentiment — no embedding backend"
+        "Skipped: Ethos divergence — no ETHOS.md found Grader failures — no results Sentiment — no embedding backend"
         in normalized
     )
     assert (

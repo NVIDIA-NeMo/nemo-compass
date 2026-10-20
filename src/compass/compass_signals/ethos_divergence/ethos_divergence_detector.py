@@ -64,10 +64,10 @@ class EthosDivergenceCompassSignal:
 
     def check_prerequisites(self, snapshot: TraceSnapshot) -> str | None:
         if self.ethos_path is None:
-            return "No ethos document"
+            return "No ETHOS.md"
         self.ethos = self.ethos_path.read_text(encoding="utf-8")
         if not self.ethos.strip():
-            raise ValueError("ethos-divergence requires a non-empty ethos document")
+            raise ValueError("ethos-divergence requires a non-empty ETHOS.md")
         return None
 
     async def analyze(self, snapshot: TraceSnapshot) -> CompassSignalResult:
