@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import platform
@@ -59,10 +58,6 @@ def _input_metadata(
     )
     configured = source.model_dump()
     resolved = dict(description)
-    digest = hashlib.sha256()
-    for item in snapshot:
-        digest.update(item.model_dump_json().encode("utf-8"))
-        digest.update(b"\n")
     coordinates = {
         key: resolved.get(key)
         for key in (
@@ -94,7 +89,6 @@ def _input_metadata(
     return {
         "source_type": source_type,
         "trace_count": len(snapshot),
-        "normalized_sha256": digest.hexdigest(),
         "snapshot_saved": False,
         **coordinates,
     }

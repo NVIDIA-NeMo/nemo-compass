@@ -228,7 +228,6 @@ def _run_cli(source, enabled):
         assert provenance["snapshot_saved"] is False
         inputs = json.loads(str((root.attributes or {})["input.value"]))
         assert inputs["input_source"]["source_path"] == source
-        assert inputs["input_source"]["normalized_sha256"] == provenance["normalized_sha256"]
         ingestion = next(r for r in records if r.name == "ingestion")
         assert json.loads(str((ingestion.attributes or {})["output.value"])) == {"trace_count": 1}
         assert any(r.name == "code_execution" for r in records)
