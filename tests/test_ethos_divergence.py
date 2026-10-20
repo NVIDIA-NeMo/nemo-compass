@@ -6,8 +6,12 @@ import json
 
 import pytest
 from nooa.unifiedllm import FakeLLMClient
+from openinference.instrumentation import OITracer, TraceConfig
+from opentelemetry import trace
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from pydantic import ValidationError
 
+from compass import telemetry
 from compass.cli import main as cli
 from compass.cli.main import _run_compass_signals, get_config
 from compass.compass_signals.builtins import registered_builtin_signals
@@ -32,6 +36,9 @@ def test_ethos_cli_runs_registered_detector(tmp_path, monkeypatch, select_signal
     )
     snapshot = TraceSnapshot([Trace(id="trace-1", root_spans=[], aggregate=TraceAggregate())])
     llm = FakeLLMClient()
+    monkeypatch.setattr(
+        telemetry, "tracer", OITracer(TracerProvider().get_tracer(__name__), config=TraceConfig())
+    )
     problem = Problem(description="Issued a refund", supporting_trace_ids=("trace-1",))
 
     class FakeDetector:
@@ -43,6 +50,14 @@ def test_ethos_cli_runs_registered_detector(tmp_path, monkeypatch, select_signal
             assert traces is snapshot
             assert description == ethos.ETHOS_DIVERGENCE
             assert extra == {"ethos": "Never issue refunds."}
+            current = trace.get_current_span()
+            assert isinstance(current, ReadableSpan) and current.attributes is not None
+            inputs = json.loads(str(current.attributes["input.value"]))
+            assert inputs == {
+                "trace_count": 1,
+                "config": {},
+                "ethos": extra["ethos"],
+            }
             return [problem]
 
     monkeypatch.setattr(ethos, "IssueDetector", FakeDetector)

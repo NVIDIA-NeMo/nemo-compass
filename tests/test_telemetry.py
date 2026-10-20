@@ -83,7 +83,7 @@ def test_analyzing_telemetry_project_checks_source_endpoint(monkeypatch, capsys,
     )
     with (
         patch("compass.telemetry.enable_tracing") as enable,
-        patch("compass.telemetry.exporters.otlp"),
+        patch("compass.telemetry.OTLPSpanExporter"),
         patch("compass.telemetry.shutdown_traces"),
     ):
         with telemetry_session(config):
@@ -96,7 +96,7 @@ def test_analyzing_telemetry_project_checks_source_endpoint(monkeypatch, capsys,
     "api_key,project", [("", "custom-project"), ("test-key", ""), ("test-key", "custom-project")]
 )
 def test_cli_telemetry_in_fresh_process(tmp_path, api_key, project):
-    """Exercise CLI opt-in, library instrumentation, full inputs, and YAML stdout together."""
+    """Exercise CLI opt-in, input provenance, library instrumentation, and YAML stdout."""
     source = tmp_path / "input.jsonl"
     source.write_text(
         Trace(
@@ -139,11 +139,12 @@ def _run_cli(source, enabled):
     from nooa import Agent, strategy
     from nooa.strategies import CodeActStrategy
     from nooa.unifiedllm import CompletionClient, FakeLLMClient, LLMResponse, ToolCall
+    from opentelemetry.exporter.otlp.proto.http import Compression
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
     from compass.cli.main import main
     from compass.compass_signals.compass_signals import CompassSignalResult
-    from compass.telemetry import span
+    from compass.telemetry import record_span
 
     class SmallAgent(Agent):
         @strategy(CodeActStrategy())
@@ -169,7 +170,7 @@ def _run_cli(source, enabled):
                 )
             ]
         )
-        with span("evidence.test") as record:
+        with record_span("evidence.test") as record:
             assert await SmallAgent(llm=fake).answer() == 7
             async with CompletionClient(
                 model="openai/gpt-4o-mini", api_key="dummy", mock_response="Hello"
@@ -178,7 +179,7 @@ def _run_cli(source, enabled):
                     await llm.acall([{"role": "user", "content": "Say hello"}])
                 ).content == "Hello"
             try:
-                with span("failed_tool"):
+                with record_span("failed_tool"):
                     raise ValueError("expected test failure")
             except ValueError:
                 pass
@@ -188,7 +189,7 @@ def _run_cli(source, enabled):
 
     exporter = InMemorySpanExporter()
     args = ["--trace.filesystem.path", str(source)]
-    with patch("compass.telemetry.exporters.otlp", return_value=exporter) as factory:
+    with patch("compass.telemetry.OTLPSpanExporter", return_value=exporter) as factory:
         with patch("compass.cli.main._run_compass_signals", analyze):
             assert main(args) == 0
         assert factory.called == enabled
@@ -197,12 +198,14 @@ def _run_cli(source, enabled):
         assert not records
     else:
         factory.assert_called_once_with(
-            "https://telemetry.example.com/api/v1/otel/v1/traces",
-            {
+            endpoint="https://telemetry.example.com/api/v1/otel/v1/traces",
+            headers={
                 "x-api-key": "test-key",
                 "Langsmith-Project": "custom-project",
                 "X-Tenant-Id": "telemetry-workspace",
             },
+            compression=Compression.Gzip,
+            timeout=60,
         )
         root = next(r for r in records if r.name == "compass")
         metadata = json.loads(str((root.attributes or {})["metadata"]))
@@ -213,6 +216,14 @@ def _run_cli(source, enabled):
         ids = {r.context.span_id for r in records}
         assert all(r.parent.span_id in ids for r in records if r.parent)
         assert json.loads(str((root.attributes or {})["output.value"]))["insights"] == []
+
+        inputs = json.loads(str((root.attributes or {})["input.value"]))
+        assert inputs["input_source"] == {
+            "source": f"fs:{source}",
+            "trace_count": 1,
+            "call_count": 0,
+            "distinct_logical_cases": 1,
+        }
         ingestion = next(r for r in records if r.name == "ingestion")
         assert json.loads(str((ingestion.attributes or {})["output.value"])) == {"trace_count": 1}
         assert any(r.name == "code_execution" for r in records)

@@ -32,9 +32,13 @@ from pydantic import ValidationError
 from pydantic_settings import CliSettingsSource
 from rich.console import Console
 
-from compass.cli.output import RunOutput, RunResult, display_name
+from compass import telemetry_phases as telemetry
+from compass.cli.output import RunOutput, RunResult, display_name, signal_limitations
 from compass.compass_signals.builtins import registered_builtin_signals
-from compass.compass_signals.compass_signals import CompassSignalResult, Problem
+from compass.compass_signals.compass_signals import (
+    CompassSignalResult,
+    Problem,
+)
 from compass.config import CompassSignalsConfig, RunConfig, TraceConfig
 from compass.insight import Insight, load_insights, resolve_trace_links
 from compass.insights_generation.confidence import InsightConfidence
@@ -47,8 +51,8 @@ from compass.insights_generation.config import (
 )
 from compass.insights_generation.defaults import DEFAULT_MAX_TOKENS, DEFAULT_MODEL
 from compass.insights_generation.insight_compilation import InsightCompilation
-from compass.insights_generation.validation import ProblemValidation
-from compass.telemetry import span, telemetry_session
+from compass.insights_generation.validation import EvidenceValidation, ProblemValidation
+from compass.telemetry import record_input_metadata, record_span, telemetry_session
 from compass.trace_loaders.atif import ATIFTraceLoader
 from compass.trace_loaders.braintrust import (
     BRAINTRUST_DEFAULT_MAX_TRACES,
@@ -256,14 +260,16 @@ async def _run_compass_signals(
             progress(tuple(name for name in registry.names if name in active))
 
     async def analyze(name: str) -> CompassSignalResult:
+        configuration = registry.configuration(name)
+
         def started() -> None:
             active.add(name)
             changed()
 
         try:
-            with span(f"evidence.{name}") as record:
+            with telemetry.signal(name, configuration, len(snapshot)) as record:
                 result = await registry.analyze(name, snapshot, on_start=started)
-                record.set_output(result)
+                telemetry.record_signal_result(record, result)
                 return result
         finally:
             if name in active:
@@ -281,8 +287,8 @@ async def _validate_evidence_with_code(
     snapshot: TraceSnapshot,
     code_base_path: Path,
     llm: UnifiedLLM,
-) -> list[CompassSignalResult]:
-    """Keep only Problems that the supplied codebase supports."""
+) -> EvidenceValidation:
+    """Evaluate problem support concurrently, preserving input order in the decisions."""
 
     code_base_path = code_base_path.expanduser().resolve()
     if not code_base_path.is_dir():
@@ -292,13 +298,12 @@ async def _validate_evidence_with_code(
     async def validate_problem(
         problem: Problem, supporting_traces: tuple[Trace, ...]
     ) -> bool | None:
-        with span("validate_problem") as record:
-            record.set_input({"problem": problem, "code_base": str(code_base_path)})
+        with telemetry.problem_validation(problem, code_base_path) as record:
             decision = await validator.is_supported(problem, supporting_traces)
-            record.set_output({"supported": decision})
+            telemetry.record_support(record, decision)
             return decision
 
-    async def validate_result(result: CompassSignalResult) -> CompassSignalResult:
+    async def validate_result(result: CompassSignalResult) -> list[bool | None]:
         validations = []
         for problem in result.problems:
             supporting_traces = tuple(
@@ -306,15 +311,14 @@ async def _validate_evidence_with_code(
             )
             validations.append(validate_problem(problem, supporting_traces))
 
-        decisions = await asyncio.gather(*validations)
-        retained_problems = tuple(
-            problem
-            for problem, decision in zip(result.problems, decisions, strict=True)
-            if decision is not False
-        )
-        return result.model_copy(update={"problems": retained_problems})
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(validation) for validation in validations]
+        return [task.result() for task in tasks]
 
-    return list(await asyncio.gather(*(validate_result(result) for result in evidence)))
+    async with asyncio.TaskGroup() as group:
+        tasks = [group.create_task(validate_result(result)) for result in evidence]
+
+    return EvidenceValidation(evidence, [task.result() for task in tasks])
 
 
 async def _rate_confidence_with_code(
@@ -342,10 +346,14 @@ async def _rate_confidence_with_code(
             for trace in (supporting_trace(item.trace_id) for item in insight.evidence)
             if trace is not None
         )
-        rating = await rater.rate(insight, supporting_traces)
-        return insight.model_copy(update={"confidence": rating})
+        with telemetry.insight_confidence(insight, code_base_path) as record:
+            rating = await rater.rate(insight, supporting_traces)
+            telemetry.record_rating(record, insight, rating)
+            return insight.model_copy(update={"confidence": rating})
 
-    return list(await asyncio.gather(*(rate_insight(insight) for insight in insights)))
+    async with asyncio.TaskGroup() as group:
+        tasks = [group.create_task(rate_insight(insight)) for insight in insights]
+    return [task.result() for task in tasks]
 
 
 def _build_llm(config: RunConfig, api_key: str) -> CompletionClient:
@@ -374,10 +382,12 @@ def _build_llm(config: RunConfig, api_key: str) -> CompletionClient:
 async def _generate_insights(config: RunConfig, output: RunOutput) -> RunResult:
     api_key = _check_environment(config)
     async with output.progress():
-        with span("ingestion") as record:
+        with record_span("ingestion") as record:
             record.set_input(config.trace)
-            snapshot = await asyncio.to_thread(_configured_trace_loader(config.trace).load)
+            loader = _configured_trace_loader(config.trace)
+            snapshot = await asyncio.to_thread(loader.load)
             record.set_output({"trace_count": len(snapshot)})
+        record_input_metadata(config, loader)
         output.trace_count = len(snapshot)
         output.activity = "Checking prerequisites"
 
@@ -401,6 +411,7 @@ async def _generate_insights(config: RunConfig, output: RunOutput) -> RunResult:
             evidence=evidence,
             insights=list(existing),
             existing_insights=existing,
+            limitations=signal_limitations(evidence),
         )
         if any(item.problems for item in evidence):
             run_timestamp = datetime.now(timezone.utc)
@@ -410,10 +421,12 @@ async def _generate_insights(config: RunConfig, output: RunOutput) -> RunResult:
         result.insights = resolve_trace_links(result.insights, snapshot, existing)
         if config.code_base is not None and result.insights:
             output.activity = "Investigating insight confidence against the codebase"
-            async with _build_llm(config, api_key) as llm:
-                result.insights = await _rate_confidence_with_code(
-                    result.insights, snapshot, config.code_base, llm
-                )
+            with telemetry.confidence(result.insights, config.code_base) as record:
+                async with _build_llm(config, api_key) as llm:
+                    result.insights = await _rate_confidence_with_code(
+                        result.insights, snapshot, config.code_base, llm
+                    )
+                telemetry.record_confidence(record, result.insights)
         return result
 
 
@@ -429,22 +442,28 @@ async def _compile_evidence(
     async with _build_llm(config, api_key) as llm:
         if config.code_base is not None:
             output.activity = "Checking candidate issues against the codebase"
-            evidence = await _validate_evidence_with_code(evidence, snapshot, config.code_base, llm)
-            result.rejected_by_code = sum(len(item.problems) for item in result.evidence) - sum(
-                len(item.problems) for item in evidence
-            )
+            with telemetry.validation(evidence, config.code_base) as record:
+                validation = await _validate_evidence_with_code(
+                    evidence, snapshot, config.code_base, llm
+                )
+                telemetry.record_validation(record, validation)
+            evidence = validation.retained_evidence()
+            result.rejected_by_code = validation.rejected_count
+            if validation.unresolved_count:
+                result.limitations.append(
+                    f"Code validation could not determine support for {validation.unresolved_count} candidate problem(s); these were retained for compilation."
+                )
         if not any(item.problems for item in evidence):
             return result.existing_insights
         output.activity = "Reviewing candidate issues for actionable insights"
-        with span("compilation") as record:
-            record.set_input({"evidence": evidence, "existing_insights": result.existing_insights})
+        with telemetry.compilation(evidence, result.existing_insights) as record:
             insights = await InsightCompilation(llm=llm).compile_insights(
                 evidence,
                 snapshot,
                 result.existing_insights,
                 run_timestamp,
             )
-            record.set_output({"insights": insights})
+            telemetry.record_insights(record, insights)
             return insights
 
 
@@ -527,13 +546,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if config.output_path == Path("-") or not sys.stdout.isatty():
                 print(rendered, end="")
             output.report(result, config.output_path)
-            record.set_output(
-                {
-                    "trace_count": result.trace_count,
-                    "insights": result.insights,
-                    "rejected_by_code": result.rejected_by_code,
-                },
-            )
+            telemetry.record_run(record, result)
         return EXIT_OK
     except SetupError as error:
         output.console.print(str(error), soft_wrap=True)
