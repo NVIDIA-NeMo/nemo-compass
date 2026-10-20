@@ -1,0 +1,60 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Prepare release
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: Commit SHA (leave blank to use the selected branch)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    uses: ./.github/workflows/ci.yaml
+    with:
+      release-ref: ${{ inputs.commit || github.sha }}
+
+  draft-release:
+    name: Tag and draft release
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout validated commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+
+      - name: Download validated artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-distributions
+          path: dist
+
+      - name: Tag the validated commit and create a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+        working-directory: dist
+        run: |
+          sha256sum --check SHA256SUMS
+          git push origin "$RELEASE_COMMIT:refs/tags/$RELEASE_TAG"
+          gh release create "$RELEASE_TAG" \
+            --title "nemo-compass $RELEASE_TAG" \
+            --verify-tag --draft --generate-notes --prerelease="$PRERELEASE" \
+            -- *.whl *.tar.gz SHA256SUMS

@@ -12,7 +12,7 @@ With [uv and Git installed](../../README.md#start-here), install the CLI:
 
 ```bash
 uv tool install \
-  'insight-agent @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+  'nemo-compass @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
 ```
 
 [Configure your inference model and key](../model-access.md#choose-a-model).
@@ -33,7 +33,7 @@ trace:
 ```
 
 ```bash
-insight-agent --config config.yaml
+compass --config config.yaml
 ```
 
 Open `insights.yml` if the run produced insights. [Read your results](../results.md)
@@ -51,7 +51,7 @@ or `status` (`success`, `error`, `cancelled`, or `unknown`). If you set both
 For a single run:
 
 ```bash
-insight-agent --config config.yaml --trace.intake.query.experiment-id my-experiment-id
+compass --config config.yaml --trace.intake.query.experiment-id my-experiment-id
 ```
 
 `sort` defaults to `started_at` (oldest first); use `-started_at` for newest first.

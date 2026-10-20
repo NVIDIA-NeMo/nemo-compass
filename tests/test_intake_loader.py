@@ -12,18 +12,18 @@ from itertools import permutations
 import httpx
 import pytest
 
-from insight_agent.cli.main import (
+from compass.cli.main import (
     _configured_trace_loader,
 )
-from insight_agent.config import TraceConfig
-from insight_agent.trace_loaders.intake import (
+from compass.config import TraceConfig
+from compass.trace_loaders.intake import (
     IntakeLoadError,
     IntakeStatus,
     IntakeTraceLoader,
     IntakeTraceLoaderConfig,
     IntakeTraceQuery,
 )
-from insight_agent.traces import UNSET, SpanKind, Trace
+from compass.traces import UNSET, SpanKind, Trace
 
 BASE_URL = "https://platform.example.test"
 WORKSPACE = "example-workspace"
@@ -766,7 +766,7 @@ def test_experiment_lookup_failure_does_not_load_unfiltered_traces(monkeypatch):
 
 
 def test_experiment_id_cli_overrides_yaml(tmp_path):
-    from insight_agent.cli.main import get_config
+    from compass.cli.main import get_config
 
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

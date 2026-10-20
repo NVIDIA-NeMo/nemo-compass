@@ -45,7 +45,7 @@ is supplied.
 CLI options override individual YAML values. YAML uses underscores; CLI options use hyphens:
 
 ```bash
-insight-agent --config config.yaml \
+compass --config config.yaml \
   --trace.max-traces 25 \
   --output-path investigation.yml
 ```
@@ -53,7 +53,7 @@ insight-agent --config config.yaml \
 You can also run without YAML:
 
 ```bash
-insight-agent --trace.filesystem.path traces.jsonl --max-tokens 16384
+compass --trace.filesystem.path traces.jsonl --max-tokens 16384
 ```
 
 To enable code-aware validation and confidence review, set `code_base` in YAML:
@@ -65,14 +65,14 @@ code_base: ../my-agent
 Or set it for a single run:
 
 ```bash
-insight-agent --config config.yaml --code-base ../my-agent
+compass --config config.yaml --code-base ../my-agent
 ```
 
 Validation and confidence both add source investigation calls and run by default whenever
 `code_base` is set; there is no separate flag. Severity is assigned during final compilation
 with or without `code_base`.
 
-Use `insight-agent --help-all` for every option and its default.
+Use `compass --help-all` for every option and its default.
 Explicit CLI and YAML model settings take priority over [environment defaults](model-access.md#credentials).
 
 ## Repeat a run

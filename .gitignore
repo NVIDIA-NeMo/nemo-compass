@@ -20,9 +20,3 @@ tmp
 
 # Scratch space for onboarding a real corpus
 local
-
-# Generated from the repository's authoritative licensing files during packaging.
-/packages/trace-ingest/LICENSE
-/packages/trace-ingest/NOTICE
-/packages/trace-ingest/THIRD_PARTY_LICENSES.md
-/packages/trace-ingest/third_party/

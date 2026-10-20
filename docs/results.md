@@ -14,6 +14,8 @@ An illustrative entry in `insights.yml`:
     After lookup_order reports an unknown order ID, the agent repeats
     the same request without asking the customer to correct the ID.
   severity: med
+  severity_reason: >-
+    The agent completes the task only after an unnecessary retry.
   evidence:
     - trace_id: run-12
       url: https://observability.example.com/traces/run-12
@@ -101,12 +103,15 @@ for skipped analyses and limitations.
 ## Saved output
 
 The output is a YAML list with `name`, `description`, `evidence`, and optional
-`updated_date`, `severity`, and `confidence` for each insight. Each insight has at least two
-supporting traces. Empty spans and absent URLs are omitted.
+`updated_date`, `severity`, `severity_reason`, and `confidence` for each insight.
+Each insight has at least two supporting traces. Empty spans and absent URLs are omitted.
 
 `severity` describes observed consequence after recovery: `low`, `med`, or `high`.
 Final compilation assigns it to new insights by default; it is omitted when the
 outcome is unknown. It does not depend on trace count or confidence.
+`severity_reason` states the observed consequence behind the rating in one short
+sentence. It is omitted when severity is unknown; existing insights retain saved reasons.
+Compilation may fill a missing reason for an existing insight with a severity rating.
 
 `confidence` describes how well source investigation supports the insight's
 behavior, root cause, scope, and implied remediation. It is set when
@@ -124,7 +129,7 @@ By default, a non-empty collection is written to `insights.yml`.
 per run, or capture stdout to receive the current result, including `[]`:
 
 ```bash
-insight-agent --config config.yaml --output-path - > run-insights.yml
+compass --config config.yaml --output-path - > run-insights.yml
 ```
 
 Progress and the report go to stderr. Piped stdout contains YAML.

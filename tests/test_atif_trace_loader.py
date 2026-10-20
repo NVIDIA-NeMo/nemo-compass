@@ -11,11 +11,11 @@ import pytest
 from nooa.unifiedllm import FakeLLMClient
 from pydantic import ValidationError
 
-import insight_agent.cli.main as cli
-from insight_agent.compass_signals.tool_issues.signal import to_tool_issue_trace
-from insight_agent.config import RunConfig, TraceConfig
-from insight_agent.trace_loaders import ATIFTraceConfig, ATIFTraceLoader, ATIFTraceLoadError
-from insight_agent.traces import UNSET, Span, SpanKind, TokenCounts, Trace, TraceAggregate
+import compass.cli.main as cli
+from compass.compass_signals.tool_issues.signal import to_tool_issue_trace
+from compass.config import RunConfig, TraceConfig
+from compass.trace_loaders import ATIFTraceConfig, ATIFTraceLoader, ATIFTraceLoadError
+from compass.traces import UNSET, Span, SpanKind, TokenCounts, Trace, TraceAggregate
 
 FIXTURE = Path(__file__).parent / "data" / "atif_trajectories.jsonl"
 
@@ -312,7 +312,7 @@ def test_yaml_cli_and_exclusive_source_selection(tmp_path):
 
 def test_complete_cli_runs_real_compass_signal(tmp_path, monkeypatch, capsys, select_signals):
     compilation = SimpleNamespace(compile_insights=AsyncMock(return_value=[]))
-    monkeypatch.setenv("INSIGHT_AGENT_API_KEY", "not-real")
+    monkeypatch.setenv("COMPASS_API_KEY", "not-real")
     monkeypatch.setattr(cli, "_build_llm", lambda config, api_key: FakeLLMClient())
     monkeypatch.setattr(cli, "InsightCompilation", lambda llm: compilation)
     output = tmp_path / "insights.yml"

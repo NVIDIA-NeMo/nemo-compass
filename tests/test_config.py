@@ -4,7 +4,9 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from insight_agent.config import CompassSignalsConfig, RunConfig
+import pytest
+
+from compass.config import CompassSignalsConfig, RunConfig
 
 
 def test_cli_nested_override_preserves_yaml_siblings(tmp_path: Path) -> None:
@@ -83,15 +85,15 @@ def test_yaml_accepts_code_base(tmp_path: Path) -> None:
     assert config.code_base == Path("../my-agent")
 
 
-def test_langfuse_export_yaml_with_cli_limit(tmp_path: Path) -> None:
+def test_langfuse_trace_export_file_yaml_with_cli_limit(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "trace:\n  langfuse_export:\n    path: exports\ncompass_signals:\n  tool_issues: {}\n",
+        "trace:\n  langfuse_trace_export_file:\n    api_version: v3\n    path: exports\ncompass_signals:\n  tool_issues: {}\n",
         encoding="utf-8",
     )
     config = RunConfig(_cli_parse_args=["--config", str(config_path), "--trace.max-traces", "200"])
-    assert config.trace.langfuse_export is not None
-    assert config.trace.langfuse_export.path == Path("exports")
+    assert config.trace.langfuse_trace_export_file is not None
+    assert config.trace.langfuse_trace_export_file.path == Path("exports")
     assert config.trace.max_traces == 200
 
 
@@ -165,3 +167,22 @@ def test_ethos_yaml_and_cli_override_independent_of_signal_selection(tmp_path):
     assert config.ethos_path == cli_ethos
     assert config.compass_signals.ethos_divergence is None
     assert config.model_dump(mode="json")["ethos_path"] == str(cli_ethos)
+
+
+@pytest.mark.parametrize(
+    "source,match",
+    [
+        ({"path": "traces.jsonl"}, "api_version"),
+        ({"api_version": "v3"}, "path"),
+        (
+            {"api_version": "v3", "path": "traces.jsonl", "scores_path": "scores.json"},
+            "require api_version=v4",
+        ),
+        ({"api_version": "v4"}, "path"),
+    ],
+)
+def test_langfuse_export_requires_explicit_version_and_matching_paths(source, match):
+    from compass.config import TraceConfig
+
+    with pytest.raises(ValueError, match=match):
+        TraceConfig.model_validate({"langfuse_trace_export_file": source})

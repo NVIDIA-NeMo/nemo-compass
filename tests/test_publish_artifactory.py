@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Exercise the two-package release with a local build/registry substitute."""
+"""Exercise the Compass release with a local build/registry substitute."""
 
 import importlib.util
 import sys
@@ -22,7 +22,7 @@ spec.loader.exec_module(publisher)
 @pytest.mark.parametrize(
     "scenario", ["fresh", "reuse", "conflict", "corrupt", "dry-run", "stable-app"]
 )
-def test_release_dependency_before_application(tmp_path, monkeypatch, scenario):
+def test_release_compass_wheel(tmp_path, monkeypatch, scenario):
     monkeypatch.setattr(publisher, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(publisher, "DIST_DIR", tmp_path)
     monkeypatch.setenv("ARTIFACTORY_PYPI_URL", "https://artifactory.nvidia.com/api/pypi/test")
@@ -34,23 +34,21 @@ def test_release_dependency_before_application(tmp_path, monkeypatch, scenario):
 
     def run(command, *, env):
         if command[1] == "build":
-            name = command[command.index("--package") + 1]
+            name = "nemo-compass"
             assert "--no-sources" in command and "--wheel" in command
-            assert ("--clear" in command) == (not builds)
+            assert "--clear" in command
             assert not {"ARTIFACTORY_TOKEN", "UV_PUBLISH_TOKEN", "UV_PUBLISH_PASSWORD"} & env.keys()
             builds.append(name)
-            version = (
-                "0.1.0rc1" if name == "insight-agent" and scenario != "stable-app" else "0.1.0"
-            )
+            version = "0.1.0rc1" if scenario != "stable-app" else "0.1.0"
             stem = f"{name.replace('-', '_')}-{version}"
             path = tmp_path / f"{stem}-py3-none-any.whl"
             with zipfile.ZipFile(path, "w") as wheel:
                 wheel.writestr(f"{stem}.dist-info/METADATA", f"Name: {name}\nVersion: {version}\n")
-            if name == "trace-ingest" and scenario in {"reuse", "conflict"}:
+            if scenario in {"reuse", "conflict"}:
                 remote[path.name] = path.read_bytes() if scenario == "reuse" else b"other release"
         else:
             assert command[1] == "publish"
-            assert builds == ["trace-ingest", "insight-agent"]
+            assert builds == ["nemo-compass"]
             assert env["UV_PUBLISH_PASSWORD"] == "test-secret"
             assert "UV_PUBLISH_TOKEN" not in env
             path = Path(command[-1])
@@ -79,21 +77,16 @@ def test_release_dependency_before_application(tmp_path, monkeypatch, scenario):
         result = publisher.main(["--dry-run"] if scenario == "dry-run" else [])
         assert result == (2 if scenario in {"conflict", "stable-app"} else 0)
 
-    assert builds == ["trace-ingest", "insight-agent"]
+    assert builds == ["nemo-compass"]
     if scenario == "stable-app":
         assert events == []
     elif scenario == "dry-run":
-        assert events == [("dry-run", "trace-ingest"), ("dry-run", "insight-agent")]
+        assert events == [("dry-run", "nemo-compass")]
     elif scenario == "conflict":
-        assert events == [("download", "trace-ingest")]
+        assert events == [("download", "nemo-compass")]
     else:
-        expected = [("download", "trace-ingest")]
+        expected = [("download", "nemo-compass")]
         if scenario != "reuse":
-            expected.append(("upload", "trace-ingest"))
-        expected.extend([("checksums", "trace-ingest"), ("download", "trace-ingest")])
-        if scenario != "corrupt":
-            expected.extend(
-                (action, "insight-agent")
-                for action in ("download", "upload", "checksums", "download")
-            )
+            expected.append(("upload", "nemo-compass"))
+        expected.extend([("checksums", "nemo-compass"), ("download", "nemo-compass")])
         assert events == expected

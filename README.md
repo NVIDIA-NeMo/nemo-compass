@@ -16,7 +16,7 @@ NeMo Compass is an applied research project with a goal of improving the tools a
 | Anomaly Detection | What outlier behaviors exist in a set of agent traces? | Scores outliers with an Isolation Forest and reports feature-level deviations |
 | Tool Issues	| What recurring problems occur when the agent uses tools?	| Checks tool calls and results for invalid arguments, failures, missing results, and unproductive retries |
 | User Sentiment | What recurring complaints do users have about the agent? | Screens recorded human messages with a classifier, then reviews recurring complaints in context |
-| Ethos.md Divergence | Where does the agent’s behavior conflict with its stated rules and goals? | Compares traces with the agent’s ethos.md document and investigates possible gaps |
+| Ethos.md Divergence | Where does the agent’s behavior conflict with its stated rules and goals? | Compares traces with the agent’s [ethos.md](https://github.com/NVIDIA/skills/blob/main/skills/ethos-orchestrate/README.md#how-to-use) document and investigates possible gaps |
 | Grader failures | What behaviors recur in traces with poor evaluation results? | Uses recorded scores and feedback to select traces, then investigates shared failure patterns |
 
 Learn more about each current Compass Signal: [Architecture](docs/architecture.md)
@@ -48,7 +48,8 @@ Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and
 | JSONL or ATIF files | [Trace files](docs/sources/files.md) |
 | Another trace store | [Convert your traces](docs/sources/custom.md) |
 
-If `insight-agent` is not found after installation, run `uv tool update-shell`
+The distribution is named `nemo-compass`; the command is `compass`.
+If `compass` is not found after installation, run `uv tool update-shell`
 and restart your terminal.
 
 ## After your first run
@@ -58,7 +59,7 @@ and restart your terminal.
 - [Data and model access](docs/model-access.md) — configure your inference endpoint and understand where data goes.
 - [Configuration reference](docs/configuration.md) — overrides, limits, and repeatable runs.
 
-[Development](DEVELOPMENT.md) · [Architecture](docs/architecture.md)
+[Development](DEVELOPMENT.md) · [Releasing](RELEASING.md) · [Architecture](docs/architecture.md)
 
 # Research Topics 
 

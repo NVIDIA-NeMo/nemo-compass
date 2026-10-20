@@ -8,18 +8,18 @@ from unittest.mock import Mock
 import pytest
 from nooa.unifiedllm import FakeLLMClient
 
-from insight_agent.cli.main import _run_compass_signals
-from insight_agent.compass_signals.anomaly_and_patterns.signal import (
+from compass.cli.main import _run_compass_signals
+from compass.compass_signals.anomaly_and_patterns.signal import (
     AnomalyAndPatternsAnalysis,
     NormalizedCall,
     NormalizedTrace,
     problems_from_analysis,
     run_anomaly_and_patterns,
 )
-from insight_agent.compass_signals.tool_issues.signal import build_cards, problems_from_cards
-from insight_agent.compass_signals.user_sentiment import signal as sentiment
-from insight_agent.config import CompassSignalsConfig
-from insight_agent.traces import Trace, TraceAggregate, TraceSnapshot
+from compass.compass_signals.tool_issues.signal import build_cards, problems_from_cards
+from compass.compass_signals.user_sentiment import signal as sentiment
+from compass.config import CompassSignalsConfig
+from compass.traces import Trace, TraceAggregate, TraceSnapshot
 
 
 @pytest.mark.parametrize("signal,preview_size", [("tool", 3), ("anomaly", 50)])

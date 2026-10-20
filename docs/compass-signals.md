@@ -13,13 +13,13 @@ All five Compass Signals are enabled by default. Each runs when its prerequisite
 
 ## Ethos divergence
 
-Provide a Markdown file describing your agent’s purpose, business rules, and boundaries.
-Use concrete requirements, such as:
+`ethos.md` is the **intent layer** for a production agent: a Markdown snapshot
+of what the agent is for, what it must not do, and what success looks like.
+This Compass Signal surfaces instances where recorded agent behavior diverges from the intent
+described in its `ethos.md`.
 
-> Help customers manage orders. Issue refunds only within 30 days of purchase.
-> Ask for confirmation before cancelling an order.
-
-Save your own rules in `ethos.md`, then add this to your configuration:
+See the [ethos.md documentation](https://github.com/NVIDIA/skills/tree/main/skills/ethos-orchestrate)
+for its definition and guidance on creating one. Then configure its path:
 
 ```yaml
 ethos_path: ethos.md
@@ -54,8 +54,8 @@ install command. Keep your source extra too. For LangSmith:
 
 ```bash
 uv tool install \
-  'insight-agent[langsmith,local-embedding] @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
-insight-agent --config config.yaml --compass-signals.user-sentiment.local-embeddings
+  'nemo-compass[langsmith,local-embedding] @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+compass --config config.yaml --compass-signals.user-sentiment.local-embeddings
 ```
 
 Or enable local embeddings in your configuration:
