@@ -31,6 +31,7 @@ from compass.trace_loaders.langfuse import (
     LangfuseV3TraceLoader,
 )
 from compass.traces import UNSET, SpanKind
+from trace_ingest.catalog import tool_catalog
 
 START = datetime(2026, 8, 1, 12, tzinfo=timezone.utc)
 END = START + timedelta(hours=1)
@@ -622,13 +623,16 @@ def test_loader_extracts_tool_catalog_from_supported_langfuse_input(
         )
     )
 
-    assert normalized.attributes["tool_catalog"] == {
+    assert tool_catalog(normalized) == {
         "search": {
             "type": "object",
             "properties": {"query": {"type": "string"}},
             "required": ["query"],
         }
     }
+    definitions = normalized.root_spans[0].tool_definitions
+    assert definitions is not UNSET
+    assert definitions[0].raw == definition
     catalog_span = (
         normalized.root_spans[0]
         if observation_type == "AGENT"
@@ -655,8 +659,16 @@ def test_loader_extracts_tool_catalog_from_supported_langfuse_input(
                 {"tools": [{"name": "root_only", "parameters": {"type": "object"}}]},
                 {"tools": [{"name": "write", "parameters": {"type": "object"}}]},
             ],
+            {"root_only": {"type": "object"}, "write": {"type": "object"}},
+            id="differing-generation-catalogs-union",
+        ),
+        pytest.param(
+            [
+                {"tools": [{"name": "write", "parameters": {"type": "object"}}]},
+                {"tools": [{"name": "write", "parameters": {"type": "string"}}]},
+            ],
             None,
-            id="conflicting-generation-catalogs",
+            id="conflicting-generation-schemas",
         ),
     ],
 )
@@ -688,10 +700,8 @@ def test_generation_catalogs_override_root_fallback(generation_inputs, expected)
         )
     )
 
-    if expected is None:
-        assert "tool_catalog" not in normalized.attributes
-    else:
-        assert normalized.attributes["tool_catalog"] == expected
+    assert "tool_catalog" not in normalized.attributes
+    assert tool_catalog(normalized) == expected
 
 
 @pytest.mark.parametrize(
@@ -973,3 +983,39 @@ def test_config_requires_a_valid_bounded_time_window(
             from_timestamp=from_timestamp,
             to_timestamp=to_timestamp,
         )
+
+
+def test_generation_root_carries_definitions_and_tool_results() -> None:
+    generation = observation(
+        "generation",
+        observation_type="GENERATION",
+        input_value={"tools": [{"name": "search", "parameters": {"type": "object"}}]},
+    )
+    tool = observation(
+        "tool",
+        parent_id="generation",
+        observation_type="TOOL",
+        start_time=START + timedelta(seconds=1),
+        name="search",
+        input_value={"query": "x"},
+        output_value={"ok": True},
+    )
+    full_trace = provider_trace(observations=[tool, generation])
+    client = FakeClient(pages=[([full_trace], 1)], details={"trace-1": full_trace})
+    trace = next(
+        iter(
+            LangfuseV3TraceLoader(
+                LangfuseTraceConfig(START, END, base_url="https://langfuse.example.com"),
+                client=client,
+            ).load()
+        )
+    )
+    root = trace.root_spans[0]
+    assert root.kind is SpanKind.LLM
+    assert root.tool_definitions is not UNSET
+    assert [definition.name for definition in root.tool_definitions] == ["search"]
+    assert tool_catalog(trace) == {"search": {"type": "object"}}
+    span = root.children[0]
+    assert span.tool_call is not None
+    assert len(span.tool_call.results) == span.tool_call.result_count == 1
+    assert span.tool_call.results[0].is_error is (True if span.error else None)

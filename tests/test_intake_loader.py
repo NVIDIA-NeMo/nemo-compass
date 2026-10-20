@@ -24,6 +24,8 @@ from compass.trace_loaders.intake import (
     IntakeTraceQuery,
 )
 from compass.traces import UNSET, SpanKind, Trace
+from trace_ingest.catalog import tool_catalog
+from trace_ingest.models import ToolResult
 
 BASE_URL = "https://platform.example.test"
 WORKSPACE = "example-workspace"
@@ -272,7 +274,8 @@ def test_intake_loader_returns_canonical_snapshot_without_writing_files(tmp_path
     assert trace.root_spans[0].start_time.tzinfo == timezone.utc
     assert trace.attributes["task_text"] == {"messages": [{"role": "user", "content": "find it"}]}
     assert trace.attributes["logical_case_id"] == "case-a"
-    assert trace.attributes["tool_catalog"] == {
+    assert "tool_catalog" not in trace.attributes
+    assert tool_catalog(trace) == {
         "search": {
             "type": "object",
             "properties": {"query": {"type": "string"}},
@@ -293,6 +296,9 @@ def test_intake_loader_returns_canonical_snapshot_without_writing_files(tmp_path
     assert tool.tool_call.result_id == "call-1"
     assert tool.tool_call.index == 0
     assert tool.attributes["explicit_error"] is False
+    assert tool.tool_call.results == [
+        ToolResult(content='{"documents":["report"]}', is_error=False)
+    ]
 
     assert Trace.model_validate_json(trace.model_dump_json()) == trace
     assert trace.model_dump(exclude_unset=True)["root_spans"][0]["children"][0]["id"] == "tool"

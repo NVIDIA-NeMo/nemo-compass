@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from compass.compass_signals._trace import walk_spans
 from compass.compass_signals.compass_signals import CompassSignalResult, Problem
 from compass.traces import UNSET, SpanKind, Trace, TraceSnapshot
+from trace_ingest.catalog import tool_catalog as trace_tool_catalog
 
 DETECTOR_VERSION = "tid-v1"
 CARD_MINIMUM_CASES = 3
@@ -759,7 +760,7 @@ def to_tool_issue_trace(trace: Trace) -> TraceRecord:
             )
         )
 
-    tool_catalog = trace.attributes.get("tool_catalog")
+    tool_catalog = trace_tool_catalog(trace)
     orphan_results = trace.attributes.get("orphan_results")
     return TraceRecord(
         trace_id=trace.id,
@@ -769,7 +770,12 @@ def to_tool_issue_trace(trace: Trace) -> TraceRecord:
             if trace.attributes.get("logical_case_id") is not None
             else None
         ),
-        tool_catalog=dict(tool_catalog) if isinstance(tool_catalog, Mapping) else None,
+        tool_catalog={
+            name: dict(schema) if isinstance(schema, Mapping) else None
+            for name, schema in tool_catalog.items()
+        }
+        if tool_catalog is not None
+        else None,
         orphan_results=tuple(dict(item) for item in orphan_results if isinstance(item, Mapping))
         if isinstance(orphan_results, Sequence)
         else (),

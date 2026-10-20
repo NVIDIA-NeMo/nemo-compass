@@ -1,13 +1,45 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Load ATIF JSONL into canonical traces.
+"""Load ATIF trajectories into canonical traces.
 
 Source contract: https://github.com/harbor-framework/harbor/blob/main/rfcs/0001-trajectory-format.md
+
+A path with the ``.json`` suffix holds one whole-file trajectory (Harbor writes a
+pretty-printed ``agent/trajectory.json``); any other suffix is JSONL with one
+trajectory per non-blank line. A trajectory without ``trajectory_id`` and
+``session_id`` gets the id ``"atif-" + sha256(raw).hexdigest()[:16]``, where
+``raw`` is the whole file for ``.json`` or the line's bytes without its line
+terminator for JSONL, and no ``logical_case_id``.
+
+Round-trip encoding. Every span keeps enough source data to rebuild the
+trajectory exactly (equal as JSON):
+
+* AGENT span (``trajectory`` or ``<parent>/subagent/{i}``):
+  ``attributes["atif"]`` is the trajectory without ``steps`` and, only when it is
+  a non-empty list, ``subagent_trajectories`` (an empty list or null stays).
+  Embedded subagent spans also carry ``attributes["atif_layout"] =
+  {"subagent_index": i}``. A trajectory's own subagents are its descendant AGENT
+  spans with ``subagent_index``, without descending into another such span.
+* Step span (``<agent>/step/{n}``): ``attributes["atif"]`` is the step without
+  ``message`` and, only when non-null, ``tool_calls`` and ``observation`` (null
+  values stay). ``message`` is ``input["messages"][0]["content"]`` for
+  user/system steps and ``output["content"]`` for agent steps.
+  ``attributes["atif_layout"] = {"observation": <observation without "results">
+  or None when the observation is absent or null, "tool_calls_key": <tool_calls
+  is present and non-null>}``.
+* TOOL span (``<step>/tool/{k}``, in ``tool_calls`` order):
+  ``attributes["atif"] = {"call": <raw call>, "results": [<raw matched
+  results>]}`` and ``attributes["atif_layout"] = {"result_indexes": [<index of
+  each matched result in observation.results>]}``.
+* Unlinked observation CHAIN span (``<step>/observation/{k}``):
+  ``attributes["atif"]`` is the raw result and ``attributes["atif_layout"] =
+  {"result_index": i}``.
 """
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -15,7 +47,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, with_config
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, with_config
 
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
@@ -24,21 +56,31 @@ from trace_ingest.models import (
     SpanKind,
     TokenCounts,
     ToolCall,
+    ToolDefinition,
+    ToolResult,
     Trace,
     TraceAggregate,
     TraceSnapshot,
 )
 from trace_ingest.source_links import file_source_url
 
-__all__ = ["ATIFTraceConfig", "ATIFTraceDescription", "ATIFTraceLoadError", "ATIFTraceLoader"]
+__all__ = [
+    "ATIFTraceConfig",
+    "ATIFTraceDescription",
+    "ATIFTraceLoadError",
+    "ATIFTraceLoader",
+    "tool_definitions_from_atif",
+]
+
+TOOL_ERROR = "ATIF tool result reported is_error"
 
 
 class ATIFTraceLoadError(ValueError):
-    """An ATIF JSONL corpus cannot be normalized unambiguously."""
+    """An ATIF corpus cannot be normalized unambiguously."""
 
 
 class ATIFTraceConfig(BaseModel):
-    """Settings for an ATIF JSONL file."""
+    """Settings for an ATIF ``.json`` trajectory or JSONL corpus."""
 
     model_config = ConfigDict(extra="forbid")
     path: Path
@@ -115,6 +157,64 @@ def _metadata(source: Mapping[str, Any], *exclude: str) -> dict[str, Any]:
     return {key: value for key, value in source.items() if key not in exclude}
 
 
+def _first(*values: JsonValue) -> JsonValue:
+    return next((value for value in values if value is not None), None)
+
+
+def tool_definitions_from_atif(items: object) -> list[ToolDefinition]:
+    """Map ATIF ``agent.tool_definitions`` items; skip non-object or nameless items."""
+
+    definitions = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        function = item.get("function")
+        function = function if isinstance(function, dict) else {}
+        name = _first(item.get("name"), function.get("name"))
+        if not isinstance(name, str) or not name:
+            continue
+        description = _first(item.get("description"), function.get("description"))
+        extra = item.get("extra")
+        scope = extra.get("tool_scope") if isinstance(extra, dict) else None
+        server = scope.get("server") if isinstance(scope, dict) else None
+        definitions.append(
+            ToolDefinition(
+                name=name,
+                server=server if isinstance(server, str) else None,
+                description=description if isinstance(description, str) else None,
+                input_schema=_first(
+                    item.get("inputSchema"),
+                    item.get("input_schema"),
+                    item.get("parameters"),
+                    function.get("parameters"),
+                ),
+                raw=item,
+            )
+        )
+    return definitions
+
+
+def _tool_result(result: Mapping[str, Any]) -> ToolResult:
+    extra = result.get("extra")
+    flags = [
+        source[key]
+        for source in (result, extra if isinstance(extra, Mapping) else {})
+        for key in ("isError", "is_error")
+        if key in source
+    ]
+    attributes = {}
+    is_error = None
+    if any(type(flag) is not bool for flag in flags):
+        attributes["is_error_status"] = "invalid"
+    elif len(set(flags)) > 1:
+        attributes["is_error_status"] = "conflicting"
+    elif flags:
+        is_error = flags[0]
+    return ToolResult(
+        content=result.get("content", UNSET), is_error=is_error, attributes=attributes
+    )
+
+
 def _tokens(metrics: dict[str, Any], prefix: str = "") -> TokenCounts | None:
     prompt, cached, completion = (
         metrics.get(prefix + key) for key in ("prompt_tokens", "cached_tokens", "completion_tokens")
@@ -166,6 +266,11 @@ def _step_span(
         else None
     )
     metrics = step.get("metrics") or {}
+    calls = step.get("tool_calls")
+    observation = step.get("observation")
+    # Null tool_calls/observation stay in the raw step so the source rebuilds exactly.
+    rebuilt = ("message",) + (("tool_calls",) if calls is not None else ())
+    rebuilt += ("observation",) if observation is not None else ()
     span = Span(
         id=span_id,
         kind=SpanKind.LLM if is_llm else SpanKind.CHAIN,
@@ -178,20 +283,41 @@ def _step_span(
         model=(step.get("model_name") or model) if is_llm else None,
         cost_usd=_cost(metrics.get("cost_usd")),
         token_counts=_tokens(metrics),
-        attributes={"atif": _metadata(step, "message", "tool_calls", "observation")},
+        attributes={
+            "atif": _metadata(step, *rebuilt),
+            "atif_layout": {
+                "observation": _metadata(observation, "results")
+                if observation is not None
+                else None,
+                "tool_calls_key": calls is not None,
+            },
+        },
     )
-    calls = step.get("tool_calls") or []
-    matched: dict[str | None, list[_Result]] = {call["tool_call_id"]: [] for call in calls}
+    calls = calls or []
+    matched: dict[str | None, list[tuple[int, _Result]]] = {
+        call["tool_call_id"]: [] for call in calls
+    }
     if len(matched) != len(calls):
         raise ValueError(f"step {step['step_id']} contains duplicate tool_call_id values")
     matched[None] = []  # Observations not associated with a tool call.
-    for result in (step.get("observation") or {}).get("results", []):
+    for result_index, result in enumerate((observation or {}).get("results", [])):
         call_id = result.get("source_call_id")
         if call_id not in matched:
             raise ValueError(f"step {step['step_id']}: unknown source_call_id {call_id!r}")
-        matched[call_id].append(result)
+        matched[call_id].append((result_index, result))
     for index, call in enumerate(calls):
-        results = matched[call["tool_call_id"]]
+        pairs = matched[call["tool_call_id"]]
+        results = [result for _, result in pairs]
+        tool_results = [_tool_result(result) for result in results]
+        flags = [result.is_error for result in tool_results]
+        attributes: dict[str, Any] = {
+            "atif": {"call": call, "results": results},
+            "atif_layout": {"result_indexes": [result_index for result_index, _ in pairs]},
+        }
+        if True in flags:
+            attributes["explicit_error"] = True
+        elif flags and all(flag is False for flag in flags):
+            attributes["explicit_error"] = False
         output = results[0].get("content", UNSET) if len(results) == 1 else results or UNSET
         span.children.append(
             Span(
@@ -205,27 +331,29 @@ def _step_span(
                     result_id=call["tool_call_id"] if results else None,
                     result_count=len(results),
                     prior_user_text=prior_user_text,
+                    results=tool_results,
                 ),
+                error=TOOL_ERROR if True in flags else None,
                 children=[child for result in results for child in subagents(result)],
-                attributes={"atif": {"call": call, "results": results}},
+                attributes=attributes,
             )
         )
-    for index, result in enumerate(matched[None]):
+    for index, (result_index, result) in enumerate(matched[None]):
         span.children.append(
             Span(
                 id=f"{span_id}/observation/{index}",
                 kind=SpanKind.CHAIN,
                 output=result.get("content", UNSET),
                 children=subagents(result),
-                attributes={"atif": result},
+                attributes={"atif": result, "atif_layout": {"result_index": result_index}},
             )
         )
     return span
 
 
-def _trajectory_span(source: _Trajectory, prefix: str = "trajectory") -> Span:
-    if not (source.get("trajectory_id") or source.get("session_id")):
-        raise ValueError("trajectory_id or session_id is required for stable trace identity")
+def _trajectory_span(
+    source: _Trajectory, prefix: str = "trajectory", subagent_index: int | None = None
+) -> Span:
     if source.get("continued_trajectory_ref"):
         raise ValueError(
             "external continuation is not supported; combine the complete trajectory first"
@@ -238,6 +366,9 @@ def _trajectory_span(source: _Trajectory, prefix: str = "trajectory") -> Span:
         embedded[child_id] = (index, child)
     attached: set[str] = set()
 
+    def subagent_span(index: int, child: _Trajectory) -> Span:
+        return _trajectory_span(child, f"{prefix}/subagent/{index}", index)
+
     def subagents(result: _Result) -> list[Span]:
         children = []
         for ref in result.get("subagent_trajectory_ref") or []:
@@ -249,14 +380,22 @@ def _trajectory_span(source: _Trajectory, prefix: str = "trajectory") -> Span:
             if child_id in attached:
                 raise ValueError(f"subagent {child_id!r} has multiple parents")
             attached.add(child_id)
-            index, child = embedded[child_id]
-            children.append(_trajectory_span(child, f"{prefix}/subagent/{index}"))
+            children.append(subagent_span(*embedded[child_id]))
         return children
 
+    attributes: dict[str, Any] = {
+        "atif": _metadata(source, "steps", *(("subagent_trajectories",) if embedded else ()))
+    }
+    if subagent_index is not None:
+        attributes["atif_layout"] = {"subagent_index": subagent_index}
+    definitions = source["agent"].get("tool_definitions")
     root = Span(
         id=prefix,
         kind=SpanKind.AGENT,
-        attributes={"atif": _metadata(source, "steps", "subagent_trajectories")},
+        attributes=attributes,
+        tool_definitions=tool_definitions_from_atif(definitions)
+        if isinstance(definitions, list)
+        else UNSET,
     )
     prior_user_text = None
     for index, step in enumerate(source["steps"], start=1):
@@ -284,21 +423,24 @@ def _trajectory_span(source: _Trajectory, prefix: str = "trajectory") -> Span:
         )
     # Unreferenced subagents belong to the trajectory, not an invented calling step.
     root.children.extend(
-        _trajectory_span(child, f"{prefix}/subagent/{index}")
+        subagent_span(index, child)
         for child_id, (index, child) in embedded.items()
         if child_id not in attached
     )
     return root
 
 
-def _normalize(source: _Trajectory) -> Trace:
+def _normalize(source: _Trajectory, raw: bytes) -> Trace:
     root = _trajectory_span(source)
     metrics = source.get("final_metrics") or {}
     attributes = dict(root.attributes)
     if source.get("session_id") is not None:
         attributes["logical_case_id"] = source["session_id"]
-    trace_id = source.get("trajectory_id") or source.get("session_id")
-    assert trace_id is not None
+    trace_id = (
+        source.get("trajectory_id")
+        or source.get("session_id")
+        or "atif-" + hashlib.sha256(raw).hexdigest()[:16]
+    )
     return Trace(
         id=trace_id,
         root_spans=[root],
@@ -318,29 +460,39 @@ class ATIFTraceLoader:
     @cached_property
     def _loaded(self) -> tuple[TraceSnapshot, ATIFTraceDescription]:
         path = self.config.path
-        _line_number = call_count = 0
+        whole_file = path.suffix == ".json"
+        _line_number: int | None = None
+        call_count = 0
         cases: set[str] = set()
 
-        def traces() -> Iterator[Trace]:
-            nonlocal _line_number, call_count
+        def records() -> Iterator[tuple[int | None, bytes]]:
+            nonlocal _line_number
+            if whole_file:
+                yield None, path.read_bytes()
+                return
             with path.open("rb") as corpus:
                 for _line_number, raw in enumerate(corpus, 1):
-                    if not raw.strip():
-                        continue
-                    trace = _normalize(_ATIF.validate_json(raw))
-                    trace.source_url = file_source_url(path, _line_number)
-                    pending = list(trace.root_spans)
-                    while pending:
-                        span = pending.pop()
-                        call_count += span.kind is SpanKind.TOOL
-                        pending.extend(span.children)
-                    cases.add(str(trace.attributes.get("logical_case_id") or trace.id))
-                    yield trace
+                    if raw.strip():
+                        yield _line_number, raw.rstrip(b"\r\n")
+
+        def traces() -> Iterator[Trace]:
+            nonlocal call_count
+            for line_number, raw in records():
+                trace = _normalize(_ATIF.validate_json(raw), raw)
+                trace.source_url = file_source_url(path, line_number)
+                pending = list(trace.root_spans)
+                while pending:
+                    span = pending.pop()
+                    call_count += span.kind is SpanKind.TOOL
+                    pending.extend(span.children)
+                cases.add(str(trace.attributes.get("logical_case_id") or trace.id))
+                yield trace
 
         try:
             snapshot = TraceSnapshot(traces())
         except (OSError, ValueError) as error:
-            raise ATIFTraceLoadError(f"{path}:{_line_number}: invalid ATIF: {error}") from error
+            location = path if _line_number is None else f"{path}:{_line_number}"
+            raise ATIFTraceLoadError(f"{location}: invalid ATIF: {error}") from error
         if not snapshot:
             raise ATIFTraceLoadError(f"{path}: contains no ATIF trajectories")
         return snapshot, ATIFTraceDescription(

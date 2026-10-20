@@ -204,7 +204,10 @@ class Span(_TraceModel):
     )
     tool_definitions: list[ToolDefinition] | UNSET = Field(
         default=UNSET,
-        description="Tools declared to this agent; valid only for an AGENT span.",
+        description=(
+            "Tools declared to this agent, or offered to this model call; valid only for an "
+            "AGENT or LLM span."
+        ),
     )
 
     @field_validator("start_time", "end_time")
@@ -224,9 +227,12 @@ class Span(_TraceModel):
             raise ValueError(f"span {self.id!r} ends before it starts")
         if self.tool_call is not None and self.kind is not SpanKind.TOOL:
             raise ValueError("tool_call metadata requires kind=TOOL")
-        if self.tool_definitions is not UNSET and self.kind is not SpanKind.AGENT:
-            raise ValueError("tool_definitions require kind=AGENT")
+        if self.tool_definitions is not UNSET and self.kind not in _DECLARING_KINDS:
+            raise ValueError("tool_definitions require kind=AGENT or kind=LLM")
         return self
+
+
+_DECLARING_KINDS = frozenset({SpanKind.AGENT, SpanKind.LLM})
 
 
 class TraceAggregate(_TraceModel):

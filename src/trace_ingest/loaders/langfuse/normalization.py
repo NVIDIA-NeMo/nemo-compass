@@ -20,6 +20,8 @@ from trace_ingest.models import (
     Span,
     SpanKind,
     ToolCall,
+    ToolDefinition,
+    ToolResult,
     Trace,
     TraceAggregate,
 )
@@ -79,9 +81,7 @@ def _normalize_trace(
             "scores": _json_value(provider_trace.scores),
         },
     }
-    tool_catalog = _tool_catalog(ordered, effective_parents)
-    if tool_catalog is not None:
-        attributes["tool_catalog"] = tool_catalog
+    _attach_tool_definitions(root_spans, _tool_definitions(ordered, effective_parents))
     if provider_trace.session_id:
         attributes["logical_case_id"] = str(provider_trace.session_id)
 
@@ -142,10 +142,20 @@ def _normalize_tree(
             base_pointer=source_pointer,
         )
         if normalized.kind is SpanKind.TOOL:
+            results = (
+                []
+                if normalized.output is UNSET
+                else [
+                    ToolResult(
+                        content=normalized.output, is_error=True if normalized.error else None
+                    )
+                ]
+            )
             normalized.tool_call = ToolCall(
                 call_id=observation_id,
                 index=tool_call_index,
-                result_count=0 if normalized.output is UNSET else 1,
+                result_count=len(results),
+                results=results,
             )
             tool_call_index += 1
         normalized_by_id[observation_id] = normalized
@@ -207,9 +217,7 @@ def _normalize_v4_trace(
     sessions = {obs.session_id for obs in observations if obs.session_id}
     if len(sessions) == 1:
         attributes["logical_case_id"] = next(iter(sessions))
-    catalog = _tool_catalog(ordered, parents)
-    if catalog is not None:
-        attributes["tool_catalog"] = catalog
+    _attach_tool_definitions(roots, _tool_definitions(ordered, parents))
     results: dict[str, list[JsonValue]] = {}
     for score in sorted(scores, key=lambda item: (item.name, item.id)):
         results.setdefault(score.name, []).append(_json_value(score))
@@ -238,47 +246,66 @@ def _normalize_v4_trace(
     )
 
 
-def _tool_catalog(
+def _tool_definitions(
     observations: Sequence[LangfuseObservation],
     effective_parents: Mapping[str, str | None],
-) -> dict[str, JsonValue] | None:
-    """Extract one safely trace-wide catalog from API-visible Langfuse inputs.
+) -> list[ToolDefinition]:
+    """Collect tool definitions from API-visible Langfuse inputs.
 
     Langfuse normalizes tool definitions from supported instrumentation metadata,
     including ``gen_ai.tool.definitions``, into an observation's top-level
     ``input.tools`` array. GENERATION catalogs describe the tools actually
-    offered to the model and therefore take precedence; repeated catalogs must
-    agree because the canonical Trace contract cannot represent catalogs that
-    change per call. A root AGENT catalog is only a fallback for reduced traces
-    with no generation observations.
+    offered to the model and therefore take precedence; a root AGENT catalog is
+    only a fallback for reduced traces with no generation observations. A
+    generation without a catalog leaves the offered tools unknown. All
+    distinct definitions from the selected source are kept, so catalogs that
+    disagree surface as a conflict in ``trace_ingest.catalog.tool_catalog``.
     """
 
-    root_agent_catalogs: list[dict[str, JsonValue]] = []
-    generation_catalogs: list[dict[str, JsonValue] | None] = []
+    root_agent_catalogs: list[list[ToolDefinition]] = []
+    generation_catalogs: list[list[ToolDefinition] | None] = []
     for observation in observations:
         kind, _ = _map_observation_kind(observation.type)
         if kind not in {SpanKind.AGENT, SpanKind.LLM}:
             continue
-        catalog = _tool_catalog_from_input(observation.input)
-        observation_id = str(observation.id)
+        catalog = _tool_definitions_from_input(observation.input)
         if kind is SpanKind.LLM:
             generation_catalogs.append(catalog)
-        elif catalog is not None and effective_parents[observation_id] is None:
+        elif catalog is not None and effective_parents[str(observation.id)] is None:
             root_agent_catalogs.append(catalog)
 
-    if generation_catalogs:
-        first = generation_catalogs[0]
-        if first is None:
-            return None
-        return first if all(catalog == first for catalog in generation_catalogs[1:]) else None
-    if root_agent_catalogs:
-        first = root_agent_catalogs[0]
-        return first if all(catalog == first for catalog in root_agent_catalogs[1:]) else None
-    return None
+    if any(catalog is None for catalog in generation_catalogs):
+        # A generation without a recorded catalog leaves the offered tools unknown.
+        return []
+    distinct: dict[str, ToolDefinition] = {}
+    for catalog in generation_catalogs or root_agent_catalogs:
+        for definition in catalog or ():
+            key = json.dumps([definition.name, definition.input_schema], sort_keys=True)
+            distinct.setdefault(key, definition)
+    return list(distinct.values())
 
 
-def _tool_catalog_from_input(value: object) -> dict[str, JsonValue] | None:
-    """Convert Langfuse ``input.tools`` definitions to canonical JSON Schemas."""
+def _attach_tool_definitions(roots: list[Span], definitions: list[ToolDefinition]) -> None:
+    """Attach definitions to the first AGENT root, else AGENT span, else LLM root, else LLM span."""
+
+    if not definitions:
+        return
+    depth_first: list[Span] = []
+    pending = list(roots)
+    while pending:
+        span = pending.pop(0)
+        depth_first.append(span)
+        pending[:0] = span.children
+    for kind in (SpanKind.AGENT, SpanKind.LLM):
+        for candidates in (roots, depth_first):
+            owner = next((span for span in candidates if span.kind is kind), None)
+            if owner is not None:
+                owner.tool_definitions = definitions
+                return
+
+
+def _tool_definitions_from_input(value: object) -> list[ToolDefinition] | None:
+    """Convert Langfuse ``input.tools`` definitions to canonical definitions."""
 
     if isinstance(value, str):
         try:
@@ -291,17 +318,15 @@ def _tool_catalog_from_input(value: object) -> dict[str, JsonValue] | None:
     if not isinstance(tools, list):
         return None
 
-    catalog: dict[str, JsonValue] = {}
+    definitions: dict[str, ToolDefinition] = {}
     for tool in tools:
         definition = _tool_definition(tool)
-        if definition is None:
-            continue
-        name, schema = definition
-        catalog.setdefault(name, schema)
-    return catalog if catalog or not tools else None
+        if definition is not None:
+            definitions.setdefault(definition.name, definition)
+    return list(definitions.values())
 
 
-def _tool_definition(value: object) -> tuple[str, JsonValue] | None:
+def _tool_definition(value: object) -> ToolDefinition | None:
     """Flatten the tool-definition forms accepted by Langfuse v3 ingestion."""
 
     if isinstance(value, str):
@@ -327,7 +352,13 @@ def _tool_definition(value: object) -> tuple[str, JsonValue] | None:
             schema = json.loads(schema)
         except json.JSONDecodeError:
             schema = None
-    return name, _json_value(schema) if isinstance(schema, Mapping) else None
+    description = definition.get("description")
+    return ToolDefinition(
+        name=name,
+        description=description if isinstance(description, str) else None,
+        input_schema=_json_value(schema) if isinstance(schema, Mapping) else None,
+        raw=_json_value(value),
+    )
 
 
 def _canonical_observation_order(

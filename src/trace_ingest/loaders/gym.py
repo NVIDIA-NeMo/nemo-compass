@@ -34,6 +34,8 @@ from trace_ingest.models import (
     SpanKind,
     TokenCounts,
     ToolCall,
+    ToolDefinition,
+    ToolResult,
     Trace,
     TraceAggregate,
     TraceSnapshot,
@@ -152,6 +154,43 @@ def _error(row: dict[str, Any], key: str = "status") -> str | None:
         return f"HTTP {code}"
     status = row.get(key)
     return status if status in ("failed", "timeout", "cancelled") else None
+
+
+def _tool_definitions(raw: object) -> list[ToolDefinition]:
+    """Map ``responses_create_params.tools`` items; skip nameless or non-object items."""
+
+    definitions: list[ToolDefinition] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        function = item.get("function")
+        function = function if isinstance(function, dict) else {}
+        name = item.get("name") or function.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        description = item.get("description") or function.get("description")
+        definitions.append(
+            ToolDefinition(
+                name=name,
+                description=description if isinstance(description, str) else None,
+                input_schema=item["parameters"]
+                if "parameters" in item
+                else function.get("parameters"),
+                raw=item,
+            )
+        )
+    return definitions
+
+
+def _finalize_tool_results(spans: list[Span]) -> None:
+    """Record one typed result per counted tool output once errors are known."""
+
+    for span in spans:
+        if span.tool_call is not None and span.tool_call.result_count:
+            span.tool_call.results = [
+                ToolResult(content=span.output, is_error=True if span.error else None)
+            ]
+        _finalize_tool_results(span.children)
 
 
 def _conversation_tools(invocation: dict[str, Any], prefix: str) -> dict[str, Span]:
@@ -430,6 +469,30 @@ def _normalize(record: dict[str, Any]) -> Trace:
             sort_children(item.children)
 
     sort_children(roots)
+    _finalize_tool_results(roots)
+    params = record.get("responses_create_params")
+    definitions = _tool_definitions(params.get("tools") if isinstance(params, dict) else None)
+    if definitions:
+        depth_first: list[Span] = []
+        pending = list(roots)
+        while pending:
+            item = pending.pop(0)
+            depth_first.append(item)
+            pending[:0] = item.children
+        owner = next(
+            (
+                item
+                for kind in (SpanKind.AGENT, SpanKind.LLM)
+                for candidates in (roots, depth_first)
+                for item in candidates
+                if item.kind is kind
+            ),
+            None,
+        )
+        if owner is None:
+            extra_gaps.append({"code": "tool_definitions_without_owner_span"})
+        else:
+            owner.tool_definitions = definitions
     return Trace(
         id=rollout,
         root_spans=roots,

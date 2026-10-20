@@ -27,7 +27,14 @@
                 "result_id": null,
                 "result_count": 1,
                 "instrumentation_alias_of": null,
-                "prior_user_text": null
+                "prior_user_text": null,
+                "results": [
+                  {
+                    "content": null,
+                    "is_error": null,
+                    "attributes": {}
+                  }
+                ]
               },
               "error": null,
               "attributes": {
@@ -82,7 +89,8 @@
                 "result_id": null,
                 "result_count": 0,
                 "instrumentation_alias_of": null,
-                "prior_user_text": null
+                "prior_user_text": null,
+                "results": []
               },
               "error": "not found",
               "attributes": {
@@ -265,5 +273,6 @@
       "experiment_id": null,
       "trace_id": "root"
     }
-  }
+  },
+  "schema_version": "2"
 }

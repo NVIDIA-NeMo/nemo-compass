@@ -10,7 +10,7 @@ would I have to add to unlock the rest?"
 
 Without it the failure mode is silent and demoralising: the normalized trace validates,
 the run completes, no findings appear, and there is nothing to tell you that
-six rules abstained because ``tool_catalog`` was missing.
+six rules abstained because the trace carried no tool definitions.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from compass.compass_signals._trace import walk_spans
 from compass.compass_signals.tool_issues.signal import FINDING_TYPES
 from compass.trace_loaders.trace_loaders import TraceLoader
 from compass.traces import UNSET, SpanKind, Trace
+from trace_ingest.catalog import tool_catalog
 
 __all__ = ["RULE_REQUIREMENTS", "corpus_coverage", "format_coverage"]
 
@@ -193,8 +194,9 @@ def _field_presence(traces: Sequence[Trace]) -> dict[str, int]:
     }
 
     for trace in traces:
+        if tool_catalog(trace) is not None:
+            counts["tool_catalog"] += 1
         for key in (
-            "tool_catalog",
             "logical_case_id",
             "source_pointer",
             "observed_verdict",
@@ -274,7 +276,7 @@ def _rule_status(
     if requirement.needs == "tool_catalog":
         evaluable = bool(presence["tool_catalog"])
         if not evaluable:
-            reason = "no tool_catalog in Trace.attributes"
+            reason = "no tool definitions in Trace"
     elif requirement.needs == "result_id":
         evaluable = presence["result_id"] > 0
         if not evaluable:
@@ -368,7 +370,7 @@ def corpus_coverage(
         notes.append(
             f"{presence['arguments_empty']}/{presence['total_calls']} calls have empty or "
             "placeholder arguments, so no argument-contract rule can find anything even with a "
-            "tool_catalog supplied. Check that the loader is reading the right field."
+            "tool definitions supplied. Check that the loader is reading the right field."
         )
 
     if presence["total_calls"] and presence["explicit_error_false"] > presence["total_calls"] * 0.9:
