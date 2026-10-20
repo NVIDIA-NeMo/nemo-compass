@@ -58,33 +58,23 @@ def registered_builtin_signals(
 
     registry = CompassSignalRegistry()
     if anomaly_and_patterns is not None:
-        registry.register(
-            AnomalyAndPatternsCompassSignal(config=anomaly_and_patterns),
-            config=anomaly_and_patterns,
-        )
+        registry.register(AnomalyAndPatternsCompassSignal(config=anomaly_and_patterns))
     if tool_issues is not None:
-        registry.register(ToolIssueCompassSignal(config=tool_issues), config=tool_issues)
+        registry.register(ToolIssueCompassSignal(config=tool_issues))
     if ethos_divergence is not None:
         if llm_factory is None:
             raise ValueError("ethos-divergence requires an LLM client factory")
-        registry.register(
-            EthosDivergenceCompassSignal(config=ethos_divergence, llm=llm_factory()),
-            config=ethos_divergence,
-        )
+        registry.register(EthosDivergenceCompassSignal(config=ethos_divergence, llm=llm_factory()))
     if grader_failure_patterns is not None:
         if llm_factory is None:
             raise ValueError("grader-failure-patterns requires an LLM client factory")
         registry.register(
-            GraderFailurePatternsCompassSignal(llm=llm_factory(), config=grader_failure_patterns),
-            config=grader_failure_patterns,
+            GraderFailurePatternsCompassSignal(llm=llm_factory(), config=grader_failure_patterns)
         )
     if user_sentiment is not None:
         if llm_factory is None:
             raise ValueError("user-sentiment requires an LLM client factory")
-        registry.register(
-            UserSentimentCompassSignal(config=user_sentiment, llm=llm_factory()),
-            config=user_sentiment,
-        )
+        registry.register(UserSentimentCompassSignal(config=user_sentiment, llm=llm_factory()))
     return registry
 
 

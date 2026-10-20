@@ -57,13 +57,13 @@ def _phase(name: str, inputs: dict) -> Iterator[OpenInferenceSpan]:
 
 
 def signal(
-    name: str, config: BaseModel | None, trace_count: int
+    name: str, config: BaseModel, trace_count: int
 ) -> AbstractContextManager[OpenInferenceSpan]:
     return _phase(
         f"signal.{_signal_name(name)}",
         {
             "trace_count": trace_count,
-            "config": config.model_dump(mode="json") if config is not None else None,
+            "config": config.model_dump(mode="json"),
         },
     )
 

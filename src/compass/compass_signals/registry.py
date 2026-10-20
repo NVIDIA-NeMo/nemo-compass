@@ -23,24 +23,22 @@ class CompassSignalRegistry:
 
     def __init__(self) -> None:
         self._signals: dict[str, CompassSignal] = {}
-        self._configurations: dict[str, BaseModel | None] = {}
 
     @property
     def names(self) -> tuple[str, ...]:
         return tuple(self._signals)
 
-    def configuration(self, name: str) -> BaseModel | None:
-        """Return the configuration explicitly associated with a registered signal."""
-        return self._configurations[name]
+    def configuration(self, name: str) -> BaseModel:
+        """Return the configuration owned by the registered signal."""
+        return self._signals[name].config
 
-    def register(self, signal: CompassSignal, *, config: BaseModel | None = None) -> None:
+    def register(self, signal: CompassSignal) -> None:
         name = signal.name.strip()
         if not name:
             raise ValueError("Compass Signal name must not be empty")
         if name in self._signals:
             raise ValueError(f"Compass Signal {name!r} is already registered")
         self._signals[name] = signal
-        self._configurations[name] = config
 
     async def analyze(
         self,

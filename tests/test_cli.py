@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 import yaml
 from nooa.unifiedllm import FakeLLMClient
+from pydantic import BaseModel
 
 import compass.cli.main as cli
 from compass.compass_signals.compass_signals import CompassSignalResult, Problem
@@ -353,9 +354,13 @@ def test_compass_signals_share_cli_loop_and_run_concurrently(monkeypatch):
         started = asyncio.Event()
         registry = CompassSignalRegistry()
 
+        class SignalConfig(BaseModel):
+            pass
+
         class Signal:
             def __init__(self, name):
                 self.name = name
+                self.config = SignalConfig()
 
             def check_prerequisites(self, snapshot):
                 pass
