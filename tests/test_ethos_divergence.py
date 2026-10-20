@@ -6,8 +6,12 @@ import json
 
 import pytest
 from nooa.unifiedllm import FakeLLMClient
+from openinference.instrumentation import OITracer, TraceConfig
+from opentelemetry import trace
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from pydantic import ValidationError
 
+from compass import telemetry
 from compass.cli import main as cli
 from compass.cli.main import _run_compass_signals, get_config
 from compass.compass_signals.builtins import registered_builtin_signals
@@ -18,7 +22,7 @@ from compass.traces import Trace, TraceAggregate, TraceSnapshot
 
 
 def test_ethos_cli_runs_registered_detector(tmp_path, monkeypatch, select_signals):
-    path = tmp_path / "ethos.md"
+    path = tmp_path / "ETHOS.md"
     path.write_text("Never issue refunds.", encoding="utf-8")
     config = get_config(
         [
@@ -32,6 +36,9 @@ def test_ethos_cli_runs_registered_detector(tmp_path, monkeypatch, select_signal
     )
     snapshot = TraceSnapshot([Trace(id="trace-1", root_spans=[], aggregate=TraceAggregate())])
     llm = FakeLLMClient()
+    monkeypatch.setattr(
+        telemetry, "tracer", OITracer(TracerProvider().get_tracer(__name__), config=TraceConfig())
+    )
     problem = Problem(description="Issued a refund", supporting_trace_ids=("trace-1",))
 
     class FakeDetector:
@@ -43,6 +50,14 @@ def test_ethos_cli_runs_registered_detector(tmp_path, monkeypatch, select_signal
             assert traces is snapshot
             assert description == ethos.ETHOS_DIVERGENCE
             assert extra == {"ethos": "Never issue refunds."}
+            current = trace.get_current_span()
+            assert isinstance(current, ReadableSpan) and current.attributes is not None
+            inputs = json.loads(str(current.attributes["input.value"]))
+            assert inputs == {
+                "trace_count": 1,
+                "config": {},
+                "ethos": extra["ethos"],
+            }
             return [problem]
 
     monkeypatch.setattr(ethos, "IssueDetector", FakeDetector)
@@ -57,7 +72,7 @@ def test_ethos_cli_runs_registered_detector(tmp_path, monkeypatch, select_signal
 
 
 def test_ethos_rejects_missing_and_empty_documents(tmp_path):
-    path = tmp_path / "ethos.md"
+    path = tmp_path / "ETHOS.md"
     with pytest.raises(ValidationError):
         RunConfig(trace={"filesystem": {"path": "unused.jsonl"}}, ethos_path=path)
     path.write_text(" \n", encoding="utf-8")
@@ -70,7 +85,7 @@ def test_ethos_rejects_missing_and_empty_documents(tmp_path):
 
 @pytest.mark.parametrize("enabled", [True, False])
 def test_shared_ethos_respects_signal_selection(tmp_path, select_signals, enabled):
-    path = tmp_path / "ethos.md"
+    path = tmp_path / "ETHOS.md"
     path.write_text("Never issue refunds.")
     config = RunConfig(
         trace={"filesystem": {"path": "unused.jsonl"}},

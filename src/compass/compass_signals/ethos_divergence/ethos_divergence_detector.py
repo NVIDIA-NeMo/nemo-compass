@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from nooa.unifiedllm import UnifiedLLM
+from opentelemetry import trace
 from pydantic import BaseModel, ConfigDict
 
 from compass.compass_signals.compass_signals import CompassSignalResult, Problem
@@ -71,5 +73,18 @@ class EthosDivergenceCompassSignal:
         return None
 
     async def analyze(self, snapshot: TraceSnapshot) -> CompassSignalResult:
+        # Record the resolved document used below, without reading the file again.
+        trace.get_current_span().set_attributes(
+            {
+                "input.value": json.dumps(
+                    {
+                        "trace_count": len(snapshot),
+                        "config": self.config.model_dump(mode="json"),
+                        "ethos": self.ethos,
+                    }
+                ),
+                "input.mime_type": "application/json",
+            }
+        )
         problems = await detect_ethos_divergence(snapshot, self.llm, self.ethos)
         return CompassSignalResult(signal_name=self.name, problems=tuple(problems))

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 import yaml
 from nooa.unifiedllm import FakeLLMClient
+from pydantic import BaseModel
 
 import compass.cli.main as cli
 from compass.compass_signals.compass_signals import CompassSignalResult, Problem
@@ -249,12 +250,14 @@ def test_code_validation_filters_problems_and_preserves_signal_result(
 
     monkeypatch.setattr(cli, "ProblemValidation", FakeValidator)
 
-    result, rejected, ethos_rejections = asyncio.run(
-        cli._validate_evidence(evidence, snapshot, tmp_path, FakeLLMClient())
+    result = asyncio.run(
+        cli._validate_evidence_with_code(evidence, snapshot, tmp_path, FakeLLMClient())
     )
 
-    assert result[0].problems == (supported, unknown)
-    assert result[0].artifacts == {"kept": True}
+    assert result.retained_evidence()[0].problems == (supported, unknown)
+    assert result.rejected_count == 1
+    assert result.unresolved_count == 1
+    assert result.retained_evidence()[0].artifacts == {"kept": True}
     assert received == [
         (supported, (trace,)),
         (unsupported, (trace,)),
@@ -320,7 +323,7 @@ def test_final_compilation_severity_does_not_require_code_base(
         cli, "_configured_trace_loader", lambda config: SimpleNamespace(load=lambda: snapshot)
     )
     monkeypatch.setattr(cli, "_run_compass_signals", AsyncMock(return_value=evidence))
-    monkeypatch.setattr(cli, "_validate_evidence", AsyncMock(return_value=(evidence, 0, [])))
+    monkeypatch.setattr(cli, "_validate_evidence", AsyncMock(return_value=(evidence, None, [])))
     monkeypatch.setattr(cli, "_build_llm", lambda *args: FakeLLMClient())
     monkeypatch.setattr(cli, "InsightCompilation", lambda llm: compilation)
     monkeypatch.setattr(cli, "_rate_confidence_with_code", review)
@@ -343,22 +346,26 @@ def test_compass_signals_share_cli_loop_and_run_concurrently(monkeypatch):
         started = asyncio.Event()
         registry = CompassSignalRegistry()
 
+        class SignalConfig(BaseModel):
+            pass
+
         class Signal:
             def __init__(self, name):
                 self.name = name
+                self.config = SignalConfig()
 
             def check_prerequisites(self, snapshot):
                 pass
 
             async def analyze(self, snapshot):
                 assert asyncio.get_running_loop() is loop
-                if self.name == "first":
+                if self.name == "anomaly-and-patterns":
                     await asyncio.wait_for(started.wait(), timeout=1)
                 else:
                     started.set()
                 return CompassSignalResult(signal_name=self.name, problems=())
 
-        for signal in (Signal("first"), Signal("second")):
+        for signal in (Signal("anomaly-and-patterns"), Signal("tool-issues")):
             registry.register(signal)
         monkeypatch.setattr(cli, "registered_builtin_signals", lambda **kwargs: registry)
         progress = []
@@ -367,8 +374,8 @@ def test_compass_signals_share_cli_loop_and_run_concurrently(monkeypatch):
             TraceSnapshot([Trace(id="trace-1", root_spans=[], aggregate=TraceAggregate())]),
             progress=progress.append,
         )
-        assert [result.signal_name for result in results] == ["first", "second"]
-        assert set().union(*map(set, progress)) == {"first", "second"}
+        assert [result.signal_name for result in results] == ["anomaly-and-patterns", "tool-issues"]
+        assert set().union(*map(set, progress)) == {"anomaly-and-patterns", "tool-issues"}
         assert progress[-1] == ()
 
     asyncio.run(run())
@@ -463,7 +470,7 @@ def test_candidate_validators_run_independently_and_concurrently(
             timeout=2,
         )
 
-    filtered, code_count, rejections = asyncio.run(run())
+    filtered, validation, rejections = asyncio.run(run())
     expected = [
         p
         for p in problems
@@ -473,7 +480,12 @@ def test_candidate_validators_run_independently_and_concurrently(
     assert list(filtered[0].problems) == expected
     assert filtered[0].artifacts == {"keep": 1}
     assert evidence[0].problems == problems
-    assert code_count == (2 if code_enabled else 0)
+    assert (validation.rejected_count if validation is not None else 0) == (
+        2 if code_enabled else 0
+    )
+    assert (validation.unresolved_count if validation is not None else 0) == (
+        2 if code_enabled else 0
+    )
     assert len(rejections) == (2 if ethos_enabled else 0)
     assert len(calls) == 4 * (int(code_enabled) + int(ethos_enabled))
     assert all(r.decision.passage == "Explicit permission." for r in rejections)
@@ -489,7 +501,7 @@ def test_ethos_validation_can_skip_compilation_and_preserve_existing(
 
     from compass.insights_generation.ethos_validation import EthosDecision
 
-    ethos_path = tmp_path / "ethos.md"
+    ethos_path = tmp_path / "ETHOS.md"
     ethos_path.write_text("Require approval.")
     config = RunConfig(
         trace={"filesystem": {"path": "unused.jsonl"}},

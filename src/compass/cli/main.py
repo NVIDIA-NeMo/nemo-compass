@@ -32,9 +32,13 @@ from pydantic import ValidationError
 from pydantic_settings import CliSettingsSource
 from rich.console import Console
 
-from compass.cli.output import RunOutput, RunResult, display_name
+from compass import telemetry_phases as telemetry
+from compass.cli.output import RunOutput, RunResult, display_name, signal_limitations
 from compass.compass_signals.builtins import registered_builtin_signals
-from compass.compass_signals.compass_signals import CompassSignalResult, Problem
+from compass.compass_signals.compass_signals import (
+    CompassSignalResult,
+    Problem,
+)
 from compass.config import CompassSignalsConfig, RunConfig, TraceConfig
 from compass.insight import Insight, load_insights, resolve_trace_links
 from compass.insights_generation.confidence import InsightConfidence
@@ -48,8 +52,8 @@ from compass.insights_generation.config import (
 from compass.insights_generation.defaults import DEFAULT_MAX_TOKENS, DEFAULT_MODEL
 from compass.insights_generation.ethos_validation import EthosRejection, EthosValidation
 from compass.insights_generation.insight_compilation import InsightCompilation
-from compass.insights_generation.validation import ProblemValidation
-from compass.telemetry import span, telemetry_session
+from compass.insights_generation.validation import EvidenceValidation, ProblemValidation
+from compass.telemetry import record_input_metadata, record_span, telemetry_session
 from compass.trace_loaders.atif import ATIFTraceLoader
 from compass.trace_loaders.braintrust import (
     BRAINTRUST_DEFAULT_MAX_TRACES,
@@ -257,14 +261,16 @@ async def _run_compass_signals(
             progress(tuple(name for name in registry.names if name in active))
 
     async def analyze(name: str) -> CompassSignalResult:
+        configuration = registry.configuration(name)
+
         def started() -> None:
             active.add(name)
             changed()
 
         try:
-            with span(f"evidence.{name}") as record:
+            with telemetry.signal(name, configuration, len(snapshot)) as record:
                 result = await registry.analyze(name, snapshot, on_start=started)
-                record.set_output(result)
+                telemetry.record_signal_result(record, result)
                 return result
         finally:
             if name in active:
@@ -277,77 +283,120 @@ async def _run_compass_signals(
     return [task.result() for task in tasks]
 
 
+async def _validate_evidence_with_code(
+    evidence: list[CompassSignalResult],
+    snapshot: TraceSnapshot,
+    code_base_path: Path,
+    llm: UnifiedLLM,
+) -> EvidenceValidation:
+    """Evaluate problem support concurrently, preserving input order in the decisions."""
+
+    code_base_path = code_base_path.expanduser().resolve()
+    if not code_base_path.is_dir():
+        raise ValueError(f"code_base must be an existing directory: {code_base_path}")
+    validator = ProblemValidation(code_base_path, llm)
+
+    async def validate_problem(
+        problem: Problem, supporting_traces: tuple[Trace, ...]
+    ) -> bool | None:
+        with telemetry.problem_validation(problem, code_base_path) as record:
+            decision = await validator.is_supported(problem, supporting_traces)
+            telemetry.record_support(record, decision)
+            return decision
+
+    async def validate_result(result: CompassSignalResult) -> list[bool | None]:
+        validations = []
+        for problem in result.problems:
+            supporting_traces = tuple(
+                snapshot.get_trace_by_id(trace_id) for trace_id in problem.supporting_trace_ids
+            )
+            validations.append(validate_problem(problem, supporting_traces))
+
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(validation) for validation in validations]
+        return [task.result() for task in tasks]
+
+    async with asyncio.TaskGroup() as group:
+        tasks = [group.create_task(validate_result(result)) for result in evidence]
+
+    return EvidenceValidation(evidence, [task.result() for task in tasks])
+
+
 async def _validate_evidence(
     evidence: list[CompassSignalResult],
     snapshot: TraceSnapshot,
     code_base_path: Path | None,
     llm: UnifiedLLM,
     ethos: str | None = None,
-) -> tuple[list[CompassSignalResult], int, list[EthosRejection]]:
-    """Run independent code and ethos checks concurrently; reject only contradictions."""
-    code_validator = None
-    if code_base_path is not None:
-        code_base_path = code_base_path.expanduser().resolve()
-        if not code_base_path.is_dir():
-            raise ValueError(f"code_base must be an existing directory: {code_base_path}")
-        code_validator = ProblemValidation(code_base_path, llm)
-    ethos_validator = EthosValidation(ethos, llm) if ethos is not None else None
-    rejected_by_code = 0
-    ethos_rejections: list[EthosRejection] = []
+) -> tuple[list[CompassSignalResult], EvidenceValidation | None, list[EthosRejection]]:
+    """Run independent code and ETHOS checks concurrently; reject only contradictions."""
 
-    async def validate_problem(signal_name: str, problem: Problem) -> bool:
-        supporting_traces = tuple(
-            snapshot.get_trace_by_id(trace_id) for trace_id in problem.supporting_trace_ids
-        )
+    async def check_code() -> EvidenceValidation | None:
+        if code_base_path is None:
+            return None
+        with telemetry.validation(evidence, code_base_path) as record:
+            validation = await _validate_evidence_with_code(evidence, snapshot, code_base_path, llm)
+            telemetry.record_validation(record, validation)
+            return validation
 
-        async def check_code() -> bool | None:
-            if code_validator is None:
-                return None
-            with span("validate_problem") as record:
-                record.set_input({"problem": problem, "code_base": str(code_base_path)})
-                decision = await code_validator.is_supported(problem, supporting_traces)
-                record.set_output({"supported": decision})
-                return decision
+    async def check_ethos() -> list[EthosRejection]:
+        if ethos is None:
+            return []
+        validator = EthosValidation(ethos, llm)
 
-        async def check_ethos() -> bool:
-            if ethos_validator is None:
-                return False
-            with span("validate_problem_ethos") as record:
-                record.set_input({"signal_name": signal_name, "problem": problem, "ethos": ethos})
-                decision = await ethos_validator.validate(problem, supporting_traces)
-                record.set_output(decision)
+        async def validate_problem(signal_name: str, problem: Problem) -> EthosRejection | None:
+            traces = tuple(snapshot.get_trace_by_id(tid) for tid in problem.supporting_trace_ids)
+            with record_span("ethos_validation.problem") as record:
+                record.set_input(
+                    {
+                        "signal_name": signal_name,
+                        "problem": problem.model_dump(mode="json"),
+                        "ethos": ethos,
+                    }
+                )
+                decision = await validator.validate(problem, traces)
+                record.set_output(decision.model_dump(mode="json"))
                 if decision.contradicted:
-                    ethos_rejections.append(
-                        EthosRejection(signal_name=signal_name, problem=problem, decision=decision)
+                    return EthosRejection(
+                        signal_name=signal_name, problem=problem, decision=decision
                     )
-                return decision.contradicted
+                return None
 
-        async with asyncio.TaskGroup() as group:
-            code_task = group.create_task(check_code())
-            ethos_task = group.create_task(check_ethos())
-        nonlocal rejected_by_code
-        rejected_by_code += code_task.result() is False
-        return code_task.result() is not False and not ethos_task.result()
+        with record_span("ethos_validation") as record:
+            record.set_input(
+                {"ethos": ethos, "candidate_count": sum(len(item.problems) for item in evidence)}
+            )
+            async with asyncio.TaskGroup() as group:
+                tasks = [
+                    group.create_task(validate_problem(item.signal_name, problem))
+                    for item in evidence
+                    for problem in item.problems
+                ]
+            rejections = [rejection for task in tasks if (rejection := task.result()) is not None]
+            record.set_output({"rejections": [item.model_dump(mode="json") for item in rejections]})
+            return rejections
 
-    async def validate_result(result: CompassSignalResult) -> CompassSignalResult:
-        async with asyncio.TaskGroup() as group:
-            tasks = [
-                group.create_task(validate_problem(result.signal_name, problem))
-                for problem in result.problems
-            ]
-        return result.model_copy(
+    async with asyncio.TaskGroup() as group:
+        code_task = group.create_task(check_code())
+        ethos_task = group.create_task(check_ethos())
+    validation, rejections = code_task.result(), ethos_task.result()
+    retained = validation.retained_evidence() if validation is not None else evidence
+    filtered = [
+        item.model_copy(
             update={
                 "problems": tuple(
                     problem
-                    for problem, task in zip(result.problems, tasks, strict=True)
-                    if task.result()
+                    for problem in item.problems
+                    if not any(
+                        rejection.signal_name == item.signal_name and rejection.problem == problem
+                        for rejection in rejections
+                    )
                 )
             }
         )
-
-    async with asyncio.TaskGroup() as group:
-        tasks = [group.create_task(validate_result(result)) for result in evidence]
-    return [task.result() for task in tasks], rejected_by_code, ethos_rejections
+        for item in retained
+    ]
+    return filtered, validation, rejections
 
 
 async def _rate_confidence_with_code(
@@ -375,10 +424,14 @@ async def _rate_confidence_with_code(
             for trace in (supporting_trace(item.trace_id) for item in insight.evidence)
             if trace is not None
         )
-        rating = await rater.rate(insight, supporting_traces)
-        return insight.model_copy(update={"confidence": rating})
+        with telemetry.insight_confidence(insight, code_base_path) as record:
+            rating = await rater.rate(insight, supporting_traces)
+            telemetry.record_rating(record, insight, rating)
+            return insight.model_copy(update={"confidence": rating})
 
-    return list(await asyncio.gather(*(rate_insight(insight) for insight in insights)))
+    async with asyncio.TaskGroup() as group:
+        tasks = [group.create_task(rate_insight(insight)) for insight in insights]
+    return [task.result() for task in tasks]
 
 
 def _build_llm(config: RunConfig, api_key: str) -> CompletionClient:
@@ -407,10 +460,12 @@ def _build_llm(config: RunConfig, api_key: str) -> CompletionClient:
 async def _generate_insights(config: RunConfig, output: RunOutput) -> RunResult:
     api_key = _check_environment(config)
     async with output.progress():
-        with span("ingestion") as record:
+        with record_span("ingestion") as record:
             record.set_input(config.trace)
-            snapshot = await asyncio.to_thread(_configured_trace_loader(config.trace).load)
+            loader = _configured_trace_loader(config.trace)
+            snapshot = await asyncio.to_thread(loader.load)
             record.set_output({"trace_count": len(snapshot)})
+        record_input_metadata(config, loader)
         output.trace_count = len(snapshot)
         output.activity = "Checking prerequisites"
 
@@ -434,6 +489,7 @@ async def _generate_insights(config: RunConfig, output: RunOutput) -> RunResult:
             evidence=evidence,
             insights=list(existing),
             existing_insights=existing,
+            limitations=signal_limitations(evidence),
         )
         if any(item.problems for item in evidence):
             run_timestamp = datetime.now(timezone.utc)
@@ -443,10 +499,12 @@ async def _generate_insights(config: RunConfig, output: RunOutput) -> RunResult:
         result.insights = resolve_trace_links(result.insights, snapshot, existing)
         if config.code_base is not None and result.insights:
             output.activity = "Investigating insight confidence against the codebase"
-            async with _build_llm(config, api_key) as llm:
-                result.insights = await _rate_confidence_with_code(
-                    result.insights, snapshot, config.code_base, llm
-                )
+            with telemetry.confidence(result.insights, config.code_base) as record:
+                async with _build_llm(config, api_key) as llm:
+                    result.insights = await _rate_confidence_with_code(
+                        result.insights, snapshot, config.code_base, llm
+                    )
+                telemetry.record_confidence(record, result.insights)
         return result
 
 
@@ -470,21 +528,26 @@ async def _compile_evidence(
                 if ethos is not None
                 else "Checking candidate issues against the codebase"
             )
-            evidence, result.rejected_by_code, result.ethos_rejections = await _validate_evidence(
+            evidence, validation, result.ethos_rejections = await _validate_evidence(
                 evidence, snapshot, config.code_base, llm, ethos
             )
+            if validation is not None:
+                result.rejected_by_code = validation.rejected_count
+                if validation.unresolved_count:
+                    result.limitations.append(
+                        f"Code validation could not determine support for {validation.unresolved_count} candidate problem(s); these were retained for compilation."
+                    )
         if not any(item.problems for item in evidence):
             return result.existing_insights
         output.activity = "Reviewing candidate issues for actionable insights"
-        with span("compilation") as record:
-            record.set_input({"evidence": evidence, "existing_insights": result.existing_insights})
+        with telemetry.compilation(evidence, result.existing_insights) as record:
             insights = await InsightCompilation(llm=llm).compile_insights(
                 evidence,
                 snapshot,
                 result.existing_insights,
                 run_timestamp,
             )
-            record.set_output({"insights": insights})
+            telemetry.record_insights(record, insights)
             return insights
 
 
@@ -555,7 +618,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if config.ethos_path is None and config.compass_signals.ethos_divergence is not None:
             output.console.print(
                 "Warning: skipping ethos divergence because no ethos_path was specified and no "
-                "ETHOS.md or ethos.md was found in the working directory. "
+                "ETHOS.md was found in the working directory. "
                 "Set ethos_path in YAML or pass --ethos-path to enable it.",
                 soft_wrap=True,
             )
@@ -567,14 +630,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if config.output_path == Path("-") or not sys.stdout.isatty():
                 print(rendered, end="")
             output.report(result, config.output_path)
-            record.set_output(
-                {
-                    "trace_count": result.trace_count,
-                    "insights": result.insights,
-                    "rejected_by_code": result.rejected_by_code,
-                    "ethos_rejections": result.ethos_rejections,
-                },
-            )
+            telemetry.record_run(record, result)
         return EXIT_OK
     except SetupError as error:
         output.console.print(str(error), soft_wrap=True)

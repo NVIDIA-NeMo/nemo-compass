@@ -50,8 +50,7 @@ To run the 8B embedding model locally, add `local-embedding` to the extras in yo
 install command. Keep your source extra too. For LangSmith:
 
 ```bash
-uv tool install \
-  'nemo-compass[langsmith,local-embedding] @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+uv tool install 'nemo-compass[langsmith,local-embedding]'
 compass --config config.yaml --compass-signals.user-sentiment.local-embeddings
 ```
 

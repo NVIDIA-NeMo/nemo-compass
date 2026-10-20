@@ -40,6 +40,9 @@ class CompassSignalResult(BaseModel):
 
 class CompassSignal(Protocol):
     @property
+    def config(self) -> BaseModel: ...
+
+    @property
     def name(self) -> str: ...
 
     def check_prerequisites(self, snapshot: TraceSnapshot) -> str | None:

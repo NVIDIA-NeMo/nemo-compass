@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from nooa import Agent, strategy
+from nooa import Agent, no_trace, strategy
 from nooa.config import CodeActConfig
 from nooa.errors import GenerationAborted, GenerationError
 from nooa.strategies import CodeActStrategy
@@ -38,6 +38,7 @@ class EthosRejection(BaseModel):
 
 
 class _EthosValidationAgent(Agent):
+    @no_trace  # The Compass ethos_validation.problem span owns this operation.
     @strategy(CodeActStrategy(config=CodeActConfig(max_iterations=25)))
     async def decide(self, problem: Problem, supporting_traces: str, ethos: str) -> EthosDecision:  # ty: ignore[empty-body] -- Nooa implements the ellipsis method.
         """Check whether ethos explicitly invalidates this candidate problem's claim.

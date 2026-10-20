@@ -8,7 +8,13 @@ from datetime import datetime, timezone
 
 import pytest
 from nooa.unifiedllm import FakeLLMClient, LLMResponse, ToolCall
+from openinference.instrumentation import OITracer, TraceConfig
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 
+from compass import telemetry
 from compass.insight import Insight, SpanEvidence, TraceEvidence
 from compass.insights_generation.insight_compilation import (
     EvidenceCompletion,
@@ -97,7 +103,15 @@ def completion_case():
         "no_snapshot_matches",
     ],
 )
-def test_invalid_completion_retains_citations_and_reports_failure(completion_case, fault):
+def test_invalid_completion_retains_citations_and_reports_failure(
+    completion_case, fault, monkeypatch
+):
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(
+        telemetry, "tracer", OITracer(provider.get_tracer(__name__), config=TraceConfig())
+    )
     insight, checks, snapshot = completion_case
 
     def predicate(item):
@@ -122,6 +136,10 @@ def test_invalid_completion_retains_citations_and_reports_failure(completion_cas
     ):
         result = completion.apply(snapshot, RUN_TIMESTAMP)
     assert result == insight
+    (scan,) = exporter.get_finished_spans()
+    assert scan.name == "evidence_scan"
+    assert scan.status.status_code == StatusCode.ERROR
+    assert any(event.name == "exception" for event in scan.events)
 
 
 @pytest.mark.parametrize("updated_date", [None, datetime(2026, 9, 29, tzinfo=timezone.utc)])

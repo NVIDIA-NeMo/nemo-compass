@@ -8,13 +8,14 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Literal
 
-from nooa import Agent, strategy
+from nooa import Agent, no_trace, strategy
 from nooa.config import CodeActConfig
 from nooa.strategies import CodeActStrategy
 from nooa.strategy_validation import InvariantError
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.json_schema import SkipJsonSchema
 
+from compass import telemetry_phases as telemetry
 from compass.compass_signals._trace import walk_spans
 from compass.compass_signals.compass_signals import CompassSignalResult
 from compass.insight import Insight, SpanEvidence, TraceEvidence
@@ -106,18 +107,31 @@ class EvidenceCompletion(BaseModel):
             )
         return matches, unknown
 
-    def apply(self, snapshot: TraceSnapshot, run_timestamp: datetime) -> Insight:
+    def apply(
+        self,
+        snapshot: TraceSnapshot,
+        run_timestamp: datetime,
+    ) -> Insight:
         """Add matching evidence, or keep the insight unchanged if the scan fails."""
-        try:
-            matches, unknown = self.scan(snapshot)
-        except Exception as error:
-            warnings.warn(
-                f"The evidence scan did not complete for {self.insight.name!r}: "
-                f"{type(error).__name__}: {str(error)[:300]}. "
-                "The insight keeps its existing references. The scan added no new references.",
-                stacklevel=2,
-            )
-            return self.insight
+        with telemetry.evidence_scan(self.insight, len(snapshot)) as record:
+            try:
+                matches, unknown = self.scan(snapshot)
+            except Exception as error:
+                skipped = (
+                    self.predicate is None
+                    and bool(self.unresolved_reason and self.unresolved_reason.strip())
+                    and not self.checks
+                )
+                reason = str(error)[:300]
+                telemetry.record_scan_failure(record, error, skipped=skipped)
+                warnings.warn(
+                    f"The evidence scan did not complete for {self.insight.name!r}: "
+                    f"{type(error).__name__}: {reason}. "
+                    "The insight keeps its existing references. The scan added no new references.",
+                    stacklevel=2,
+                )
+                return self.insight
+            telemetry.record_scan_result(record, len(matches), unknown)
         if unknown:
             warnings.warn(
                 f"Evidence scan incomplete for {self.insight.name!r}: "
@@ -130,8 +144,8 @@ class EvidenceCompletion(BaseModel):
         for item in matches:
             previous = evidence.get(item.trace_id, item)
             spans = {span.span_id: span for span in previous.spans}
-            for span in item.spans:
-                spans.setdefault(span.span_id, span)
+            for evidence_span in item.spans:
+                spans.setdefault(evidence_span.span_id, evidence_span)
             evidence[item.trace_id] = previous.model_copy(update={"spans": list(spans.values())})
         return self.insight.model_copy(
             update={
@@ -158,6 +172,7 @@ def _validate_completions(
 
 
 class InsightCompilation(Agent):
+    @no_trace
     async def compile_insights(
         self,
         compass_signals: list[CompassSignalResult],
@@ -170,6 +185,7 @@ class InsightCompilation(Agent):
         )
         return [completion.apply(trace_snapshot, run_timestamp) for completion in completions]
 
+    @no_trace
     @strategy(CodeActStrategy(config=CodeActConfig(postconditions=[_validate_completions])))
     async def _compile_insights(
         self,

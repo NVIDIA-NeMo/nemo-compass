@@ -8,11 +8,10 @@ Recorded scores on root spans are included automatically in grader failure analy
 
 ## Connect and run
 
-With [uv and Git installed](../../README.md#start-here), install the CLI:
+With [uv installed](../../README.md#start-here), install the CLI:
 
 ```bash
-uv tool install \
-  'nemo-compass @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+uv tool install nemo-compass
 ```
 
 No Braintrust extra is required. [Configure your inference model and key](../model-access.md#choose-a-model).

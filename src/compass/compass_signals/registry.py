@@ -8,6 +8,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 
+from pydantic import BaseModel
+
 from compass.compass_signals.compass_signals import CompassSignal, CompassSignalResult
 from compass.traces import TraceSnapshot
 
@@ -26,6 +28,10 @@ class CompassSignalRegistry:
     def names(self) -> tuple[str, ...]:
         return tuple(self._signals)
 
+    def configuration(self, name: str) -> BaseModel:
+        """Return the configuration owned by the registered signal."""
+        return self._signals[name].config
+
     def register(self, signal: CompassSignal) -> None:
         name = signal.name.strip()
         if not name:
@@ -35,7 +41,11 @@ class CompassSignalRegistry:
         self._signals[name] = signal
 
     async def analyze(
-        self, name: str, snapshot: TraceSnapshot, *, on_start: Callable[[], None] | None = None
+        self,
+        name: str,
+        snapshot: TraceSnapshot,
+        *,
+        on_start: Callable[[], None] | None = None,
     ) -> CompassSignalResult:
         try:
             signal = self._signals[name]
