@@ -16,7 +16,7 @@ NeMo Compass is an applied research project with a goal of improving the tools a
 | Anomaly Detection | What outlier behaviors exist in a set of agent traces? | Scores outliers with an Isolation Forest and reports feature-level deviations |
 | Tool Issues	| What recurring problems occur when the agent uses tools?	| Checks tool calls and results for invalid arguments, failures, missing results, and unproductive retries |
 | User Sentiment | What recurring complaints do users have about the agent? | Screens recorded human messages with a classifier, then reviews recurring complaints in context |
-| Ethos.md Divergence | Where does the agent’s behavior conflict with its stated rules and goals? | Compares traces with the agent’s [ethos.md](https://github.com/NVIDIA/skills/blob/main/skills/ethos-orchestrate/README.md#how-to-use) document and investigates possible gaps |
+| ETHOS.md Divergence | Where does the agent’s behavior conflict with its stated rules and goals? | Compares traces with the agent’s [ETHOS.md](https://github.com/NVIDIA/skills/blob/main/skills/ethos-orchestrate/README.md#how-to-use) document and investigates possible gaps |
 | Grader failures | What behaviors recur in traces with poor evaluation results? | Uses recorded scores and feedback to select traces, then investigates shared failure patterns |
 
 Learn more about each current Compass Signal: [Architecture](docs/architecture.md)

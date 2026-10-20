@@ -534,7 +534,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if config.ethos_path is None and config.compass_signals.ethos_divergence is not None:
             output.console.print(
                 "Warning: skipping ethos divergence because no ethos_path was specified and no "
-                "ETHOS.md or ethos.md was found in the working directory. "
+                "ETHOS.md was found in the working directory. "
                 "Set ethos_path in YAML or pass --ethos-path to enable it.",
                 soft_wrap=True,
             )
