@@ -84,19 +84,37 @@ jobs:
       - name: Run tests
         run: uv run --locked pytest
 
-      - name: Build distribution
-        run: uv build --sdist --wheel --no-sources
+      - name: Build distributions
+        run: uv build --all-packages --sdist --wheel --no-sources
 
       - name: Check distributions
         run: uv run --locked python tools/check_distribution_licenses.py
 
-      - name: Install application wheel in a clean environment
+      - name: Install the trace-ingest wheel alone in a clean environment
         run: |
           smoke_env="$(mktemp -d)"
           trap 'rm -rf "$smoke_env"' EXIT
           uv venv "$smoke_env"
           uv pip install --no-config --no-sources --python "$smoke_env/bin/python" \
-            dist/nemo_compass-*.whl
+            dist/nemo_compass_trace_ingest-*.whl
+          cd "$smoke_env"
+          "$smoke_env/bin/python" -I -c '
+          import importlib.metadata, re, sys
+          import trace_ingest, trace_ingest.loaders.atif
+          heavy = {"numpy", "scikit-learn", "litellm", "tokenizers", "nooa", "rich"}
+          assert not (heavy | {"compass", "sklearn"}) & set(sys.modules), "heavy imports"
+          requires = importlib.metadata.requires("nemo-compass-trace-ingest") or []
+          names = {re.sub(r"[-_.]+", "-", re.match(r"[A-Za-z0-9._-]+", r)[0]).lower() for r in requires}
+          assert not heavy & names, sorted(heavy & names)
+          '
+
+      - name: Install both wheels in a clean environment
+        run: |
+          smoke_env="$(mktemp -d)"
+          trap 'rm -rf "$smoke_env"' EXIT
+          uv venv "$smoke_env"
+          uv pip install --no-config --no-sources --python "$smoke_env/bin/python" \
+            dist/nemo_compass_trace_ingest-*.whl dist/nemo_compass-*.whl
           cd "$smoke_env"
           "$smoke_env/bin/python" -I -c 'from compass.traces import Trace; from trace_ingest import Trace as SharedTrace; assert Trace is SharedTrace'
           "$smoke_env/bin/compass" --help

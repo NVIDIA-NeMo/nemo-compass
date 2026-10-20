@@ -7,7 +7,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "nemo-compass"
-version = "0.1.0"
+version = "0.2.0"
 description = "NeMo Compass trace-evidence processing with a canonical JSONL trace contract"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
@@ -25,6 +25,7 @@ authors = [{ name = "Compass contributors" }]
 keywords = ["agent-traces", "evaluation", "anomaly-detection", "tool-use"]
 
 dependencies = [
+    "nemo-compass-trace-ingest==0.2.0",
     "httpx>=0.28,<1",
     "numpy>=1.26,<3",
     "scikit-learn>=1.4,<2",
@@ -45,13 +46,12 @@ dependencies = [
 Repository = "https://github.com/NVIDIA-NeMo/labs-nemo-compass"
 
 [project.optional-dependencies]
-# Trace-source SDKs are optional; telemetry uses the standard OTLP exporter.
-langsmith = ["langsmith>=0.12,<0.13"]
-mlflow = ["mlflow-skinny>=3.6,<4"]
+# Trace-source SDKs are optional extras of nemo-compass-trace-ingest; telemetry uses the standard
+# OTLP exporter. compass.telemetry imports langsmith directly when a LangSmith source is configured.
+langsmith = ["nemo-compass-trace-ingest[langsmith]==0.2.0", "langsmith>=0.12,<0.13"]
+mlflow = ["nemo-compass-trace-ingest[mlflow]==0.2.0"]
 local-embedding = ["torch==2.13.0", "transformers==5.17.0"]
-# Query-only adapter for the Langfuse v3 and v4 APIs. The SDK remains optional
-# for users loading canonical JSONL or MLflow traces.
-langfuse = ["langfuse>=4.17,<5"]
+langfuse = ["nemo-compass-trace-ingest[langfuse]==0.2.0"]
 
 [dependency-groups]
 # Exercise the optional source adapters in the standard contributor and CI test environment without
@@ -75,7 +75,11 @@ managed = true
 # Protobuf 7.35 contains the complete ParseDict recursion-depth fix.
 override-dependencies = ["protobuf>=7.35,<8"]
 
+[tool.uv.workspace]
+members = ["packages/trace-ingest"]
+
 [tool.uv.sources]
+nemo-compass-trace-ingest = { workspace = true }
 # macOS wheels include MPS; other platforms only need CPU inference for this extra.
 torch = [{ index = "pytorch-cpu", marker = "sys_platform != 'darwin'" }]
 
@@ -85,7 +89,7 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/compass", "src/trace_ingest"]
+packages = ["src/compass"]
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -94,7 +98,6 @@ include = [
     "/README.md",
     "/pyproject.toml",
     "/src/compass",
-    "/src/trace_ingest",
     "/third_party",
 ]
 

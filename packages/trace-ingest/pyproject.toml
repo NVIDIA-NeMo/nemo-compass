@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nemo-compass-trace-ingest"
+version = "0.2.0"
+description = "NeMo Compass canonical agent trace models and provider loaders"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+license = "Apache-2.0"
+# A byte copy of the repository-root LICENSE; tools/check_distribution_licenses.py enforces equality.
+license-files = ["LICENSE"]
+authors = [{ name = "Compass contributors" }]
+keywords = ["agent-traces", "atif", "mlflow", "langfuse", "langsmith"]
+dependencies = ["httpx>=0.28,<1", "pydantic>=2.12,<3"]
+
+[project.urls]
+Repository = "https://github.com/NVIDIA-NeMo/labs-nemo-compass"
+
+[project.optional-dependencies]
+langsmith = ["langsmith>=0.12,<0.13"]
+mlflow = ["mlflow-skinny>=3.6,<4"]
+# Query-only adapter for the Langfuse v3 and v4 APIs.
+langfuse = ["langfuse>=4.17,<5"]
+
+# The package source is the repository's src/trace_ingest. The source distribution carries it as
+# src/trace_ingest, so a wheel rebuilt from the sdist uses `packages`; inside the repository the
+# build hook force-includes ../../src/trace_ingest instead, and editable installs add ../../src.
+[tool.hatch.build.targets.sdist.force-include]
+"../../src/trace_ingest" = "src/trace_ingest"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/trace_ingest"]
+dev-mode-dirs = ["../../src"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"

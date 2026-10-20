@@ -7,6 +7,10 @@ resolution-markers = [
 ]
 
 [manifest]
+members = [
+    "nemo-compass",
+    "nemo-compass-trace-ingest",
+]
 overrides = [{ name = "protobuf", specifier = ">=7.35,<8" }]
 
 [[package]]
@@ -1033,12 +1037,13 @@ wheels = [
 
 [[package]]
 name = "nemo-compass"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
     { name = "jsonschema" },
     { name = "litellm" },
+    { name = "nemo-compass-trace-ingest" },
     { name = "nooa", extra = ["tracing"] },
     { name = "numpy" },
     { name = "openinference-instrumentation" },
@@ -1054,10 +1059,11 @@ dependencies = [
 
 [package.optional-dependencies]
 langfuse = [
-    { name = "langfuse" },
+    { name = "nemo-compass-trace-ingest", extra = ["langfuse"] },
 ]
 langsmith = [
     { name = "langsmith" },
+    { name = "nemo-compass-trace-ingest", extra = ["langsmith"] },
 ]
 local-embedding = [
     { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
@@ -1065,7 +1071,7 @@ local-embedding = [
     { name = "transformers" },
 ]
 mlflow = [
-    { name = "mlflow-skinny" },
+    { name = "nemo-compass-trace-ingest", extra = ["mlflow"] },
 ]
 
 [package.dev-dependencies]
@@ -1083,10 +1089,12 @@ dev = [
 requires-dist = [
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "jsonschema", specifier = ">=4.18,<5" },
-    { name = "langfuse", marker = "extra == 'langfuse'", specifier = ">=4.17,<5" },
     { name = "langsmith", marker = "extra == 'langsmith'", specifier = ">=0.12,<0.13" },
     { name = "litellm", specifier = ">=1.55,<2" },
-    { name = "mlflow-skinny", marker = "extra == 'mlflow'", specifier = ">=3.6,<4" },
+    { name = "nemo-compass-trace-ingest", editable = "packages/trace-ingest" },
+    { name = "nemo-compass-trace-ingest", extras = ["langfuse"], marker = "extra == 'langfuse'", editable = "packages/trace-ingest" },
+    { name = "nemo-compass-trace-ingest", extras = ["langsmith"], marker = "extra == 'langsmith'", editable = "packages/trace-ingest" },
+    { name = "nemo-compass-trace-ingest", extras = ["mlflow"], marker = "extra == 'mlflow'", editable = "packages/trace-ingest" },
     { name = "nooa", extras = ["tracing"], specifier = ">=0.0.10,<0.1" },
     { name = "numpy", specifier = ">=1.26,<3" },
     { name = "openinference-instrumentation", specifier = ">=0.1.42,<1" },
@@ -1114,6 +1122,36 @@ dev = [
     { name = "ruff", specifier = ">=0.6" },
     { name = "ty", specifier = ">=0.0.80" },
 ]
+
+[[package]]
+name = "nemo-compass-trace-ingest"
+version = "0.2.0"
+source = { editable = "packages/trace-ingest" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic" },
+]
+
+[package.optional-dependencies]
+langfuse = [
+    { name = "langfuse" },
+]
+langsmith = [
+    { name = "langsmith" },
+]
+mlflow = [
+    { name = "mlflow-skinny" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "langfuse", marker = "extra == 'langfuse'", specifier = ">=4.17,<5" },
+    { name = "langsmith", marker = "extra == 'langsmith'", specifier = ">=0.12,<0.13" },
+    { name = "mlflow-skinny", marker = "extra == 'mlflow'", specifier = ">=3.6,<4" },
+    { name = "pydantic", specifier = ">=2.12,<3" },
+]
+provides-extras = ["langsmith", "mlflow", "langfuse"]
 
 [[package]]
 name = "networkx"
@@ -2088,13 +2126,13 @@ resolution-markers = [
     "sys_platform == 'darwin'",
 ]
 dependencies = [
-    { name = "filelock" },
-    { name = "fsspec" },
-    { name = "jinja2" },
-    { name = "networkx" },
-    { name = "setuptools" },
-    { name = "sympy" },
-    { name = "typing-extensions" },
+    { name = "filelock", marker = "sys_platform == 'darwin'" },
+    { name = "fsspec", marker = "sys_platform == 'darwin'" },
+    { name = "jinja2", marker = "sys_platform == 'darwin'" },
+    { name = "networkx", marker = "sys_platform == 'darwin'" },
+    { name = "setuptools", marker = "sys_platform == 'darwin'" },
+    { name = "sympy", marker = "sys_platform == 'darwin'" },
+    { name = "typing-extensions", marker = "sys_platform == 'darwin'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c4/3a/ed0f4d4d1dcde03bced7aac9a28e800abcdc0cbd06b6775044c9fbd877b7/torch-2.13.0-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:2fe228aba290d14b9f31b049be550dbd469c3fd3013d7a19705b30454da97027", size = 111213045, upload-time = "2026-07-08T16:05:22.997Z" },
@@ -2109,13 +2147,13 @@ resolution-markers = [
     "sys_platform != 'darwin'",
 ]
 dependencies = [
-    { name = "filelock" },
-    { name = "fsspec" },
-    { name = "jinja2" },
-    { name = "networkx" },
-    { name = "setuptools" },
-    { name = "sympy" },
-    { name = "typing-extensions" },
+    { name = "filelock", marker = "sys_platform != 'darwin'" },
+    { name = "fsspec", marker = "sys_platform != 'darwin'" },
+    { name = "jinja2", marker = "sys_platform != 'darwin'" },
+    { name = "networkx", marker = "sys_platform != 'darwin'" },
+    { name = "setuptools", marker = "sys_platform != 'darwin'" },
+    { name = "sympy", marker = "sys_platform != 'darwin'" },
+    { name = "typing-extensions", marker = "sys_platform != 'darwin'" },
 ]
 wheels = [
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.13.0%2Bcpu-cp312-cp312-linux_s390x.whl", hash = "sha256:ffadde149901c8afa138daa38d898264003cfcf1a3336ca5cd964b5af227d867", upload-time = "2026-07-08T19:28:41Z" },

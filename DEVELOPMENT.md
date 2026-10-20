@@ -4,8 +4,10 @@
 # Development
 
 Models and loaders live in [trace_ingest](src/trace_ingest/), independent of
-`compass`. Both Python packages ship in the `nemo-compass` distribution.
-`uv sync` installs the project locally.
+`compass`. `trace_ingest` ships alone in the `nemo-compass-trace-ingest`
+distribution ([packages/trace-ingest](packages/trace-ingest/), a uv workspace
+member that packages `src/trace_ingest`); `compass` ships in `nemo-compass`, which
+depends on it at the same version. `uv sync` installs both projects locally.
 
 ## Validation
 
@@ -49,16 +51,18 @@ uv run --locked ruff check .
 uv run --locked ruff format --check .
 uv run --locked ty check
 uv run --locked pytest
-uv build --sdist --wheel --no-sources
+uv build --all-packages --sdist --wheel --no-sources
 uv run --locked python tools/check_distribution_licenses.py
 ```
 
-The distribution includes the repository-root license and attribution files.
-The artifact check verifies their contents in the wheel, source distribution,
-and a wheel rebuilt outside the repository.
+The `nemo-compass` distribution includes the repository-root license and attribution
+files; `nemo-compass-trace-ingest` includes `packages/trace-ingest/LICENSE`, a copy
+of the root `LICENSE`. The artifact check verifies their contents in each wheel,
+source distribution, and a wheel rebuilt outside the repository.
 
-CI also installs the application wheel into a clean environment and checks
-imports and the CLI.
+CI also installs the trace-ingest wheel alone into a clean environment and checks
+that it pulls in none of the Compass analysis dependencies, then installs both
+wheels and checks imports and the CLI.
 
 ## Publish an internal release candidate
 
