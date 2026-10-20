@@ -25,12 +25,8 @@ from compass.compass_signals.builtins import (
     USER_SENTIMENT,
 )
 from compass.compass_signals.compass_signals import (
-    CompassSignal,
     CompassSignalResult,
     Problem,
-)
-from compass.compass_signals.ethos_divergence.ethos_divergence_detector import (
-    EthosDivergenceCompassSignal,
 )
 from compass.insight import Insight, Rating
 from compass.telemetry import span
@@ -70,21 +66,6 @@ def signal(
             "config": config.model_dump(mode="json") if config is not None else None,
         },
     )
-
-
-def record_signal_start(
-    record: OpenInferenceSpan, signal: CompassSignal, config: BaseModel | None, trace_count: int
-) -> None:
-    # Prerequisites resolve the ethos document. Capture that exact text, without
-    # reading the file again or making the CLI aware of this signal's internals.
-    if isinstance(signal, EthosDivergenceCompassSignal):
-        record.set_input(
-            {
-                "trace_count": trace_count,
-                "config": config.model_dump(mode="json") if config is not None else None,
-                "ethos": signal.ethos,
-            }
-        )
 
 
 def record_signal_result(record: OpenInferenceSpan, result: CompassSignalResult) -> None:

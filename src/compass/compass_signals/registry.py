@@ -47,7 +47,7 @@ class CompassSignalRegistry:
         name: str,
         snapshot: TraceSnapshot,
         *,
-        on_start: Callable[[CompassSignal], None] | None = None,
+        on_start: Callable[[], None] | None = None,
     ) -> CompassSignalResult:
         try:
             signal = self._signals[name]
@@ -62,7 +62,7 @@ class CompassSignalRegistry:
         if skip_reason is not None:
             return CompassSignalResult(signal_name=name, problems=(), skip_reason=skip_reason)
         if on_start is not None:
-            on_start(signal)
+            on_start()
         result = await signal.analyze(snapshot)
         if result.signal_name != name:
             raise ValueError(f"Compass Signal {name!r} returned result for {result.signal_name!r}")

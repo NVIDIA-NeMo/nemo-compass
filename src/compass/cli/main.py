@@ -35,7 +35,6 @@ from compass import telemetry_phases as telemetry
 from compass.cli.output import RunOutput, RunResult, display_name, signal_limitations
 from compass.compass_signals.builtins import registered_builtin_signals
 from compass.compass_signals.compass_signals import (
-    CompassSignal,
     CompassSignalResult,
     Problem,
 )
@@ -259,8 +258,7 @@ async def _run_compass_signals(
     async def analyze(name: str) -> CompassSignalResult:
         configuration = registry.configuration(name)
 
-        def started(signal: CompassSignal) -> None:
-            telemetry.record_signal_start(record, signal, configuration, len(snapshot))
+        def started() -> None:
             active.add(name)
             changed()
 
