@@ -15,7 +15,7 @@ in the environment or `.env`.
 | --- | --- |
 | `trace` | Exactly one source; see the [source guides](../README.md#start-here). |
 | `trace.max_traces` | Limit complete traces from a provider or native export. Unsupported for canonical JSONL, ATIF, and Gym rollouts. |
-| `ethos_path` | Optional agent purpose and behavioral requirements document. Used by ethos divergence; independent of signal selection. |
+| `ethos_path` | Optional agent purpose and behavioral requirements document. Used by the ethos divergence signal; support for validating potential problems and shaping insights is planned. |
 | `output_path` | YAML output file; defaults to `insights.yml`. Use `-` for stdout. |
 | `model`, `api_base`, `max_tokens` | [Inference settings](model-access.md#choose-a-model). |
 | `compass_signals` | [Compass Signals and their prerequisites](compass-signals.md). All five are enabled by default. |
