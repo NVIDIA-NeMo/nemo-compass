@@ -18,7 +18,7 @@ from compass.traces import Trace, TraceAggregate, TraceSnapshot
 
 
 def test_ethos_cli_runs_registered_detector(tmp_path, monkeypatch, select_signals):
-    path = tmp_path / "ethos.md"
+    path = tmp_path / "ETHOS.md"
     path.write_text("Never issue refunds.", encoding="utf-8")
     config = get_config(
         [
@@ -57,7 +57,7 @@ def test_ethos_cli_runs_registered_detector(tmp_path, monkeypatch, select_signal
 
 
 def test_ethos_rejects_missing_and_empty_documents(tmp_path):
-    path = tmp_path / "ethos.md"
+    path = tmp_path / "ETHOS.md"
     with pytest.raises(ValidationError):
         RunConfig(trace={"filesystem": {"path": "unused.jsonl"}}, ethos_path=path)
     path.write_text(" \n", encoding="utf-8")
@@ -70,7 +70,7 @@ def test_ethos_rejects_missing_and_empty_documents(tmp_path):
 
 @pytest.mark.parametrize("enabled", [True, False])
 def test_shared_ethos_respects_signal_selection(tmp_path, select_signals, enabled):
-    path = tmp_path / "ethos.md"
+    path = tmp_path / "ETHOS.md"
     path.write_text("Never issue refunds.")
     config = RunConfig(
         trace={"filesystem": {"path": "unused.jsonl"}},
