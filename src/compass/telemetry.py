@@ -26,11 +26,9 @@ from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExport
 from opentelemetry.sdk.trace import ReadableSpan
 
 from compass.config import RunConfig
-from compass.config import TraceConfig as SourceConfig
 from compass.telemetry_export import CompassSpanExporter
 from compass.version import __version__
 from trace_ingest.loaders.trace_loaders import TraceDescription, TraceLoader
-from trace_ingest.models import TraceSnapshot
 
 tracer = OITracer(trace.get_tracer("compass", __version__), config=TraceConfig())
 
@@ -49,65 +47,21 @@ def span(name: str) -> Iterator[OpenInferenceSpan]:
             raise
 
 
-def _input_metadata(
-    config: SourceConfig, description: TraceDescription, snapshot: TraceSnapshot
-) -> dict:
-    """Identify the loaded corpus without per-trace lists or duplicate query settings."""
-    source_type, source = next(
-        (name, value) for name, value in config if name != "max_traces" and value is not None
-    )
-    configured = source.model_dump()
-    resolved = dict(description)
-    coordinates = {
-        key: resolved.get(key)
-        for key in (
-            "project_id",
-            "experiment_id",
-            "workspace",
-            "api_version",
-            "max_traces",
-            "truncated",
-            "export_trace_count",
-            "ignored_score_count",
-        )
-    }
-    if source_type == "intake":
-        query = resolved.get("query")
-        if isinstance(query, dict):
-            coordinates["max_traces"] = query.get("max_traces")
-    coordinates["api_version"] = coordinates["api_version"] or configured.get("api_version")
-    coordinates["endpoint"] = (
-        resolved.get("base_url")
-        or resolved.get("api_url")
-        or resolved.get("tracking_uri")
-        or configured.get("base_url")
-    )
-    for input_name, output_name in (("path", "source_path"), ("scores_path", "scores_path")):
-        path = configured.get(input_name)
-        if isinstance(path, Path):
-            coordinates[output_name] = str(path.resolve())
-    return {
-        "source_type": source_type,
-        "trace_count": len(snapshot),
-        "snapshot_saved": False,
-        **coordinates,
-    }
-
-
-def _input_metadata_fields(metadata: dict) -> dict:
+def _input_metadata_fields(metadata: TraceDescription) -> dict:
     """Export searchable scalars; full coordinates remain in the root input."""
     return {
         f"compass.input.{key}": value
         for key, value in {**metadata, "details_location": "inputs.input_source"}.items()
-        if value is not None and (not isinstance(value, str) or len(value) < 500)
+        if isinstance(value, (str, bool, int, float))
+        and (not isinstance(value, str) or len(value) < 500)
     }
 
 
-def record_input_metadata(config: RunConfig, loader: TraceLoader, snapshot: TraceSnapshot) -> None:
+def record_input_metadata(config: RunConfig, loader: TraceLoader) -> None:
     """Attach provenance to the current Compass root after its ingestion span closes."""
     root = trace.get_current_span()
     if root.is_recording():
-        input_source = _input_metadata(config.trace, loader.describe(), snapshot)
+        input_source = loader.describe()
         root_input = {
             **config.model_dump(mode="json", exclude={"api_base"}),
             "input_source": input_source,

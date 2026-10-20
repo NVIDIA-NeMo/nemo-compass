@@ -222,12 +222,15 @@ def _run_cli(source, enabled):
             for key, value in metadata.items()
             if key.startswith("compass.input.")
         }
-        assert provenance["source_type"] == "filesystem"
+        assert provenance["source"] == f"fs:{source}"
         assert provenance["trace_count"] == 1
-        assert provenance["source_path"] == source
-        assert provenance["snapshot_saved"] is False
         inputs = json.loads(str((root.attributes or {})["input.value"]))
-        assert inputs["input_source"]["source_path"] == source
+        assert inputs["input_source"] == {
+            "source": f"fs:{source}",
+            "trace_count": 1,
+            "call_count": 0,
+            "distinct_logical_cases": 1,
+        }
         ingestion = next(r for r in records if r.name == "ingestion")
         assert json.loads(str((ingestion.attributes or {})["output.value"])) == {"trace_count": 1}
         assert any(r.name == "code_execution" for r in records)

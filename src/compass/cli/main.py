@@ -385,7 +385,7 @@ async def _generate_insights(config: RunConfig, output: RunOutput) -> RunResult:
             loader = _configured_trace_loader(config.trace)
             snapshot = await asyncio.to_thread(loader.load)
             record.set_output({"trace_count": len(snapshot)})
-        record_input_metadata(config, loader, snapshot)
+        record_input_metadata(config, loader)
         output.trace_count = len(snapshot)
         output.activity = "Checking prerequisites"
 
