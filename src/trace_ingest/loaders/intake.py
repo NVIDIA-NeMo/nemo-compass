@@ -30,12 +30,15 @@ from pydantic import (
     model_validator,
 )
 
+from trace_ingest.loaders.atif import tool_definitions_from_atif
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
     UNSET,
     Span,
     SpanKind,
     ToolCall,
+    ToolDefinition,
+    ToolResult,
     Trace,
     TraceAggregate,
     TraceSnapshot,
@@ -577,9 +580,22 @@ def _normalize_trace(
     )
     if logical_case_id is not None:
         attributes["logical_case_id"] = logical_case_id
-    catalog = _atif_tool_catalog(ordered)
-    if catalog is not None:
-        attributes["tool_catalog"] = catalog
+    definitions = _atif_tool_definitions(ordered)
+    if definitions:
+        # First AGENT root, else AGENT span, else LLM root, else LLM span (canonical order).
+        canonical = [normalized_by_id[span.span_id] for span in ordered]
+        owner = next(
+            (
+                span
+                for kind in (SpanKind.AGENT, SpanKind.LLM)
+                for candidates in (root_spans, canonical)
+                for span in candidates
+                if span.kind is kind
+            ),
+            None,
+        )
+        if owner is not None:
+            owner.tool_definitions = definitions
 
     return Trace(
         id=raw.id,
@@ -641,11 +657,6 @@ def _normalize_span(
             input_value=input_value,
             output_value=output_value,
         )
-    if kind is SpanKind.TOOL:
-        details = tool_call or ToolCall()
-        tool_call = details.model_copy(
-            update={"index": tool_call_index, "result_count": 0 if output_value is UNSET else 1}
-        )
 
     started_at = _aware_utc(raw.started_at)
     ended_at = _aware_utc(raw.ended_at) if raw.ended_at is not None else None
@@ -660,6 +671,16 @@ def _normalize_span(
     error = None
     if raw.status is IntakeStatus.ERROR:
         error = raw.error_message or raw.error_type or "Intake span status error"
+    if kind is SpanKind.TOOL:
+        details = tool_call or ToolCall()
+        results = (
+            []
+            if output_value is UNSET
+            else [ToolResult(content=output_value, is_error=explicit_error)]
+        )
+        tool_call = details.model_copy(
+            update={"index": tool_call_index, "result_count": len(results), "results": results}
+        )
     attributes: dict[str, JsonValue] = {
         "name": raw.name,
         "subtype": subtype,
@@ -775,19 +796,12 @@ def _normalize_atif_tool_payload(
     )
 
 
-def _atif_tool_catalog(spans: list[_IntakeSpan]) -> dict[str, JsonValue] | None:
-    catalog: dict[str, JsonValue] = {}
+def _atif_tool_definitions(spans: list[_IntakeSpan]) -> list[ToolDefinition]:
+    definitions: list[ToolDefinition] = []
     for span in spans:
         if span.source != "atif":
             continue
         agent = _raw_attributes(span).get("agent")
-        definitions = agent.get("tool_definitions") if isinstance(agent, Mapping) else None
-        if not isinstance(definitions, list):
-            continue
-        for definition in definitions:
-            if not isinstance(definition, Mapping) or not definition.get("name"):
-                continue
-            name = str(definition["name"])
-            schema = definition.get("parameters") or definition.get("input_schema")
-            catalog[name] = dict(schema) if isinstance(schema, Mapping) else None
-    return catalog or None
+        if isinstance(agent, Mapping):
+            definitions.extend(tool_definitions_from_atif(agent.get("tool_definitions")))
+    return definitions

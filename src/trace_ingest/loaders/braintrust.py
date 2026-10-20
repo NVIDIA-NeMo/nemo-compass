@@ -25,6 +25,7 @@ from trace_ingest.models import (
     Span,
     SpanKind,
     ToolCall,
+    ToolResult,
     Trace,
     TraceAggregate,
     TraceSnapshot,
@@ -332,8 +333,13 @@ def _normalize_trace(
             provider = by_id[key]
             span = _normalize_span(provider, pointer)
             if span.kind is SpanKind.TOOL:
+                results = (
+                    []
+                    if span.output is UNSET
+                    else [ToolResult(content=span.output, is_error=True if span.error else None)]
+                )
                 span.tool_call = ToolCall(
-                    call_id=key, index=tool_index, result_count=0 if span.output is UNSET else 1
+                    call_id=key, index=tool_index, result_count=len(results), results=results
                 )
                 tool_index += 1
             normalized[key] = span

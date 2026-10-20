@@ -386,3 +386,13 @@ def test_nested_span_links_use_each_row_id(rows):
         seen[span.id] = parse_qs(urlsplit(span.source_url).query)["id"][0]
     assert seen == {row["span_id"]: row["id"] for row in rows}
     assert trace.source_url == trace.root_spans[0].source_url
+
+
+def test_tool_results_match_result_counts(rows):
+    with client_for(rows) as client:
+        trace = next(iter(BraintrustTraceLoader(config(), client=client).load()))
+    first, second = trace.root_spans[0].children[0].children
+    assert first.tool_call is not None and second.tool_call is not None
+    assert len(first.tool_call.results) == first.tool_call.result_count == 1
+    assert first.tool_call.results[0].is_error is (True if first.error else None)
+    assert second.tool_call.results == [] and second.tool_call.result_count == 0

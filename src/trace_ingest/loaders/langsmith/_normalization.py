@@ -20,6 +20,7 @@ from trace_ingest.models import (
     Span,
     SpanKind,
     ToolCall,
+    ToolResult,
     Trace,
     TraceAggregate,
 )
@@ -127,10 +128,20 @@ def normalize_trace(
                     key = f"langsmith.feedback_stats.{name}"
                     feedback_by_name.setdefault(key, {})[run_id] = _json_value(stats)
         if normalized.kind is SpanKind.TOOL:
+            results = (
+                []
+                if normalized.output is UNSET
+                else [
+                    ToolResult(
+                        content=normalized.output, is_error=True if normalized.error else None
+                    )
+                ]
+            )
             normalized.tool_call = ToolCall(
                 call_id=run_id,
                 index=tool_call_index,
-                result_count=0 if normalized.output is UNSET else 1,
+                result_count=len(results),
+                results=results,
             )
             tool_call_index += 1
         normalized_by_id[run_id] = normalized
