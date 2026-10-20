@@ -8,11 +8,10 @@ Recorded scores, including scores attached to observations, are included automat
 
 ## Connect and run
 
-With [uv and Git installed](../../README.md#start-here), install the CLI with Langfuse support:
+With [uv installed](../../README.md#start-here), install the CLI with Langfuse support:
 
 ```bash
-uv tool install \
-  'nemo-compass[langfuse] @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+uv tool install 'nemo-compass[langfuse]'
 ```
 
 [Configure your inference model and key](../model-access.md#choose-a-model).

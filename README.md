@@ -33,8 +33,7 @@ We are sharing the implementation at this stage to encourage feedback and testin
 
 ## Start here
 
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and
-[Git](https://git-scm.com/downloads/), then choose a guide:
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then choose a guide:
 
 | Your starting point | Guide |
 | --- | --- |
@@ -48,7 +47,7 @@ Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and
 | JSONL or ATIF files | [Trace files](docs/sources/files.md) |
 | Another trace store | [Convert your traces](docs/sources/custom.md) |
 
-The distribution is named `nemo-compass`; the command is `compass`.
+Install from PyPI as [`nemo-compass`](https://pypi.org/project/nemo-compass/); the command is `compass`.
 If `compass` is not found after installation, run `uv tool update-shell`
 and restart your terminal.
 
