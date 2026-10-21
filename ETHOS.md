@@ -2,7 +2,7 @@
 schema_version: 1
 name: nemo-compass
 created_timestamp: 2026-10-15T17:55:19Z
-updated_timestamp: 2026-10-21T19:59:55Z
+updated_timestamp: 2026-10-21T20:16:29Z
 author: Codex
 status: draft
 ---
@@ -88,7 +88,8 @@ How to weigh wider coverage against time and cost remains open.
 
 ## Constraints
 
-Provider, data storage, retention, cost, and response-time limits are not recorded here.
+Deployment requirements guide provider choice, data storage and retention,
+and cost and response-time limits.
 
 Compass does not automatically remove sensitive data. Traces, requirements, and
 source excerpts may be sent to model services. Remote embeddings and optional
@@ -98,14 +99,11 @@ telemetry also send content. See [data and model access](docs/model-access.md).
 
 Pytest checks the software: loading traces, handling evidence, reviewing source,
 merging findings, and writing results. See [Development](DEVELOPMENT.md) for commands.
-These tests do not tell us whether the generated insights are useful.
 
-The team is choosing an existing benchmark or building one to assess insight
-quality. The dataset, scoring method, and passing scores are still open.
-
-Proposed approach: judge whether findings are correct, useful, and supported by
-traces, and whether they miss known problems. Repeat runs on the same cases to
-measure how much results vary. Record time and cost as the trace set grows.
+Insight-quality evaluation is in active development, including benchmark selection
+and scoring. Key questions include whether findings are correct and useful, which
+problems are missed, and how results vary between runs. Time and cost as trace
+collections grow are also part of this work.
 
 ## Metric Semantics
 
