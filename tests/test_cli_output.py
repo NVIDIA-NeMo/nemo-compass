@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from insight_agent.cli.output import RunOutput, RunResult
-from insight_agent.compass_signals.compass_signals import CompassSignalResult, Problem
-from insight_agent.insight import Insight
+from compass.cli.output import RunOutput, RunResult
+from compass.compass_signals.compass_signals import CompassSignalResult, Problem
+from compass.insight import Insight
 
 
 def make_insight(name="Agent calls tools absent from the active catalog"):
@@ -44,7 +44,7 @@ def test_default_report_prioritizes_findings_and_keeps_coverage_visible(width):
             *[
                 CompassSignalResult(signal_name=name, problems=(), skip_reason=reason)
                 for name, reason in (
-                    ("ethos-divergence", "No ethos document"),
+                    ("ethos-divergence", "No ETHOS.md"),
                     ("grader-failure-patterns", "No evaluator results"),
                     ("user-sentiment", "No embedding backend configured"),
                 )
@@ -68,13 +68,14 @@ def test_default_report_prioritizes_findings_and_keeps_coverage_visible(width):
         in normalized
     )
     assert (
-        "Skipped: Ethos — no document Grader failures — no results Sentiment — no embedding backend"
+        "Skipped: Ethos divergence — no ETHOS.md found Grader failures — no results Sentiment — no embedding backend"
         in normalized
     )
     assert (
         "To run skipped analyses: https://github.com/NVIDIA-NeMo/labs-nemo-compass/blob/main/docs/compass-signals.md"
         in rendered
     )
+    assert "set ethos_path: ETHOS.md in YAML or pass --ethos-path ETHOS.md" in normalized
     for hidden in ("trace-0", "span-0", "long explanation", "\x1b"):
         assert hidden not in rendered
     # Keep the setup URL intact for copying; other content wraps to the terminal width.
@@ -102,3 +103,16 @@ def test_report_lists_all_insights_in_order_and_omits_irrelevant_guidance():
     assert "Skipped" not in rendered and "To run skipped analyses" not in rendered
     assert "Saved:" not in rendered
     assert result.insights == insights
+
+
+def test_report_shows_optional_severity_and_reason():
+    insight = make_insight().model_copy(
+        update={
+            "severity": "high",
+            "severity_reason": "The agent is blocked from completing the task.",
+        }
+    )
+    stream = StringIO()
+    RunOutput(Console(file=stream, width=120)).report(RunResult(3, [], [insight]), Path("-"))
+
+    assert "Severity: HIGH — The agent is blocked from completing the task." in stream.getvalue()

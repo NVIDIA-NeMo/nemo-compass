@@ -10,17 +10,16 @@ For native exports, follow the [LangSmith](langsmith.md#use-an-export),
 
 ## Run a file
 
-With [uv and Git installed](../../README.md#start-here), install the CLI:
+With [uv installed](../../README.md#start-here), install the CLI:
 
 ```bash
-uv tool install \
-  'insight-agent @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+uv tool install nemo-compass
 ```
 
 [Configure your inference model and key](../model-access.md#choose-a-model), then run:
 
 ```bash
-insight-agent --trace.filesystem.path traces.jsonl --max-tokens 16384
+compass --trace.filesystem.path traces.jsonl --max-tokens 16384
 ```
 
 For ATIF, use `--trace.atif.path trajectories.jsonl` instead.
@@ -31,7 +30,7 @@ Paths resolve from your working directory.
 
 ## Canonical JSONL
 
-Each line must contain one complete [Trace](../../packages/trace-ingest/src/trace_ingest/models.py).
+Each line must contain one complete [Trace](../../src/trace_ingest/models.py).
 This small example shows a recorded tool failure and evaluation score:
 
 ```json

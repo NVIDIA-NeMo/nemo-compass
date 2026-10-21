@@ -4,7 +4,7 @@
 import pytest
 from pydantic import ValidationError
 
-from insight_agent.insight import Insight, load_insights
+from compass.insight import Insight, load_insights
 
 
 def test_existing_identity_survives_artifact_round_trip(tmp_path):
@@ -13,12 +13,17 @@ def test_existing_identity_survives_artifact_round_trip(tmp_path):
             "id": "platform-123",
             "name": "Timeouts",
             "description": "Repeated timeouts",
+            "severity": "med",
+            "severity_reason": "Agent retries burn tokens but the user still gets a response.",
             "evidence": [{"trace_id": "a"}, {"trace_id": "b"}],
         }
     )
     path = tmp_path / "insights.json"
     path.write_text("[" + insight.model_dump_json() + "]")
-    assert load_insights(path)[0].id == "platform-123"
+    loaded = load_insights(path)[0]
+    assert loaded.id == "platform-123"
+    assert loaded.severity == "med"
+    assert loaded.severity_reason == insight.severity_reason
 
 
 def test_new_insight_does_not_require_or_serialize_an_id():
@@ -26,6 +31,8 @@ def test_new_insight_does_not_require_or_serialize_an_id():
         {
             "name": "Timeouts",
             "description": "Repeated timeouts",
+            "severity": "med",
+            "severity_reason": "Agent retries burn tokens but the user still gets a response.",
             "evidence": [{"trace_id": "a"}, {"trace_id": "b"}],
         }
     )
@@ -43,6 +50,34 @@ def test_empty_id_is_rejected():
                 "evidence": [{"trace_id": "a"}, {"trace_id": "b"}],
             }
         )
+
+
+def test_insight_without_severity_loads_for_backward_compatibility(tmp_path):
+    """Insights saved without ratings or reasons still load for reconciliation."""
+    path = tmp_path / "insights.json"
+    path.write_text(
+        '[{"name": "Timeouts", "description": "Repeated timeouts", '
+        '"evidence": [{"trace_id": "a"}, {"trace_id": "b"}]}]'
+    )
+    loaded = load_insights(path)[0]
+    assert loaded.severity is None
+    assert loaded.severity_reason is None
+    assert "severity" not in loaded.model_dump()
+    assert "severity_reason" not in loaded.model_dump()
+
+
+def test_invalid_severity_is_rejected():
+    for rating in ("medium", "critical"):
+        with pytest.raises(ValidationError):
+            Insight.model_validate(
+                {
+                    "name": "Timeouts",
+                    "description": "Repeated timeouts",
+                    "severity": rating,
+                    "severity_reason": "Agent retries burn tokens but the user still gets a response.",
+                    "evidence": [{"trace_id": "a"}, {"trace_id": "b"}],
+                }
+            )
 
 
 def test_generated_schema_uses_only_unified_evidence():

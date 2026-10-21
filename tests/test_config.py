@@ -4,7 +4,9 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from insight_agent.config import CompassSignalsConfig, RunConfig
+import pytest
+
+from compass.config import CompassSignalsConfig, RunConfig
 
 
 def test_cli_nested_override_preserves_yaml_siblings(tmp_path: Path) -> None:
@@ -83,15 +85,15 @@ def test_yaml_accepts_code_base(tmp_path: Path) -> None:
     assert config.code_base == Path("../my-agent")
 
 
-def test_langfuse_export_yaml_with_cli_limit(tmp_path: Path) -> None:
+def test_langfuse_trace_export_file_yaml_with_cli_limit(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
-        "trace:\n  langfuse_export:\n    path: exports\ncompass_signals:\n  tool_issues: {}\n",
+        "trace:\n  langfuse_trace_export_file:\n    api_version: v3\n    path: exports\ncompass_signals:\n  tool_issues: {}\n",
         encoding="utf-8",
     )
     config = RunConfig(_cli_parse_args=["--config", str(config_path), "--trace.max-traces", "200"])
-    assert config.trace.langfuse_export is not None
-    assert config.trace.langfuse_export.path == Path("exports")
+    assert config.trace.langfuse_trace_export_file is not None
+    assert config.trace.langfuse_trace_export_file.path == Path("exports")
     assert config.trace.max_traces == 200
 
 
@@ -144,3 +146,80 @@ def test_signals_default_on_and_false_disables_only_that_signal(tmp_path):
     assert config.compass_signals.tool_issues.retry_threshold == 5
     assert config.compass_signals.anomaly_and_patterns is not None
     assert config.compass_signals.grader_failure_patterns is not None
+
+
+def test_ethos_yaml_and_cli_override_independent_of_signal_selection(tmp_path):
+    yaml_ethos = tmp_path / "yaml.md"
+    yaml_ethos.write_text("Original requirements")
+    cli_ethos = tmp_path / "cli.md"
+    cli_ethos.write_text("Override requirements")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"trace:\n  filesystem:\n    path: traces.jsonl\nethos_path: {yaml_ethos}\n"
+        "compass_signals:\n  ethos_divergence: false\n"
+    )
+    config = RunConfig(_cli_parse_args=["--config", str(config_path)])
+    assert config.ethos_path == yaml_ethos
+    assert config.compass_signals.ethos_divergence is None
+    config = RunConfig(
+        _cli_parse_args=["--config", str(config_path), "--ethos-path", str(cli_ethos)]
+    )
+    assert config.ethos_path == cli_ethos
+    assert config.compass_signals.ethos_divergence is None
+    assert config.model_dump(mode="json")["ethos_path"] == str(cli_ethos)
+
+
+@pytest.mark.parametrize(
+    "source,match",
+    [
+        ({"path": "traces.jsonl"}, "api_version"),
+        ({"api_version": "v3"}, "path"),
+        (
+            {"api_version": "v3", "path": "traces.jsonl", "scores_path": "scores.json"},
+            "require api_version=v4",
+        ),
+        ({"api_version": "v4"}, "path"),
+    ],
+)
+def test_langfuse_export_requires_explicit_version_and_matching_paths(source, match):
+    from compass.config import TraceConfig
+
+    with pytest.raises(ValueError, match=match):
+        TraceConfig.model_validate({"langfuse_trace_export_file": source})
+
+
+@pytest.mark.parametrize("names", [("ETHOS.md",), ("ethos.md",), ("ETHOS.md", "ethos.md")])
+@pytest.mark.parametrize("selection", [{}, {"ethos_divergence": True}, {"ethos_divergence": False}])
+def test_discovers_ethos_in_working_directory(tmp_path, monkeypatch, names, selection):
+    monkeypatch.chdir(tmp_path)
+    for name in names:
+        (tmp_path / name).write_text("Agent requirements")
+    config = RunConfig(trace={"filesystem": {"path": "traces.jsonl"}}, compass_signals=selection)
+    # Case-insensitive filesystems may resolve ETHOS.md even when only ethos.md was written.
+    expected = tmp_path / ("ETHOS.md" if (tmp_path / "ETHOS.md").is_file() else "ethos.md")
+    assert config.ethos_path == expected
+    assert (config.compass_signals.ethos_divergence is None) is (
+        selection.get("ethos_divergence") is False
+    )
+
+
+def test_explicit_ethos_path_overrides_discovery(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ETHOS.md").write_text("Default requirements")
+    explicit = tmp_path / "custom.md"
+    explicit.write_text("Custom requirements")
+    config = RunConfig(trace={"filesystem": {"path": "traces.jsonl"}}, ethos_path=explicit)
+    assert config.ethos_path == explicit
+    with pytest.raises(ValueError, match="ETHOS.md not found or not a regular file"):
+        RunConfig(trace={"filesystem": {"path": "traces.jsonl"}}, ethos_path="missing.md")
+
+
+def test_ethos_discovery_does_not_search_config_directory(tmp_path, monkeypatch):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "ETHOS.md").write_text("Agent requirements")
+    config_file = config_dir / "config.yaml"
+    config_file.write_text("trace:\n  filesystem:\n    path: traces.jsonl\n")
+    monkeypatch.chdir(tmp_path)
+    config = RunConfig(_cli_parse_args=["--config", str(config_file)])
+    assert config.ethos_path is None

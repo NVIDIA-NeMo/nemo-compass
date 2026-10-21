@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from nooa.unifiedllm import create_tool_from_callable
 
-from insight_agent.insights_generation.codebase import CodebaseTools
+from compass.insights_generation.codebase import CodebaseTools
 
 
 def test_codebase_tools_search_and_read_source(tmp_path: Path) -> None:

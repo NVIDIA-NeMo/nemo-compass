@@ -1,11 +1,11 @@
 ---
 name: trace-loader
-description: Build or update a deterministic Insight Agent TraceLoader for a concrete external trace source. Use when onboarding a trace provider, dataset, SDK, or export format that is not already canonical Trace JSONL.
+description: Build or update a deterministic Compass TraceLoader for a concrete external trace source. Use when onboarding a trace provider, dataset, SDK, or export format that is not already canonical Trace JSONL.
 ---
 <!-- SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Build an Insight Agent trace loader
+# Build an Compass trace loader
 
 A loader is the source boundary. It owns every source-specific decision needed
 to turn one concrete provider format into the canonical `Trace` representation.
@@ -20,7 +20,7 @@ span identity, nesting, ordering, tool calls and results, timestamps, status,
 metrics, and pagination. Do not guess fields or accept several speculative
 shapes. Reject ambiguous or incomplete input with a source-specific error.
 
-Read these contracts in `packages/trace-ingest/src/trace_ingest/`:
+Read these contracts in `src/trace_ingest/`:
 
 - `loaders/trace_loaders.py` defines `TraceLoader` and `TraceDescription`.
 - `models.py` defines `Trace`, `Span`, and `TraceSnapshot`.

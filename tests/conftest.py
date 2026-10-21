@@ -3,7 +3,7 @@
 
 import pytest
 
-from insight_agent.config import CompassSignalsConfig
+from compass.config import CompassSignalsConfig
 
 
 @pytest.fixture

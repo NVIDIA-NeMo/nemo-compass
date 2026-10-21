@@ -8,11 +8,10 @@ are included automatically in grader failure analysis.
 
 ## Connect and run
 
-With [uv and Git installed](../../README.md#start-here), install the CLI with MLflow support:
+With [uv installed](../../README.md#start-here), install the CLI with MLflow support:
 
 ```bash
-uv tool install \
-  'insight-agent[mlflow] @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+uv tool install 'nemo-compass[mlflow]'
 ```
 
 [Configure your inference model and key](../model-access.md#choose-a-model).
@@ -37,7 +36,7 @@ trace:
 ```
 
 ```bash
-insight-agent --config config.yaml
+compass --config config.yaml
 ```
 
 Open `insights.yml` if the run produced insights. [Read your results](../results.md)

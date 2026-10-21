@@ -8,14 +8,20 @@ from datetime import datetime, timezone
 
 import pytest
 from nooa.unifiedllm import FakeLLMClient, LLMResponse, ToolCall
+from openinference.instrumentation import OITracer, TraceConfig
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import StatusCode
 
-from insight_agent.insight import Insight, SpanEvidence, TraceEvidence
-from insight_agent.insights_generation.insight_compilation import (
+from compass import telemetry
+from compass.insight import Insight, SpanEvidence, TraceEvidence
+from compass.insights_generation.insight_compilation import (
     EvidenceCompletion,
     EvidenceDecision,
     InsightCompilation,
 )
-from insight_agent.traces import UNSET, Span, SpanKind, Trace, TraceAggregate, TraceSnapshot
+from compass.traces import UNSET, Span, SpanKind, Trace, TraceAggregate, TraceSnapshot
 
 RUN_TIMESTAMP = datetime(2026, 10, 2, tzinfo=timezone.utc)
 
@@ -97,7 +103,15 @@ def completion_case():
         "no_snapshot_matches",
     ],
 )
-def test_invalid_completion_retains_citations_and_reports_failure(completion_case, fault):
+def test_invalid_completion_retains_citations_and_reports_failure(
+    completion_case, fault, monkeypatch
+):
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(
+        telemetry, "tracer", OITracer(provider.get_tracer(__name__), config=TraceConfig())
+    )
     insight, checks, snapshot = completion_case
 
     def predicate(item):
@@ -122,6 +136,10 @@ def test_invalid_completion_retains_citations_and_reports_failure(completion_cas
     ):
         result = completion.apply(snapshot, RUN_TIMESTAMP)
     assert result == insight
+    (scan,) = exporter.get_finished_spans()
+    assert scan.name == "evidence_scan"
+    assert scan.status.status_code == StatusCode.ERROR
+    assert any(event.name == "exception" for event in scan.events)
 
 
 @pytest.mark.parametrize("updated_date", [None, datetime(2026, 9, 29, tzinfo=timezone.utc)])
@@ -187,7 +205,7 @@ def test_invalid_return_can_be_fixed_in_same_python_session(
 ):
     insight, checks, snapshot = completion_case
     prepare = (
-        "import json\nfrom insight_agent.traces import UNSET\n"
+        "import json\nfrom compass.traces import UNSET\n"
         + inspect.getsource(truncated_enrich)
         + "\nchecks = [(trace_snapshot.get_trace_by_id(i), expected) for i, expected in "
         + repr([(t.id, expected) for t, expected in checks])

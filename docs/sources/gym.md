@@ -10,11 +10,10 @@ Recorded rewards are included in grader failure analysis.
 
 ## Configure and run
 
-With [uv and Git installed](../../README.md#start-here), install the CLI:
+With [uv installed](../../README.md#start-here), install the CLI:
 
 ```bash
-uv tool install \
-  'insight-agent @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+uv tool install nemo-compass
 ```
 
 No Gym installation or optional extra is required.
@@ -31,7 +30,7 @@ trace:
 ```
 
 ```bash
-insight-agent --config config.yaml
+compass --config config.yaml
 ```
 
 Open `insights.yml` if the run produced insights. [Read your results](../results.md)
@@ -62,7 +61,7 @@ The loader reads the complete file and does not support `trace.max_traces`.
 You can also run without YAML:
 
 ```bash
-insight-agent --trace.gym.path rollouts.jsonl --max-tokens 16384
+compass --trace.gym.path rollouts.jsonl --max-tokens 16384
 ```
 
 ## What is preserved

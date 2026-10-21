@@ -8,11 +8,10 @@ Recorded scores on root spans are included automatically in grader failure analy
 
 ## Connect and run
 
-With [uv and Git installed](../../README.md#start-here), install the CLI:
+With [uv installed](../../README.md#start-here), install the CLI:
 
 ```bash
-uv tool install \
-  'insight-agent @ git+https://github.com/NVIDIA-NeMo/labs-nemo-compass.git@main'
+uv tool install nemo-compass
 ```
 
 No Braintrust extra is required. [Configure your inference model and key](../model-access.md#choose-a-model).
@@ -35,7 +34,7 @@ trace:
 ```
 
 ```bash
-insight-agent --config config.yaml
+compass --config config.yaml
 ```
 
 Open `insights.yml` if the run produced insights. [Read your results](../results.md)
@@ -55,7 +54,7 @@ Use a window of completed runs; the loader does not wait for in-flight spans.
 For a single run:
 
 ```bash
-insight-agent --config config.yaml --trace.max-traces 25
+compass --config config.yaml --trace.max-traces 25
 ```
 
 The API endpoint defaults to `https://api.braintrust.dev`. Set `BRAINTRUST_API_URL` in `.env`

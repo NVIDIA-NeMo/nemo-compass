@@ -8,9 +8,9 @@ import json
 
 from nooa.unifiedllm import FakeLLMClient, LLMResponse, ToolCall
 
-from insight_agent.insight import Insight
-from insight_agent.insights_generation.confidence import InsightConfidence
-from insight_agent.traces import Trace, TraceAggregate
+from compass.insight import Insight
+from compass.insights_generation.confidence import InsightConfidence
+from compass.traces import Trace, TraceAggregate
 
 
 def _response(name: str, arguments: dict, call_id: str) -> LLMResponse:

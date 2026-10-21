@@ -9,14 +9,15 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 import yaml
 from nooa.unifiedllm import FakeLLMClient
+from pydantic import BaseModel
 
-import insight_agent.cli.main as cli
-from insight_agent.compass_signals.compass_signals import CompassSignalResult, Problem
-from insight_agent.compass_signals.registry import CompassSignalRegistry
-from insight_agent.config import CompassSignalsConfig, RunConfig
-from insight_agent.insight import Insight, load_insights
-from insight_agent.insights_generation.config import load_dotenv
-from insight_agent.traces import Trace, TraceAggregate, TraceSnapshot
+import compass.cli.main as cli
+from compass.compass_signals.compass_signals import CompassSignalResult, Problem
+from compass.compass_signals.registry import CompassSignalRegistry
+from compass.config import CompassSignalsConfig, RunConfig
+from compass.insight import Insight, load_insights
+from compass.insights_generation.config import load_dotenv
+from compass.traces import Trace, TraceAggregate, TraceSnapshot
 
 
 @pytest.fixture
@@ -47,7 +48,7 @@ def test_missing_environment_exits_before_loading_traces(
     assert captured.out == ""
     assert captured.err == (
         "Missing required environment settings:\n"
-        "  INSIGHT_AGENT_API_KEY — API key for the configured model\n"
+        "  COMPASS_API_KEY — API key for the configured model\n"
         "  LANGSMITH_API_KEY — API key for LangSmith\n"
         "  EMBEDDING_API_KEY — API key named by compass_signals.user_sentiment.litellm.api_key_env\n\n"
         "Set these in .env in your working directory (NAME=value),\n"
@@ -67,7 +68,7 @@ def test_langfuse_checks_only_missing_settings_after_cli_overrides(
         "    to_timestamp: 2026-01-02T00:00:00Z\n"
         "compass_signals:\n  tool_issues: {}\n"
     )
-    monkeypatch.setenv("INSIGHT_AGENT_API_KEY", "private-model-key")
+    monkeypatch.setenv("COMPASS_API_KEY", "private-model-key")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "private-project-key")
     args = ["--config", str(config_path)]
     assert cli.main(args) == 2
@@ -115,7 +116,7 @@ def test_model_endpoint_does_not_inherit_another_provider_gateway(
     expected = "https://gateway.example/v1" if model.startswith("openai/") else None
     assert client.call_args.kwargs["api_base"] == expected
 
-    monkeypatch.setenv("INSIGHT_AGENT_API_BASE", "https://explicit.example/v1")
+    monkeypatch.setenv("COMPASS_API_BASE", "https://explicit.example/v1")
     cli._build_llm(config, "test-key")
     assert client.call_args.kwargs["api_base"] == "https://explicit.example/v1"
 
@@ -182,7 +183,7 @@ def test_cli_preserves_existing_insights_without_synthesizing_empty_evidence(
     trace_path.write_text('{"id":"unscored","root_spans":[],"aggregate":{}}', encoding="utf-8")
     output_path = tmp_path / "results" / "insights.yml"
     compilation = SimpleNamespace(compile_insights=AsyncMock(return_value=existing))
-    monkeypatch.setenv("INSIGHT_AGENT_API_KEY", "test-key-not-real")
+    monkeypatch.setenv("COMPASS_API_KEY", "test-key-not-real")
     monkeypatch.setattr(cli, "_build_llm", lambda config, api_key: FakeLLMClient())
     monkeypatch.setattr(cli, "InsightCompilation", lambda llm: compilation)
 
@@ -253,8 +254,10 @@ def test_code_validation_filters_problems_and_preserves_signal_result(
         cli._validate_evidence_with_code(evidence, snapshot, tmp_path, FakeLLMClient())
     )
 
-    assert result[0].problems == (supported, unknown)
-    assert result[0].artifacts == {"kept": True}
+    assert result.retained_evidence()[0].problems == (supported, unknown)
+    assert result.rejected_count == 1
+    assert result.unresolved_count == 1
+    assert result.retained_evidence()[0].artifacts == {"kept": True}
     assert received == [
         (supported, (trace,)),
         (unsupported, (trace,)),
@@ -320,7 +323,15 @@ def test_final_compilation_severity_does_not_require_code_base(
         cli, "_configured_trace_loader", lambda config: SimpleNamespace(load=lambda: snapshot)
     )
     monkeypatch.setattr(cli, "_run_compass_signals", AsyncMock(return_value=evidence))
-    monkeypatch.setattr(cli, "_validate_evidence_with_code", AsyncMock(return_value=evidence))
+    monkeypatch.setattr(
+        cli,
+        "_validate_evidence_with_code",
+        AsyncMock(
+            return_value=cli.EvidenceValidation(
+                evidence, [[True for _ in item.problems] for item in evidence]
+            )
+        ),
+    )
     monkeypatch.setattr(cli, "_build_llm", lambda *args: FakeLLMClient())
     monkeypatch.setattr(cli, "InsightCompilation", lambda llm: compilation)
     monkeypatch.setattr(cli, "_rate_confidence_with_code", review)
@@ -343,22 +354,26 @@ def test_compass_signals_share_cli_loop_and_run_concurrently(monkeypatch):
         started = asyncio.Event()
         registry = CompassSignalRegistry()
 
+        class SignalConfig(BaseModel):
+            pass
+
         class Signal:
             def __init__(self, name):
                 self.name = name
+                self.config = SignalConfig()
 
             def check_prerequisites(self, snapshot):
                 pass
 
             async def analyze(self, snapshot):
                 assert asyncio.get_running_loop() is loop
-                if self.name == "first":
+                if self.name == "anomaly-and-patterns":
                     await asyncio.wait_for(started.wait(), timeout=1)
                 else:
                     started.set()
                 return CompassSignalResult(signal_name=self.name, problems=())
 
-        for signal in (Signal("first"), Signal("second")):
+        for signal in (Signal("anomaly-and-patterns"), Signal("tool-issues")):
             registry.register(signal)
         monkeypatch.setattr(cli, "registered_builtin_signals", lambda **kwargs: registry)
         progress = []
@@ -367,8 +382,8 @@ def test_compass_signals_share_cli_loop_and_run_concurrently(monkeypatch):
             TraceSnapshot([Trace(id="trace-1", root_spans=[], aggregate=TraceAggregate())]),
             progress=progress.append,
         )
-        assert [result.signal_name for result in results] == ["first", "second"]
-        assert set().union(*map(set, progress)) == {"first", "second"}
+        assert [result.signal_name for result in results] == ["anomaly-and-patterns", "tool-issues"]
+        assert set().union(*map(set, progress)) == {"anomaly-and-patterns", "tool-issues"}
         assert progress[-1] == ()
 
     asyncio.run(run())
@@ -381,7 +396,7 @@ def test_no_candidates_skips_synthesis_and_file_creation(
     traces.write_text('{"id":"trace-1","root_spans":[],"aggregate":{}}')
     output = tmp_path / "insights.yml"
     compilation = Mock()
-    monkeypatch.setenv("INSIGHT_AGENT_API_KEY", "test-key")
+    monkeypatch.setenv("COMPASS_API_KEY", "test-key")
     monkeypatch.setattr(cli, "InsightCompilation", compilation)
 
     assert (
@@ -402,3 +417,24 @@ def test_no_candidates_skips_synthesis_and_file_creation(
     captured = capsys.readouterr()
     assert captured.out == "[]\n"
     assert "Saved:" not in captured.err
+
+
+@pytest.mark.parametrize("missing_ethos", [False, True])
+def test_configuration_errors_are_reported_together(tmp_path, monkeypatch, capsys, missing_ethos):
+    monkeypatch.chdir(tmp_path)
+    loader = Mock()
+    monkeypatch.setattr(cli, "_configured_trace_loader", loader)
+    args = ["--max-tokens", "0"]
+    if missing_ethos:
+        args += ["--ethos-path", str(tmp_path / "missing.md")]
+    assert cli.main(args) == cli.EXIT_SETUP
+    loader.assert_not_called()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Invalid configuration:" in captured.err
+    assert "trace: Field required" in captured.err
+    assert "max_tokens: Input should be greater than or equal to 1" in captured.err
+    if missing_ethos:
+        assert "ethos_path: ETHOS.md not found or not a regular file" in captured.err
+        assert "--ethos-path" in captured.err
+    assert "Traceback" not in captured.err

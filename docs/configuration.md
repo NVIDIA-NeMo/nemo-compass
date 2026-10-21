@@ -15,6 +15,7 @@ in the environment or `.env`.
 | --- | --- |
 | `trace` | Exactly one source; see the [source guides](../README.md#start-here). |
 | `trace.max_traces` | Limit complete traces from a provider or native export. Unsupported for canonical JSONL, ATIF, and Gym rollouts. |
+| `ethos_path` | Optional path to [ETHOS.md](https://github.com/NVIDIA/skills/tree/main/skills/ethos-orchestrate), which defines the agent’s purpose and behavioral requirements. Defaults to `ETHOS.md` in the current working directory. Used by the ethos divergence signal. |
 | `output_path` | YAML output file; defaults to `insights.yml`. Use `-` for stdout. |
 | `model`, `api_base`, `max_tokens` | [Inference settings](model-access.md#choose-a-model). |
 | `compass_signals` | [Compass Signals and their prerequisites](compass-signals.md). All five are enabled by default. |
@@ -44,7 +45,7 @@ is supplied.
 CLI options override individual YAML values. YAML uses underscores; CLI options use hyphens:
 
 ```bash
-insight-agent --config config.yaml \
+compass --config config.yaml \
   --trace.max-traces 25 \
   --output-path investigation.yml
 ```
@@ -52,7 +53,7 @@ insight-agent --config config.yaml \
 You can also run without YAML:
 
 ```bash
-insight-agent --trace.filesystem.path traces.jsonl --max-tokens 16384
+compass --trace.filesystem.path traces.jsonl --max-tokens 16384
 ```
 
 To enable code-aware validation and confidence review, set `code_base` in YAML:
@@ -64,14 +65,14 @@ code_base: ../my-agent
 Or set it for a single run:
 
 ```bash
-insight-agent --config config.yaml --code-base ../my-agent
+compass --config config.yaml --code-base ../my-agent
 ```
 
 Validation and confidence both add source investigation calls and run by default whenever
 `code_base` is set; there is no separate flag. Severity is assigned during final compilation
 with or without `code_base`.
 
-Use `insight-agent --help-all` for every option and its default.
+Use `compass --help-all` for every option and its default.
 Explicit CLI and YAML model settings take priority over [environment defaults](model-access.md#credentials).
 
 ## Repeat a run
