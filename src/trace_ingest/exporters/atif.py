@@ -18,6 +18,8 @@ Source contract: https://github.com/harbor-framework/harbor/blob/main/rfcs/0001-
 from __future__ import annotations
 
 import json
+from pathlib import PurePosixPath
+from urllib.parse import urlsplit
 
 from pydantic import JsonValue
 
@@ -36,17 +38,17 @@ _ROLE_SOURCES = {
     "system": "system",
     "user": "user",
 }
-_NOT_EMITTED = frozenset(
-    {
-        SpanKind.RETRIEVER,
-        SpanKind.EMBEDDING,
-        SpanKind.RERANKER,
-        SpanKind.EVALUATOR,
-        SpanKind.GUARDRAIL,
-        SpanKind.UNKNOWN,
-    }
-)
 _ORCHESTRATION = frozenset({SpanKind.AGENT, SpanKind.CHAIN})
+_RESPONSE_ITEM_TYPES = frozenset({"message", "reasoning", "function_call", "function_call_output"})
+_TEXT_PART_TYPES = frozenset({"text", "input_text", "output_text"})
+_IMAGE_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+_SUFFIX_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
 
 class ATIFExportError(ValueError):
@@ -185,12 +187,12 @@ class _Linearizer:
         first = roots[0]
         if len(roots) > 1:
             self.loss_codes.add("multiple_root_spans_linearized")
-        self.steps.extend(_instruction_steps(first))
+        self.steps.extend(_instruction_steps(first, self.loss_codes))
         for root in roots:
             self._visit(root, depth=0)
         self._collect_models(roots)
         if first.output is not UNSET and first.output is not None:
-            final = _message_text(first.output)
+            final = _message(first.output, self.loss_codes)
             if final != self._last_agent_message():
                 step = _agent_step(first, message=final)
                 if first.end_time is not None:
@@ -234,7 +236,7 @@ class _Linearizer:
             self.steps.append(self._tool_step(span))
             return True
         if span.kind is SpanKind.LLM:
-            self.steps.append(_llm_step(span))
+            self.steps.append(_llm_step(span, self.loss_codes))
             return True
         if span.kind in _ORCHESTRATION:
             if span.children:
@@ -243,7 +245,7 @@ class _Linearizer:
                 return False
             if span.output is UNSET:
                 return False
-            self.steps.append(_agent_step(span, message=_message_text(span.output)))
+            self.steps.append(_agent_step(span, message=_message(span.output, self.loss_codes)))
             return True
         self.loss_codes.add(f"{span.kind.value.lower()}_span_not_emitted")
         return False
@@ -269,7 +271,9 @@ class _Linearizer:
         for result in span.tool_call.results if span.tool_call else []:
             entry: dict[str, JsonValue] = {
                 "source_call_id": call_id,
-                "content": "" if result.content is UNSET else _text(result.content),
+                "content": ""
+                if result.content is UNSET
+                else _content(result.content, self.loss_codes),
             }
             is_error = result.is_error
             if is_error is None and span.error is not None:
@@ -298,13 +302,15 @@ class _Linearizer:
         return None
 
 
-def _instruction_steps(root: Span) -> list[dict[str, JsonValue]]:
+def _instruction_steps(root: Span, losses: set[str]) -> list[dict[str, JsonValue]]:
     value = root.input
-    if value is UNSET or value is None:
+    if value is UNSET or value is None or value in ("", [], {}):
+        raise ATIFExportError("trace has no recoverable user instruction")
+    if isinstance(value, str) and not value.strip():
         raise ATIFExportError("trace has no recoverable user instruction")
     messages = _message_records(value)
     if messages is None:
-        return [_step(root, source="user", message=_text(value))]
+        return [_step(root, source="user", message=_content(value, losses))]
     sources = [_ROLE_SOURCES.get(_role(message), "system") for message in messages]
     last_user = max((i for i, source in enumerate(sources) if source == "user"), default=-1)
     if last_user < 0:
@@ -312,7 +318,7 @@ def _instruction_steps(root: Span) -> list[dict[str, JsonValue]]:
     steps = []
     for index, (message, source) in enumerate(zip(messages, sources, strict=True)):
         content = message.get("content", message.get("message", message.get("text", "")))
-        step = _step(root, source=source, message=_message_text(content))
+        step = _step(root, source=source, message=_message(content, losses))
         step["is_copied_context"] = index != last_user
         steps.append(step)
     return steps
@@ -333,8 +339,9 @@ def _role(message: dict[str, JsonValue]) -> str:
     return str(message.get("role") or message.get("source") or "").lower()
 
 
-def _llm_step(span: Span) -> dict[str, JsonValue]:
-    step = _agent_step(span, message="" if span.output is UNSET else _message_text(span.output))
+def _llm_step(span: Span, losses: set[str]) -> dict[str, JsonValue]:
+    message = "" if span.output is UNSET else _message(span.output, losses)
+    step = _agent_step(span, message=message)
     step["llm_call_count"] = 1
     if span.model:
         step["model_name"] = span.model
@@ -351,11 +358,11 @@ def _llm_step(span: Span) -> dict[str, JsonValue]:
     return step
 
 
-def _agent_step(span: Span, *, message: str) -> dict[str, JsonValue]:
+def _agent_step(span: Span, *, message: JsonValue) -> dict[str, JsonValue]:
     return _step(span, source="agent", message=message)
 
 
-def _step(span: Span, *, source: str, message: str) -> dict[str, JsonValue]:
+def _step(span: Span, *, source: str, message: JsonValue) -> dict[str, JsonValue]:
     step: dict[str, JsonValue] = {"step_id": 0}
     if span.start_time is not None:
         step["timestamp"] = span.start_time.isoformat()
@@ -375,14 +382,19 @@ def _text(value: JsonValue) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
-def _message_text(value: JsonValue) -> str:
-    """Return the conversational text of a recorded message or model output."""
+def _message(value: JsonValue, losses: set[str]) -> JsonValue:
+    """Return the conversational content of a recorded message or model output.
+
+    The result is ATIF message content: text, or a list of text and image parts.
+    """
 
     if isinstance(value, dict):
         for key in ("content", "message", "text", "response", "answer", "output"):
             candidate = value.get(key)
             if isinstance(candidate, str):
                 return candidate
+            if key in ("content", "output") and isinstance(candidate, list):
+                return _message(candidate, losses)
         choices = value.get("choices")
         if isinstance(choices, list) and choices and isinstance(choices[0], dict):
             choice = choices[0]
@@ -391,4 +403,90 @@ def _message_text(value: JsonValue) -> str:
                 return message["content"]
             if isinstance(choice.get("text"), str):
                 return choice["text"]
+    if isinstance(value, list) and value and all(_is_item(item) for item in value):
+        return _items_message(value, losses)
+    return _content(value, losses)
+
+
+def _is_item(value: JsonValue) -> bool:
+    """Whether ``value`` is a chat message or Responses API output item."""
+
+    return isinstance(value, dict) and (
+        "role" in value or value.get("type") in _RESPONSE_ITEM_TYPES
+    )
+
+
+def _items_message(items: list[JsonValue], losses: set[str]) -> JsonValue:
+    """Keep assistant message content; tool calls are exported from TOOL spans instead."""
+
+    parts: list[JsonValue] = []
+    for item in items:
+        assert isinstance(item, dict)
+        if item.get("type") == "reasoning":
+            losses.add("reasoning_not_exported")
+            continue
+        if item.get("role", "assistant") != "assistant" or item.get("type", "message") != "message":
+            continue
+        content = _content(item.get("content", ""), losses)
+        parts.extend([{"type": "text", "text": content}] if isinstance(content, str) else content)  # ty: ignore[invalid-argument-type]
+    return _joined(parts)
+
+
+def _content(value: JsonValue, losses: set[str]) -> JsonValue:
+    """Map recorded content to ATIF content, keeping typed images as image parts."""
+
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list) and value:
+        parts: list[JsonValue] = []
+        for item in value:
+            part = _content_part(item, losses)
+            if part is None:
+                return _text(value)
+            parts.append(part)
+        return _joined(parts)
     return _text(value)
+
+
+def _content_part(item: JsonValue, losses: set[str]) -> dict[str, JsonValue] | None:
+    if not isinstance(item, dict):
+        return None
+    kind = item.get("type")
+    if kind in _TEXT_PART_TYPES and isinstance(item.get("text"), str):
+        return {"type": "text", "text": item["text"]}
+    if kind == "refusal" and isinstance(item.get("refusal"), str):
+        return {"type": "text", "text": item["refusal"]}
+    if kind == "image" and isinstance(item.get("source"), dict):
+        source = item["source"]
+        media_type, path = source.get("media_type"), source.get("path")
+        if media_type in _IMAGE_MEDIA_TYPES and isinstance(path, str) and path:
+            return {"type": "image", "source": {"media_type": media_type, "path": path}}
+    elif kind in ("input_image", "image_url"):
+        url = item.get("image_url")
+        url = url.get("url") if isinstance(url, dict) else url
+        media_type = _image_media_type(url)
+        if isinstance(url, str) and media_type is not None:
+            return {"type": "image", "source": {"media_type": media_type, "path": url}}
+    else:
+        return None
+    # An image whose media type was not recorded cannot be represented in ATIF.
+    losses.add("image_without_media_type_omitted")
+    return {"type": "text", "text": "[image omitted: media type not recorded]"}
+
+
+def _image_media_type(url: JsonValue) -> str | None:
+    if not isinstance(url, str) or not url.strip():
+        return None
+    if url.startswith("data:"):
+        media_type = url[5:].split(";", 1)[0].split(",", 1)[0]
+    else:
+        media_type = _SUFFIX_MEDIA_TYPES.get(PurePosixPath(urlsplit(url).path).suffix.lower())
+    return media_type if media_type in _IMAGE_MEDIA_TYPES else None
+
+
+def _joined(parts: list[JsonValue]) -> JsonValue:
+    """Return plain text when every part is text, else the ATIF part list."""
+
+    if all(isinstance(part, dict) and part.get("type") == "text" for part in parts):
+        return "\n".join(part["text"] for part in parts)  # ty: ignore[invalid-argument-type, not-subscriptable]
+    return parts

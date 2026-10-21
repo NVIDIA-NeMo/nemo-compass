@@ -251,3 +251,53 @@ def test_atif_origin_trace_ignores_agent_name(tmp_path):
     trace = next(iter(ATIFTraceLoader(ATIFTraceConfig(path=path)).load()))
     assert to_atif(trace) == record
     assert to_atif(trace, agent_name="other") == record
+
+
+@pytest.mark.parametrize("user_input", ["", "   ", [], {}])
+def test_empty_instruction_is_rejected(user_input):
+    with pytest.raises(ATIFExportError, match="no recoverable user instruction"):
+        to_atif(trace_of(agent(user_input=user_input)), agent_name="x")
+
+
+def test_responses_output_items_keep_only_assistant_content():
+    llm = Span(
+        id="llm",
+        kind=SpanKind.LLM,
+        output=[
+            {"type": "reasoning", "encrypted_content": "opaque", "summary": []},
+            {"type": "function_call", "call_id": "c1", "name": "lookup", "arguments": "{}"},
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "Done."}],
+            },
+        ],
+    )
+    exported = to_atif(trace_of(agent(llm, output="Done.")), agent_name="x")
+    assert [step["message"] for step in exported["steps"]] == ["Find x.", "Done."]
+    assert exported["extra"]["compass"]["loss_codes"] == ["reasoning_not_exported"]
+
+
+def test_image_parts_become_atif_images_when_their_media_type_is_recorded():
+    typed = "data:image/png;base64,AAAA"
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Describe these."},
+                {"type": "input_image", "image_url": typed},
+                {"type": "input_image", "image_url": "https://example.test/photo"},
+            ],
+        }
+    ]
+    failed = tool("t", ToolResult(content=[{"type": "input_image", "image_url": "x.webp"}]))
+    exported = to_atif(trace_of(agent(failed, user_input=messages)), agent_name="x")
+    assert exported["steps"][0]["message"] == [
+        {"type": "text", "text": "Describe these."},
+        {"type": "image", "source": {"media_type": "image/png", "path": typed}},
+        {"type": "text", "text": "[image omitted: media type not recorded]"},
+    ]
+    assert exported["steps"][1]["observation"]["results"][0]["content"] == [
+        {"type": "image", "source": {"media_type": "image/webp", "path": "x.webp"}}
+    ]
+    assert exported["extra"]["compass"]["loss_codes"] == ["image_without_media_type_omitted"]
