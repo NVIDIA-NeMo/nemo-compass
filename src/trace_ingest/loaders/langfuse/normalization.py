@@ -256,17 +256,22 @@ def _tool_definitions(
     including ``gen_ai.tool.definitions``, into an observation's top-level
     ``input.tools`` array. GENERATION catalogs describe the tools offered to that
     model call and therefore take precedence; root AGENT catalogs are only a
-    fallback for reduced traces with no generation observations. Each selected
-    observation keeps its own definitions. When a generation has no readable
-    catalog, or the selected observations offer different tool names, nothing is
-    attached, so the trace has no catalog.
+    fallback for reduced traces with no generation observations, and each keeps
+    its own definitions. Generation definitions are declared once on the
+    generations' nearest AGENT ancestor, because the TOOL observations a
+    generation triggers are usually its siblings under that agent. A generation
+    with no AGENT ancestor keeps its own definitions. When a generation has no
+    readable catalog, or the selected observations offer different tool names,
+    nothing is attached, so the trace has no catalog.
     """
 
+    kinds: dict[str, SpanKind] = {}
     root_agents: dict[str, list[ToolDefinition] | None] = {}
     generations: dict[str, list[ToolDefinition] | None] = {}
     for observation in observations:
         kind, _ = _map_observation_kind(observation.type)
         observation_id = str(observation.id)
+        kinds[observation_id] = kind
         catalog = _tool_definitions_from_input(observation.input)
         if kind is SpanKind.LLM:
             generations[observation_id] = catalog
@@ -286,7 +291,27 @@ def _tool_definitions(
         > 1
     ):
         return {}
-    return declared
+    if not generations:
+        return declared
+
+    by_agent: dict[str | None, list[str]] = {}
+    for generation_id in declared:
+        agent_id = effective_parents[generation_id]
+        while agent_id is not None and kinds[agent_id] is not SpanKind.AGENT:
+            agent_id = effective_parents[agent_id]
+        by_agent.setdefault(agent_id, []).append(generation_id)
+    attached: dict[str, list[ToolDefinition]] = {}
+    for agent_id, members in by_agent.items():
+        if agent_id is None:
+            attached.update((member, declared[member]) for member in members)
+            continue
+        distinct: dict[str, ToolDefinition] = {}
+        for member in members:
+            for definition in declared[member]:
+                key = json.dumps([definition.name, definition.input_schema], sort_keys=True)
+                distinct.setdefault(key, definition)
+        attached[agent_id] = list(distinct.values())
+    return attached
 
 
 def _attach_tool_definitions(

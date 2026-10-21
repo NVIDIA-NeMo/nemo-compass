@@ -31,7 +31,7 @@ from compass.trace_loaders.langfuse import (
     LangfuseV3TraceLoader,
 )
 from compass.traces import UNSET, SpanKind
-from trace_ingest.catalog import tool_catalog
+from trace_ingest.catalog import definitions_in_scope, tool_catalog
 
 START = datetime(2026, 8, 1, 12, tzinfo=timezone.utc)
 END = START + timedelta(hours=1)
@@ -630,12 +630,10 @@ def test_loader_extracts_tool_catalog_from_supported_langfuse_input(
             "required": ["query"],
         }
     }
-    catalog_span = (
-        normalized.root_spans[0]
-        if observation_type == "AGENT"
-        else normalized.root_spans[0].children[0]
+    catalog_span = normalized.root_spans[0]
+    assert catalog_span.input == (
+        catalog_input if observation_type == "AGENT" else {"task": "find it"}
     )
-    assert catalog_span.input == catalog_input
     definitions = catalog_span.tool_definitions
     assert definitions is not UNSET
     assert definitions[0].raw == definition
@@ -712,7 +710,7 @@ def test_generation_catalogs_override_root_fallback(generation_inputs, expected)
     assert tool_catalog(normalized) == expected
 
 
-def test_each_generation_carries_its_own_offered_tools() -> None:
+def test_agreeing_generations_declare_their_tools_once_on_the_agent() -> None:
     root = observation("root", observation_type="AGENT", input_value={"task": "find it"})
     first = {"name": "search", "description": "first", "parameters": {"type": "object"}}
     second = {"name": "search", "description": "second", "parameters": {"type": "object"}}
@@ -739,13 +737,51 @@ def test_each_generation_carries_its_own_offered_tools() -> None:
     )
 
     root_span = normalized.root_spans[0]
-    assert root_span.tool_definitions is UNSET
-    offered = []
-    for span in root_span.children:
-        assert span.tool_definitions is not UNSET
-        offered.append([definition.raw for definition in span.tool_definitions])
-    assert offered == [[first], [second]]
+    assert root_span.tool_definitions is not UNSET
+    assert [definition.raw for definition in root_span.tool_definitions] == [first]
+    assert all(span.tool_definitions is UNSET for span in root_span.children)
     assert tool_catalog(normalized) == {"search": {"type": "object"}}
+
+
+def test_tool_beside_the_generation_has_the_agent_definitions_in_scope() -> None:
+    search = {"name": "search", "parameters": {"type": "object"}}
+    full_trace = provider_trace(
+        observations=[
+            observation("root", observation_type="AGENT", input_value={"task": "find it"}),
+            observation(
+                "generation",
+                parent_id="root",
+                observation_type="GENERATION",
+                start_time=START + timedelta(seconds=1),
+                input_value={"tools": [search]},
+            ),
+            observation(
+                "tool",
+                parent_id="root",
+                observation_type="TOOL",
+                start_time=START + timedelta(seconds=2),
+                name="search",
+                input_value={},
+            ),
+        ]
+    )
+    client = FakeClient(pages=[([full_trace], 1)], details={"trace-1": full_trace})
+
+    normalized = next(
+        iter(
+            LangfuseV3TraceLoader(
+                LangfuseTraceConfig(START, END, base_url="https://langfuse.example.com"),
+                client=client,
+            ).load()
+        )
+    )
+
+    scope = definitions_in_scope(normalized)
+    assert {span_id: [d.name for d in found] for span_id, found in scope.items()} == {
+        "tool": ["search"]
+    }
+    generation = normalized.root_spans[0].children[0]
+    assert generation.tool_definitions is UNSET
 
 
 @pytest.mark.parametrize(
