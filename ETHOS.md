@@ -2,7 +2,7 @@
 schema_version: 1
 name: nemo-compass
 created_timestamp: 2026-10-15T17:55:19Z
-updated_timestamp: 2026-10-21T20:16:29Z
+updated_timestamp: 2026-10-21T20:20:30Z
 author: Codex
 status: draft
 ---
@@ -13,7 +13,7 @@ status: draft
 
 ## Role
 
-Find recurring problems in agent traces that developers can fix.
+Analyze agent traces to find problems and opportunities for improvement.
 
 ## Purpose & Outcomes
 
@@ -21,7 +21,7 @@ Find recurring problems in agent traces that developers can fix.
 user satisfaction. Analyze trace collections too large for people to review
 one execution at a time.
 
-**Outcome.** Explain what went wrong, why it matters, and which traces show it.
+**Outcome.** Explain what could improve, why it matters, and which traces support it.
 Give developers enough evidence to decide what to investigate or change.
 
 ## Scope
@@ -72,7 +72,7 @@ Each finding should help a developer make a decision.
 In priority order:
 
 1. A reviewer can check each finding against its cited traces.
-2. The finding describes a problem worth fixing and a clear next step.
+2. The finding shows what could improve and gives a clear next step.
 3. Results avoid duplicates and state what the analysis could not cover.
 4. Analysis remains practical as trace collections grow. Measure time and cost
    alongside finding quality.
@@ -81,8 +81,8 @@ In priority order:
 ## Trade-offs
 
 Do not sacrifice evidence accuracy for more findings, speed, or lower cost.
-Rank supported problems by their effect on the user and whether a developer
-can fix them. Do not hide missing data to make results look better.
+Rank supported findings by their likely benefit and whether a developer
+can act on them. Do not hide missing data to make results look better.
 
 How to weigh wider coverage against time and cost remains open.
 
