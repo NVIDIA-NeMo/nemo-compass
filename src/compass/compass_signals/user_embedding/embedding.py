@@ -5,18 +5,116 @@
 from __future__ import annotations
 
 import json
+import logging
+import math
 import os
+import random
+import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from functools import cached_property
 from importlib.resources import files
 from importlib.util import find_spec
 from typing import TYPE_CHECKING
 
+import httpx
 import numpy as np
+from litellm import EmbeddingResponse
+from openai import APIConnectionError, OpenAI
 from pydantic import BaseModel, ConfigDict, Field
 from tokenizers import Tokenizer
 
 _BATCH_SIZE = 100
+logger = logging.getLogger(__name__)
+
+
+def _request_embeddings(
+    *, model: str, api_base: str | None, api_key: str | None, input: list[str], timeout: float
+) -> EmbeddingResponse:
+    import litellm
+
+    resolved_model, provider, resolved_key, resolved_base = litellm.get_llm_provider(
+        model=model, api_base=api_base, api_key=api_key
+    )
+    if provider in {"openai", "nvidia_nim", "together_ai", "litellm_proxy"}:
+        # LiteLLM's OpenAI embedding adapter replaces max_retries=0 with its
+        # default, including on supplied clients. Use the SDK directly so each
+        # scheduler attempt sends exactly one request. Keep LiteLLM alias routing.
+        with OpenAI(
+            api_key=resolved_key
+            or api_key
+            or litellm.api_key
+            or litellm.openai_key
+            or os.getenv("OPENAI_API_KEY"),
+            base_url=resolved_base
+            or api_base
+            or litellm.api_base
+            or os.getenv("OPENAI_BASE_URL")
+            or os.getenv("OPENAI_API_BASE")
+            or "https://api.openai.com/v1",
+            timeout=timeout,
+            max_retries=0,
+        ) as client:
+            response = client.embeddings.create(
+                model=resolved_model, input=input, encoding_format="float"
+            )
+            return EmbeddingResponse(**response.model_dump())
+    return litellm.embedding(
+        model=model,
+        api_base=api_base,
+        api_key=api_key,
+        input=input,
+        encoding_format="float",
+        timeout=timeout,
+        max_retries=0,
+        num_retries=0,
+    )
+
+
+def _retry_delay(error: Exception, attempt: int, max_wait: float) -> float | None:
+    """Return a bounded cooldown, or None when this failure must propagate."""
+    if not isinstance(error, APIConnectionError) and getattr(error, "status_code", None) not in {
+        408,
+        429,
+        500,
+        502,
+        503,
+        504,
+    }:
+        return None
+    response = getattr(error, "response", None)
+    headers = httpx.Headers(getattr(error, "headers", None))
+    if response is not None:
+        headers.update(response.headers)
+    retry_after = headers.get("retry-after")
+    server_delay = 0.0
+    if retry_after is not None:
+        try:
+            server_delay = float(retry_after)
+        except ValueError:
+            try:
+                server_delay = parsedate_to_datetime(retry_after).timestamp() - time.time()
+            except (TypeError, ValueError, OverflowError):
+                pass
+        if not math.isfinite(server_delay):
+            server_delay = 0.0
+        # Never retry earlier than a valid server instruction to fit our budget.
+        if server_delay > max_wait:
+            logger.warning("Embedding Retry-After exceeds the %.2fs wait limit; stopping", max_wait)
+            return None
+    ceiling = min(max_wait, 2.0 ** min(attempt - 1, 30))
+    return max(0.0, server_delay, random.uniform(ceiling / 2, ceiling))
+
+
+@dataclass
+class _RemoteBatch:
+    index: int
+    inputs: list[str]
+    counts: list[int]
+    attempts: int = 0
+
 
 if TYPE_CHECKING:
     from transformers import (  # ty: ignore[unresolved-import] -- Optional encoder extra.
@@ -90,6 +188,21 @@ class LiteLLMEmbeddingConfig(BaseModel):
     model: str = Field(min_length=1, description="LiteLLM model alias for Qwen/Qwen3-Embedding-8B")
     api_base: str | None = None
     api_key_env: str | None = Field(default=None, description="API key environment variable")
+    max_concurrency: int = Field(
+        default=4, ge=1, le=32, description="Maximum concurrent embedding requests; starts at one"
+    )
+    max_retries: int = Field(
+        default=3, ge=0, le=10, description="Retries per failed embedding batch"
+    )
+    request_timeout: float = Field(
+        default=60, gt=0, allow_inf_nan=False, description="Per-request SDK timeout in seconds"
+    )
+    max_retry_wait: float = Field(
+        default=60,
+        gt=0,
+        allow_inf_nan=False,
+        description="Maximum cooldown in seconds; longer Retry-After fails the run",
+    )
 
 
 class UserEmbeddingGenerator:
@@ -183,14 +296,15 @@ class UserEmbeddingGenerator:
         ]
 
     def generate_remote(self, texts: list[str]) -> list[UserEmbedding]:
-        """Encode through LiteLLM in fixed-size batches."""
-        from litellm import embedding
-
+        """Increase parallelism after clean rounds and back off on transient failures."""
         config = self.litellm
         if config is None:
             raise ValueError("Remote embeddings require LiteLLM configuration")
+        if not texts:
+            return []
         api_key = os.environ[config.api_key_env] if config.api_key_env else None
-        results = []
+        pending: deque[_RemoteBatch] = deque()
+        # Validate every batch before submitting requests; tokenize on this thread.
         for start in range(0, len(texts), _BATCH_SIZE):
             inputs = [
                 self.projection.metadata["encoder"]["prefix"] + text[:20000]
@@ -201,22 +315,82 @@ class UserEmbeddingGenerator:
                 raise ValueError(
                     "User message exceeds the 8192-token budget; input was not truncated"
                 )
-            response = embedding(
-                model=config.model,
-                api_base=config.api_base,
-                api_key=api_key,
-                input=inputs,
-                encoding_format="float",
-            )
-            rows = sorted(response.data, key=lambda row: row["index"])
-            if [row["index"] for row in rows] != list(range(len(inputs))):
-                raise ValueError("Embedding response must contain one vector per input")
-            for row, count in zip(rows, counts, strict=True):
-                vector = np.asarray(row["embedding"], dtype="float32")
-                norm = np.linalg.norm(vector)
-                if not np.isfinite(norm) or norm == 0:
-                    raise ValueError("Embedding response must contain finite, nonzero vectors")
-                results.append(UserEmbedding(self.projection.compress(vector / norm), count))
+            pending.append(_RemoteBatch(start, inputs, counts))
+        completed: dict[int, list[UserEmbedding]] = {}
+        concurrency = 1
+        with ThreadPoolExecutor(max_workers=config.max_concurrency) as executor:
+            while pending:
+                round_batches = [pending.popleft() for _ in range(min(concurrency, len(pending)))]
+                futures = {}
+                for batch in round_batches:
+                    batch.attempts += 1
+                    futures[executor.submit(self._remote_batch, batch, config, api_key)] = batch
+                retry_batches = []
+                cooldown = 0.0
+                for future in as_completed(futures):
+                    batch = futures[future]
+                    try:
+                        completed[batch.index] = future.result()
+                    except Exception as error:
+                        delay = _retry_delay(error, batch.attempts, config.max_retry_wait)
+                        if delay is None or batch.attempts > config.max_retries:
+                            # The executor drains already-running requests, bounded by their
+                            # SDK timeouts. No further rounds or retries are submitted.
+                            logger.warning(
+                                "Embedding batch %d failed after %d attempt(s): %s",
+                                batch.index // _BATCH_SIZE,
+                                batch.attempts,
+                                type(error).__name__,
+                            )
+                            raise
+                        retry_batches.append(batch)
+                        cooldown = max(cooldown, delay)
+                        logger.warning(
+                            "Embedding batch %d retry %d/%d: %s",
+                            batch.index // _BATCH_SIZE,
+                            batch.attempts,
+                            config.max_retries,
+                            type(error).__name__,
+                        )
+                previous = concurrency
+                if retry_batches:
+                    concurrency = max(1, concurrency // 2)
+                    pending.extendleft(reversed(sorted(retry_batches, key=lambda b: b.index)))
+                    logger.warning(
+                        "Embedding concurrency %d -> %d; cooling down %.2fs",
+                        previous,
+                        concurrency,
+                        cooldown,
+                    )
+                    # Drain the round before sleeping so successes from requests already
+                    # in flight cannot undo a reduction or bypass the shared cooldown.
+                    time.sleep(cooldown)
+                else:
+                    concurrency = min(config.max_concurrency, concurrency + 1)
+                    if pending and concurrency != previous:
+                        logger.info("Embedding concurrency %d -> %d", previous, concurrency)
+        return [item for index in sorted(completed) for item in completed[index]]
+
+    def _remote_batch(
+        self, batch: _RemoteBatch, config: LiteLLMEmbeddingConfig, api_key: str | None
+    ) -> list[UserEmbedding]:
+        response = _request_embeddings(
+            model=config.model,
+            api_base=config.api_base,
+            api_key=api_key,
+            input=batch.inputs,
+            timeout=config.request_timeout,
+        )
+        rows = sorted(response.data, key=lambda row: row["index"])
+        if [row["index"] for row in rows] != list(range(len(batch.inputs))):
+            raise ValueError("Embedding response must contain one vector per input")
+        results = []
+        for row, count in zip(rows, batch.counts, strict=True):
+            vector = np.asarray(row["embedding"], dtype="float32")
+            norm = np.linalg.norm(vector)
+            if not np.isfinite(norm) or norm == 0:
+                raise ValueError("Embedding response must contain finite, nonzero vectors")
+            results.append(UserEmbedding(self.projection.compress(vector / norm), count))
         return results
 
     def generate_batch(self, texts: list[str]) -> list[UserEmbedding]:

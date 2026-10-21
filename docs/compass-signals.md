@@ -41,10 +41,38 @@ compass_signals:
       model: openai/your-qwen3-embedding-8b-alias
       api_base: https://embeddings.example.com/v1
       api_key_env: EMBEDDING_API_KEY
+      max_concurrency: 4
+      max_retries: 3
+      request_timeout: 60
+      max_retry_wait: 60
 ```
 
 Set `EMBEDDING_API_KEY` in your [environment file](model-access.md#credentials).
 Replace the model alias and endpoint with your provider’s values.
+
+Remote embeddings start with one request and add one concurrent request after each
+successful round, up to `max_concurrency` (1 to 32). Each request contains up to
+100 messages. Results retain the original message order. Set `max_concurrency: 1`
+for sequential requests. The limit applies to one embedding run, not across
+separate Compass processes.
+
+Rate limits, connection errors, timeouts, and HTTP 408, 429, 500, 502, 503, or 504
+responses halve concurrency, with a minimum of one. After the current round
+finishes, all new requests pause for exponential backoff with jitter. Failed
+batches retry first; successful batches are kept. Concurrency grows again after
+a successful round.
+
+The settings above show the defaults. `max_retries` is the number of additional
+attempts per batch (0 to 10); SDK retries are disabled. `request_timeout` is the
+per-request SDK timeout in seconds. `max_retry_wait` caps each cooldown in seconds.
+Valid `Retry-After` seconds or HTTP dates are honored; a requested wait beyond
+that cap fails the run instead of retrying early. Invalid headers use the normal
+backoff. Authentication errors, other permanent failures, invalid vectors, and
+exhausted retries fail the run without returning partial results. Already-running
+requests finish under their SDK timeouts before the error returns.
+
+Concurrency increases are logged at INFO; retries and reductions at WARNING.
+These messages contain batch numbers and error types, without user text or keys.
 
 To run the 8B embedding model locally, add `local-embedding` to the extras in your
 install command. Keep your source extra too. For LangSmith:
