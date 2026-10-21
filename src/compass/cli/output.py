@@ -19,7 +19,7 @@ from rich.text import Text
 
 from compass.compass_signals.compass_signals import CompassSignalResult
 from compass.insight import Insight
-from compass.insights_generation.ethos_validation import EthosRejection
+from compass.insights_generation.validation import CandidateRejection
 
 _SIGNAL_LABELS = {
     "anomaly-and-patterns": "Anomalies and patterns",
@@ -51,8 +51,7 @@ class RunResult:
     evidence: list[CompassSignalResult]
     insights: list[Insight]
     existing_insights: list[Insight] = field(default_factory=list)
-    rejected_by_code: int = 0
-    ethos_rejections: list[EthosRejection] = field(default_factory=list)
+    validation_rejections: list[CandidateRejection] = field(default_factory=list)
     limitations: list[str] = field(default_factory=list)
 
 
@@ -121,21 +120,22 @@ class RunOutput:
         candidate_count = sum(len(item.problems) for item in result.evidence)
         if not result.insights and candidate_count:
             reason = (
-                "none were supported by the codebase"
-                if result.rejected_by_code == candidate_count
+                "none were retained after candidate validation"
+                if len(result.validation_rejections) == candidate_count
                 else "none were retained after validation and review"
-                if result.rejected_by_code or result.ethos_rejections
+                if result.validation_rejections
                 else "none met the actionability criteria"
             )
             self.console.print(f"{count(candidate_count, 'candidate issue')} found; {reason}.")
-        if result.ethos_rejections:
+        if result.validation_rejections:
             self.console.print(
-                f"ethos excluded {count(len(result.ethos_rejections), 'candidate issue')}."
+                f"Candidate validation excluded {count(len(result.validation_rejections), 'candidate issue')}."
             )
-            for rejection in result.ethos_rejections:
+            for rejection in result.validation_rejections:
                 self.console.print(Text(f"  {rejection.problem.description}"))
                 self.console.print(Text(f"  {rejection.decision.explanation}"))
-                self.console.print(Text(f"  ethos: {rejection.decision.passage}"))
+                if rejection.decision.ethos_passage:
+                    self.console.print(Text(f"  ETHOS.md: {rejection.decision.ethos_passage}"))
         retained = len(result.insights) - new_count
         if retained:
             self.console.print(f"{count(retained, 'existing insight')} retained.")

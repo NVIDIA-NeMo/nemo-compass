@@ -20,19 +20,16 @@ merges duplicates across signals and existing insights, and ranks the results. I
 require each new insight to have support from more than one trace and to merge symptoms only when
 they establish the same problem. These decisions rely on model judgment.
 
-When `code_base` is configured, a [code-aware
-validator](../src/compass/insights_generation/validation.py) runs before compilation and
-removes candidate problems contradicted by the agent’s source while retaining problems the source
-cannot resolve. Compilation then merges the retained evidence into insights, attaches supporting
-trace references, and assigns severity from observed consequences and recovery independently of
-occurrence count.
+When `code_base` or ETHOS.md is available, [candidate validation](../src/compass/insights_generation/validation.py)
+runs before compilation. Each candidate gets one investigation with its supporting
+traces and all configured context: intended behavior from ETHOS.md and read-only
+source-code tools. Candidates are investigated concurrently. The validator reconciles
+these sources before deciding; intentional implementation does not excuse a violation
+of ETHOS.md, and permissions apply only within their stated conditions.
 
-When an ethos document is configured, an [ethos validator](../src/compass/insights_generation/ethos_validation.py)
-checks candidates from all signals against explicit intended behavior. It runs concurrently
-with code validation when both are enabled. A candidate is removed if either check
-establishes a contradiction; inconclusive checks retain it. Rejections based on ethos preserve
-an exact document passage and an explanation. This checks whether a candidate is a
-problem, leaving priority and severity decisions to compilation.
+Concrete contradictions remove candidates; uncertainty retains them. Rejections preserve
+an explanation and evidence basis, including an exact passage when relying on ETHOS.md.
+Compilation handles priority, severity, and recurrence after validation.
 
 When `code_base` is configured, a [second code-aware
 review](../src/compass/insights_generation/confidence.py) runs after compilation. It evaluates

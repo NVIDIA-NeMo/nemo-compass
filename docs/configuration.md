@@ -27,8 +27,8 @@ Relative paths resolve from the directory where you run the command.
 ## Code-aware review
 
 Set `code_base` to consult your agent's local source using read-only search and file access.
-Before compilation, the validator removes candidate problems contradicted by the code and retains
-problems it cannot resolve from the repository. It cannot edit or execute your agent's code.
+Before compilation, candidate validation examines source code together with ETHOS.md when
+available. It cannot edit or execute your agent's code.
 
 When `code_base` is set, an additional review runs after compilation. This review investigates
 each final insight's behavior, root cause, scope, and implied remediation, then assigns
@@ -40,19 +40,25 @@ characters of supporting traces plus tool results. Time and token usage depend o
 trace size, and investigation length. This is in addition to candidate validation when `code_base`
 is supplied.
 
-## ethos-aware candidate validation
+## Candidate validation
 
-When `ethos_path` is configured or an ethos document is discovered, Compass also checks
-candidates from every signal against that document before compilation. This check runs
-without `code_base`; when code review is enabled, both checks run concurrently.
+When `code_base` or `ethos_path` is available (including a discovered ETHOS.md),
+Compass validates candidates from every signal before compilation. One investigation
+per candidate receives the supporting traces, ETHOS.md when available, and read-only
+source-code tools when configured. Different candidates run concurrently. This also
+runs when the ethos divergence signal is disabled.
 
-This validation also runs when the ethos divergence signal is disabled.
+The validator reconciles intended behavior with observed behavior and implementation.
+Code that intentionally implements a defect does not excuse it. Permission in ETHOS.md
+only applies when its conditions are satisfied; permission to retry does not excuse an
+unbounded retry loop. Only concrete contradictions remove candidates; ambiguous and
+inconclusive cases are retained.
 
-Only an explicit ethos provision that invalidates the candidate's actual claim can
-remove it. Permission to retry, for example, does not excuse an unbounded retry loop.
-Ambiguous cases and inconclusive checks are retained. Rejections include an exact
-ethos passage and an explanation in the terminal report and run telemetry. Each
-candidate adds an independent model investigation, with a limit of 25 iterations.
+Decisions include separate code and ETHOS assessments, a combined explanation, and
+an evidence basis for rejection. ETHOS-based rejections require an exact document
+passage. The terminal report and telemetry include rejection reasons. Each candidate
+adds one model investigation, with a limit of 25 iterations and up to 100,000 characters
+of supporting traces. Either source can be used alone; without either, validation is skipped.
 
 ## One-run overrides
 

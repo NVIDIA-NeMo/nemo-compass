@@ -50,9 +50,12 @@ from compass.insights_generation.config import (
     resolve,
 )
 from compass.insights_generation.defaults import DEFAULT_MAX_TOKENS, DEFAULT_MODEL
-from compass.insights_generation.ethos_validation import EthosRejection, EthosValidation
 from compass.insights_generation.insight_compilation import InsightCompilation
-from compass.insights_generation.validation import EvidenceValidation, ProblemValidation
+from compass.insights_generation.validation import (
+    CandidateDecision,
+    CandidateValidation,
+    EvidenceValidation,
+)
 from compass.telemetry import record_input_metadata, record_span, telemetry_session
 from compass.trace_loaders.atif import ATIFTraceLoader
 from compass.trace_loaders.braintrust import (
@@ -283,120 +286,31 @@ async def _run_compass_signals(
     return [task.result() for task in tasks]
 
 
-async def _validate_evidence_with_code(
-    evidence: list[CompassSignalResult],
-    snapshot: TraceSnapshot,
-    code_base_path: Path,
-    llm: UnifiedLLM,
-) -> EvidenceValidation:
-    """Evaluate problem support concurrently, preserving input order in the decisions."""
-
-    code_base_path = code_base_path.expanduser().resolve()
-    if not code_base_path.is_dir():
-        raise ValueError(f"code_base must be an existing directory: {code_base_path}")
-    validator = ProblemValidation(code_base_path, llm)
-
-    async def validate_problem(
-        problem: Problem, supporting_traces: tuple[Trace, ...]
-    ) -> bool | None:
-        with telemetry.problem_validation(problem, code_base_path) as record:
-            decision = await validator.is_supported(problem, supporting_traces)
-            telemetry.record_support(record, decision)
-            return decision
-
-    async def validate_result(result: CompassSignalResult) -> list[bool | None]:
-        validations = []
-        for problem in result.problems:
-            supporting_traces = tuple(
-                snapshot.get_trace_by_id(trace_id) for trace_id in problem.supporting_trace_ids
-            )
-            validations.append(validate_problem(problem, supporting_traces))
-
-        async with asyncio.TaskGroup() as group:
-            tasks = [group.create_task(validation) for validation in validations]
-        return [task.result() for task in tasks]
-
-    async with asyncio.TaskGroup() as group:
-        tasks = [group.create_task(validate_result(result)) for result in evidence]
-
-    return EvidenceValidation(evidence, [task.result() for task in tasks])
-
-
 async def _validate_evidence(
     evidence: list[CompassSignalResult],
     snapshot: TraceSnapshot,
     code_base_path: Path | None,
     llm: UnifiedLLM,
     ethos: str | None = None,
-) -> tuple[list[CompassSignalResult], EvidenceValidation | None, list[EthosRejection]]:
-    """Run independent code and ETHOS checks concurrently; reject only contradictions."""
+) -> EvidenceValidation:
+    """Validate candidates concurrently, combining code and ETHOS in each investigation."""
+    validator = CandidateValidation(code_base_path, llm, ethos)
 
-    async def check_code() -> EvidenceValidation | None:
-        if code_base_path is None:
-            return None
-        with telemetry.validation(evidence, code_base_path) as record:
-            validation = await _validate_evidence_with_code(evidence, snapshot, code_base_path, llm)
-            telemetry.record_validation(record, validation)
-            return validation
+    async def validate_problem(problem: Problem) -> CandidateDecision:
+        traces = tuple(snapshot.get_trace_by_id(tid) for tid in problem.supporting_trace_ids)
+        with telemetry.problem_validation(problem, code_base_path, ethos) as record:
+            decision = await validator.validate(problem, traces)
+            telemetry.record_support(record, decision)
+            return decision
 
-    async def check_ethos() -> list[EthosRejection]:
-        if ethos is None:
-            return []
-        validator = EthosValidation(ethos, llm)
-
-        async def validate_problem(signal_name: str, problem: Problem) -> EthosRejection | None:
-            traces = tuple(snapshot.get_trace_by_id(tid) for tid in problem.supporting_trace_ids)
-            with record_span("ethos_validation.problem") as record:
-                record.set_input(
-                    {
-                        "signal_name": signal_name,
-                        "problem": problem.model_dump(mode="json"),
-                        "ethos": ethos,
-                    }
-                )
-                decision = await validator.validate(problem, traces)
-                record.set_output(decision.model_dump(mode="json"))
-                if decision.contradicted:
-                    return EthosRejection(
-                        signal_name=signal_name, problem=problem, decision=decision
-                    )
-                return None
-
-        with record_span("ethos_validation") as record:
-            record.set_input(
-                {"ethos": ethos, "candidate_count": sum(len(item.problems) for item in evidence)}
-            )
-            async with asyncio.TaskGroup() as group:
-                tasks = [
-                    group.create_task(validate_problem(item.signal_name, problem))
-                    for item in evidence
-                    for problem in item.problems
-                ]
-            rejections = [rejection for task in tasks if (rejection := task.result()) is not None]
-            record.set_output({"rejections": [item.model_dump(mode="json") for item in rejections]})
-            return rejections
+    async def validate_result(result: CompassSignalResult) -> list[CandidateDecision]:
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(validate_problem(problem)) for problem in result.problems]
+        return [task.result() for task in tasks]
 
     async with asyncio.TaskGroup() as group:
-        code_task = group.create_task(check_code())
-        ethos_task = group.create_task(check_ethos())
-    validation, rejections = code_task.result(), ethos_task.result()
-    retained = validation.retained_evidence() if validation is not None else evidence
-    filtered = [
-        item.model_copy(
-            update={
-                "problems": tuple(
-                    problem
-                    for problem in item.problems
-                    if not any(
-                        rejection.signal_name == item.signal_name and rejection.problem == problem
-                        for rejection in rejections
-                    )
-                )
-            }
-        )
-        for item in retained
-    ]
-    return filtered, validation, rejections
+        tasks = [group.create_task(validate_result(result)) for result in evidence]
+    return EvidenceValidation(evidence, [task.result() for task in tasks])
 
 
 async def _rate_confidence_with_code(
@@ -521,22 +435,18 @@ async def _compile_evidence(
         ethos_path = config.ethos_path
         ethos = ethos_path.read_text(encoding="utf-8") if ethos_path is not None else None
         if config.code_base is not None or ethos is not None:
-            output.activity = (
-                "Checking candidate issues against the codebase and ethos"
-                if config.code_base is not None and ethos is not None
-                else "Checking candidate issues against ethos"
-                if ethos is not None
-                else "Checking candidate issues against the codebase"
-            )
-            evidence, validation, result.ethos_rejections = await _validate_evidence(
-                evidence, snapshot, config.code_base, llm, ethos
-            )
-            if validation is not None:
-                result.rejected_by_code = validation.rejected_count
-                if validation.unresolved_count:
-                    result.limitations.append(
-                        f"Code validation could not determine support for {validation.unresolved_count} candidate problem(s); these were retained for compilation."
-                    )
+            output.activity = "Validating candidate problems"
+            with telemetry.validation(evidence, config.code_base, ethos) as record:
+                validation = await _validate_evidence(
+                    evidence, snapshot, config.code_base, llm, ethos
+                )
+                telemetry.record_validation(record, validation)
+            evidence = validation.retained_evidence()
+            result.validation_rejections = validation.rejections
+            if validation.unresolved_count:
+                result.limitations.append(
+                    f"Candidate validation was inconclusive for {validation.unresolved_count} problem(s); these were retained for compilation."
+                )
         if not any(item.problems for item in evidence):
             return result.existing_insights
         output.activity = "Reviewing candidate issues for actionable insights"

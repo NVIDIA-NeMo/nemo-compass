@@ -119,15 +119,16 @@ def test_report_shows_optional_severity_and_reason():
 
 
 def test_ethos_rejections_report_passage_and_reason():
-    from compass.insights_generation.ethos_validation import EthosDecision, EthosRejection
+    from compass.insights_generation.validation import CandidateDecision, CandidateRejection
 
     problem = Problem(description="Approval is unnecessary", supporting_trace_ids=("t",))
-    rejection = EthosRejection(
+    rejection = CandidateRejection(
         signal_name="test",
         problem=problem,
-        decision=EthosDecision(
-            contradicted=True,
-            passage="Require [explicit] approval.",
+        decision=CandidateDecision(
+            supported=False,
+            rejection_basis="ethos",
+            ethos_passage="Require [explicit] approval.",
             explanation="The reported friction is required.",
         ),
     )
@@ -135,12 +136,12 @@ def test_ethos_rejections_report_passage_and_reason():
         1,
         [CompassSignalResult(signal_name="test", problems=(problem,))],
         [],
-        ethos_rejections=[rejection],
+        validation_rejections=[rejection],
     )
     stream = StringIO()
     RunOutput(Console(file=stream, width=120)).report(result, Path("insights.yml"))
     rendered = stream.getvalue()
-    assert "ethos excluded 1 candidate issue." in rendered
+    assert "Candidate validation excluded 1 candidate issue." in rendered
     assert "Require [explicit] approval." in rendered
     assert "The reported friction is required." in rendered
-    assert "none were retained after validation and review" in rendered
+    assert "none were retained after candidate validation" in rendered
