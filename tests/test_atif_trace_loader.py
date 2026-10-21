@@ -56,10 +56,7 @@ def test_exact_normalization_and_description(tmp_path):
                         id="trajectory/step/1",
                         kind=SpanKind.CHAIN,
                         input={"messages": [{"role": "user", "content": "Help."}]},
-                        attributes={
-                            "atif": {"step_id": 1, "source": "user"},
-                            "atif_layout": {"observation": None, "tool_calls_key": False},
-                        },
+                        attributes={"atif": {"step_id": 1, "source": "user"}},
                     )
                 ],
             )
@@ -350,65 +347,6 @@ def test_complete_cli_runs_real_compass_signal(tmp_path, monkeypatch, capsys, se
     assert capsys.readouterr().out == "[]\n"
 
 
-def _subagent_spans(span):
-    for child in span.children:
-        if "subagent_index" in child.attributes.get("atif_layout", {}):
-            yield child
-        else:
-            yield from _subagent_spans(child)
-
-
-def rebuild(span):
-    """Reference rebuild of an ATIF trajectory from the loader's round-trip layout."""
-    trajectory = dict(span.attributes["atif"])
-    trajectory["steps"] = []
-    for step_span in span.children:
-        if not step_span.id.startswith(f"{span.id}/step/"):
-            continue
-        step = dict(step_span.attributes["atif"])
-        layout = step_span.attributes["atif_layout"]
-        step["message"] = (
-            step_span.output["content"]
-            if step["source"] == "agent"
-            else step_span.input["messages"][0]["content"]
-        )
-        tools = [child for child in step_span.children if child.kind is SpanKind.TOOL]
-        if layout["tool_calls_key"]:
-            step["tool_calls"] = [tool.attributes["atif"]["call"] for tool in tools]
-        if layout["observation"] is not None:
-            indexed = [
-                pair
-                for tool in tools
-                for pair in zip(
-                    tool.attributes["atif_layout"]["result_indexes"],
-                    tool.attributes["atif"]["results"],
-                    strict=True,
-                )
-            ] + [
-                (child.attributes["atif_layout"]["result_index"], child.attributes["atif"])
-                for child in step_span.children
-                if child.kind is SpanKind.CHAIN
-            ]
-            step["observation"] = {
-                **layout["observation"],
-                "results": [result for _, result in sorted(indexed, key=lambda pair: pair[0])],
-            }
-        trajectory["steps"].append(step)
-    subagents = sorted(
-        _subagent_spans(span), key=lambda child: child.attributes["atif_layout"]["subagent_index"]
-    )
-    if subagents:
-        trajectory["subagent_trajectories"] = [rebuild(child) for child in subagents]
-    return trajectory
-
-
-def canonical(trajectory):
-    trajectory = dict(trajectory)
-    if trajectory.get("subagent_trajectories") == []:
-        del trajectory["subagent_trajectories"]
-    return json.dumps(trajectory, sort_keys=True)
-
-
 def tool_spans(trace):
     pending = list(trace.root_spans)
     while pending:
@@ -418,10 +356,10 @@ def tool_spans(trace):
             yield span
 
 
-def round_trip_record():
+def mixed_results_record():
     return {
         "schema_version": "ATIF-v1.7",
-        "trajectory_id": "round-trip",
+        "trajectory_id": "mixed-results",
         "agent": {
             "name": "agent",
             "version": "1",
@@ -473,20 +411,10 @@ def round_trip_record():
     }
 
 
-def test_round_trip_layout_rebuilds_every_source_record(tmp_path):
-    records = [json.loads(line) for line in FIXTURE.read_text().splitlines() if line.strip()]
-    records.append(round_trip_record())
-    traces = list(loader_for(tmp_path, *records).load())
-    assert len(traces) == len(records)
-    for record, trace in zip(records, traces, strict=True):
-        assert canonical(rebuild(trace.root_spans[0])) == canonical(record)
-
-
-def test_round_trip_record_tool_results_and_errors(tmp_path):
-    trace = next(iter(loader_for(tmp_path, round_trip_record()).load()))
+def test_mixed_results_record_tool_results_and_errors(tmp_path):
+    trace = next(iter(loader_for(tmp_path, mixed_results_record()).load()))
     step = trace.root_spans[0].children[1]
     read, spawn, unanswered, unlinked = step.children
-    assert read.attributes["atif_layout"] == {"result_indexes": [2, 3]}
     assert [(r.content, r.is_error) for r in read.tool_call.results] == [
         ("x", True),
         ("retry", False),
@@ -495,13 +423,9 @@ def test_round_trip_record_tool_results_and_errors(tmp_path):
     assert read.attributes["explicit_error"] is True
     assert spawn.tool_call.results[0].is_error is None
     assert "explicit_error" not in spawn.attributes
-    assert spawn.children[0].attributes["atif_layout"] == {"subagent_index": 0}
+    assert spawn.children[0].id == "trajectory/subagent/0"
     assert unanswered.tool_call.results == []
-    assert unlinked.attributes["atif_layout"] == {"result_index": 1}
-    assert step.attributes["atif_layout"] == {
-        "observation": {"note": "kept"},
-        "tool_calls_key": True,
-    }
+    assert unlinked.attributes["atif"] == {"content": "unlinked"}
 
 
 def test_explicit_error_result_maps_to_tool_span_error(tmp_path):
@@ -644,7 +568,7 @@ def test_invalid_whole_file_json_reports_path(tmp_path):
 
 def test_every_tool_span_has_one_result_per_matched_source_result(tmp_path):
     records = [json.loads(line) for line in FIXTURE.read_text().splitlines() if line.strip()]
-    records.append(round_trip_record())
+    records.append(mixed_results_record())
     spans = [span for trace in loader_for(tmp_path, *records).load() for span in tool_spans(trace)]
     assert spans
     for span in spans:
