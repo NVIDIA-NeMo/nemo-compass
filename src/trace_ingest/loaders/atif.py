@@ -11,30 +11,6 @@ trajectory per non-blank line. A trajectory without ``trajectory_id`` and
 ``session_id`` gets the id ``"atif-" + sha256(raw).hexdigest()[:16]``, where
 ``raw`` is the whole file for ``.json`` or the line's bytes without its line
 terminator for JSONL, and no ``logical_case_id``.
-
-Round-trip encoding. Every span keeps enough source data to rebuild the
-trajectory exactly (equal as JSON):
-
-* AGENT span (``trajectory`` or ``<parent>/subagent/{i}``):
-  ``attributes["atif"]`` is the trajectory without ``steps`` and, only when it is
-  a non-empty list, ``subagent_trajectories`` (an empty list or null stays).
-  Embedded subagent spans also carry ``attributes["atif_layout"] =
-  {"subagent_index": i}``. A trajectory's own subagents are its descendant AGENT
-  spans with ``subagent_index``, without descending into another such span.
-* Step span (``<agent>/step/{n}``): ``attributes["atif"]`` is the step without
-  ``message`` and, only when non-null, ``tool_calls`` and ``observation`` (null
-  values stay). ``message`` is ``input["messages"][0]["content"]`` for
-  user/system steps and ``output["content"]`` for agent steps.
-  ``attributes["atif_layout"] = {"observation": <observation without "results">
-  or None when the observation is absent or null, "tool_calls_key": <tool_calls
-  is present and non-null>}``.
-* TOOL span (``<step>/tool/{k}``, in ``tool_calls`` order):
-  ``attributes["atif"] = {"call": <raw call>, "results": [<raw matched
-  results>]}`` and ``attributes["atif_layout"] = {"result_indexes": [<index of
-  each matched result in observation.results>]}``.
-* Unlinked observation CHAIN span (``<step>/observation/{k}``):
-  ``attributes["atif"]`` is the raw result and ``attributes["atif_layout"] =
-  {"result_index": i}``.
 """
 
 from __future__ import annotations
@@ -266,11 +242,6 @@ def _step_span(
         else None
     )
     metrics = step.get("metrics") or {}
-    calls = step.get("tool_calls")
-    observation = step.get("observation")
-    # Null tool_calls/observation stay in the raw step so the source rebuilds exactly.
-    rebuilt = ("message",) + (("tool_calls",) if calls is not None else ())
-    rebuilt += ("observation",) if observation is not None else ()
     span = Span(
         id=span_id,
         kind=SpanKind.LLM if is_llm else SpanKind.CHAIN,
@@ -283,37 +254,23 @@ def _step_span(
         model=(step.get("model_name") or model) if is_llm else None,
         cost_usd=_cost(metrics.get("cost_usd")),
         token_counts=_tokens(metrics),
-        attributes={
-            "atif": _metadata(step, *rebuilt),
-            "atif_layout": {
-                "observation": _metadata(observation, "results")
-                if observation is not None
-                else None,
-                "tool_calls_key": calls is not None,
-            },
-        },
+        attributes={"atif": _metadata(step, "message", "tool_calls", "observation")},
     )
-    calls = calls or []
-    matched: dict[str | None, list[tuple[int, _Result]]] = {
-        call["tool_call_id"]: [] for call in calls
-    }
+    calls = step.get("tool_calls") or []
+    matched: dict[str | None, list[_Result]] = {call["tool_call_id"]: [] for call in calls}
     if len(matched) != len(calls):
         raise ValueError(f"step {step['step_id']} contains duplicate tool_call_id values")
     matched[None] = []  # Observations not associated with a tool call.
-    for result_index, result in enumerate((observation or {}).get("results", [])):
+    for result in (step.get("observation") or {}).get("results", []):
         call_id = result.get("source_call_id")
         if call_id not in matched:
             raise ValueError(f"step {step['step_id']}: unknown source_call_id {call_id!r}")
-        matched[call_id].append((result_index, result))
+        matched[call_id].append(result)
     for index, call in enumerate(calls):
-        pairs = matched[call["tool_call_id"]]
-        results = [result for _, result in pairs]
+        results = matched[call["tool_call_id"]]
         tool_results = [_tool_result(result) for result in results]
         flags = [result.is_error for result in tool_results]
-        attributes: dict[str, Any] = {
-            "atif": {"call": call, "results": results},
-            "atif_layout": {"result_indexes": [result_index for result_index, _ in pairs]},
-        }
+        attributes: dict[str, Any] = {"atif": {"call": call, "results": results}}
         if True in flags:
             attributes["explicit_error"] = True
         elif flags and all(flag is False for flag in flags):
@@ -338,22 +295,20 @@ def _step_span(
                 attributes=attributes,
             )
         )
-    for index, (result_index, result) in enumerate(matched[None]):
+    for index, result in enumerate(matched[None]):
         span.children.append(
             Span(
                 id=f"{span_id}/observation/{index}",
                 kind=SpanKind.CHAIN,
                 output=result.get("content", UNSET),
                 children=subagents(result),
-                attributes={"atif": result, "atif_layout": {"result_index": result_index}},
+                attributes={"atif": result},
             )
         )
     return span
 
 
-def _trajectory_span(
-    source: _Trajectory, prefix: str = "trajectory", subagent_index: int | None = None
-) -> Span:
+def _trajectory_span(source: _Trajectory, prefix: str = "trajectory") -> Span:
     if source.get("continued_trajectory_ref"):
         raise ValueError(
             "external continuation is not supported; combine the complete trajectory first"
@@ -366,9 +321,6 @@ def _trajectory_span(
         embedded[child_id] = (index, child)
     attached: set[str] = set()
 
-    def subagent_span(index: int, child: _Trajectory) -> Span:
-        return _trajectory_span(child, f"{prefix}/subagent/{index}", index)
-
     def subagents(result: _Result) -> list[Span]:
         children = []
         for ref in result.get("subagent_trajectory_ref") or []:
@@ -380,19 +332,15 @@ def _trajectory_span(
             if child_id in attached:
                 raise ValueError(f"subagent {child_id!r} has multiple parents")
             attached.add(child_id)
-            children.append(subagent_span(*embedded[child_id]))
+            index, child = embedded[child_id]
+            children.append(_trajectory_span(child, f"{prefix}/subagent/{index}"))
         return children
 
-    attributes: dict[str, Any] = {
-        "atif": _metadata(source, "steps", *(("subagent_trajectories",) if embedded else ()))
-    }
-    if subagent_index is not None:
-        attributes["atif_layout"] = {"subagent_index": subagent_index}
     definitions = source["agent"].get("tool_definitions")
     root = Span(
         id=prefix,
         kind=SpanKind.AGENT,
-        attributes=attributes,
+        attributes={"atif": _metadata(source, "steps", "subagent_trajectories")},
         tool_definitions=tool_definitions_from_atif(definitions)
         if isinstance(definitions, list)
         else UNSET,
@@ -423,7 +371,7 @@ def _trajectory_span(
         )
     # Unreferenced subagents belong to the trajectory, not an invented calling step.
     root.children.extend(
-        subagent_span(index, child)
+        _trajectory_span(child, f"{prefix}/subagent/{index}")
         for child_id, (index, child) in embedded.items()
         if child_id not in attached
     )
