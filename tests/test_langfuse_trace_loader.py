@@ -630,15 +630,15 @@ def test_loader_extracts_tool_catalog_from_supported_langfuse_input(
             "required": ["query"],
         }
     }
-    definitions = normalized.root_spans[0].tool_definitions
-    assert definitions is not UNSET
-    assert definitions[0].raw == definition
     catalog_span = (
         normalized.root_spans[0]
         if observation_type == "AGENT"
         else normalized.root_spans[0].children[0]
     )
     assert catalog_span.input == catalog_input
+    definitions = catalog_span.tool_definitions
+    assert definitions is not UNSET
+    assert definitions[0].raw == definition
 
 
 @pytest.mark.parametrize(
@@ -659,8 +659,16 @@ def test_loader_extracts_tool_catalog_from_supported_langfuse_input(
                 {"tools": [{"name": "root_only", "parameters": {"type": "object"}}]},
                 {"tools": [{"name": "write", "parameters": {"type": "object"}}]},
             ],
-            {"root_only": {"type": "object"}, "write": {"type": "object"}},
-            id="differing-generation-catalogs-union",
+            None,
+            id="differing-generation-catalogs",
+        ),
+        pytest.param(
+            [
+                {"tools": [{"name": "write", "parameters": {"type": "object"}}]},
+                {"tools": [{"function_declarations": [{"name": "write"}]}]},
+            ],
+            None,
+            id="unparseable-generation-catalog",
         ),
         pytest.param(
             [
@@ -702,6 +710,42 @@ def test_generation_catalogs_override_root_fallback(generation_inputs, expected)
 
     assert "tool_catalog" not in normalized.attributes
     assert tool_catalog(normalized) == expected
+
+
+def test_each_generation_carries_its_own_offered_tools() -> None:
+    root = observation("root", observation_type="AGENT", input_value={"task": "find it"})
+    first = {"name": "search", "description": "first", "parameters": {"type": "object"}}
+    second = {"name": "search", "description": "second", "parameters": {"type": "object"}}
+    generations = [
+        observation(
+            f"generation-{index}",
+            parent_id="root",
+            observation_type="GENERATION",
+            start_time=START + timedelta(seconds=index + 1),
+            input_value={"tools": [tool]},
+        )
+        for index, tool in enumerate([first, second])
+    ]
+    full_trace = provider_trace(observations=[root, *generations])
+    client = FakeClient(pages=[([full_trace], 1)], details={"trace-1": full_trace})
+
+    normalized = next(
+        iter(
+            LangfuseV3TraceLoader(
+                LangfuseTraceConfig(START, END, base_url="https://langfuse.example.com"),
+                client=client,
+            ).load()
+        )
+    )
+
+    root_span = normalized.root_spans[0]
+    assert root_span.tool_definitions is UNSET
+    offered = []
+    for span in root_span.children:
+        assert span.tool_definitions is not UNSET
+        offered.append([definition.raw for definition in span.tool_definitions])
+    assert offered == [[first], [second]]
+    assert tool_catalog(normalized) == {"search": {"type": "object"}}
 
 
 @pytest.mark.parametrize(
