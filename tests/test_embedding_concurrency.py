@@ -451,3 +451,55 @@ def test_late_success_from_before_rate_limit_does_not_accelerate_recovery(
     # recovered batch 6 must not provide the second success needed to grow.
     recovery_log = caplog.text.split("concurrency 4 -> 2 after rate limit", 1)[1]
     assert "concurrency 2 -> 3" not in recovery_log
+
+
+@pytest.mark.parametrize(
+    "milliseconds,seconds,expected",
+    [
+        ("1500", None, 1.5),
+        ("1500.5", None, 1.5005),
+        ("1500", "9", 1.5),
+        ("0", "9", 0.5),
+        ("invalid", "9", 9),
+        ("-1", "9", 9),
+        ("inf", "9", 9),
+        ("nan", "9", 9),
+        ("invalid", None, 0.5),
+        ("61000", None, None),
+    ],
+)
+def test_millisecond_retry_header(monkeypatch, milliseconds, seconds, expected):
+    monkeypatch.setattr(module.random, "uniform", lambda low, high: low)
+    headers = {"Retry-After-Ms": milliseconds}
+    if seconds is not None:
+        headers["Retry-After"] = seconds
+    error = RateLimitError("limited", "openai", "qwen", headers=headers)
+    assert module._retry_delay(error, 1, 60) == expected
+
+
+def test_millisecond_retry_header_pauses_submissions(generator, monkeypatch):
+    clock = [100.0]
+    starts = []
+    sleeps = []
+
+    def worker(batch, config, key):
+        starts.append((batch.index, clock[0]))
+        if len(starts) == 1:
+            raise RateLimitError(
+                "limited",
+                "openai",
+                "qwen",
+                response=httpx.Response(429, headers={"Retry-After-Ms": "1500"}),
+            )
+        return result(batch)
+
+    def sleep(delay):
+        sleeps.append(delay)
+        clock[0] += delay
+
+    monkeypatch.setattr(generator, "_remote_batch", worker)
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(module.time, "sleep", sleep)
+    assert len(generator.generate_batch(["first", "second"])) == 2
+    assert sleeps == [1.5]
+    assert starts == [(0, 100.0), (0, 101.5), (1, 101.5)]

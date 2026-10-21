@@ -73,24 +73,35 @@ def _retry_delay(error: Exception, attempt: int, max_wait: float) -> float | Non
     headers = httpx.Headers(getattr(error, "headers", None))
     if response is not None:
         headers.update(response.headers)
-    retry_after = headers.get("retry-after")
-    server_delay = 0.0
-    if retry_after is not None:
-        try:
-            server_delay = float(retry_after)
-        except ValueError:
-            try:
-                server_delay = parsedate_to_datetime(retry_after).timestamp() - time.time()
-            except (TypeError, ValueError, OverflowError):
-                pass
-        if not math.isfinite(server_delay):
-            server_delay = 0.0
-        # Never retry earlier than a valid server instruction to fit our budget.
-        if server_delay > max_wait:
-            logger.warning("Embedding Retry-After exceeds the %.2fs wait limit; stopping", max_wait)
-            return None
+    server_delay = _server_retry_delay(headers)
+    # Never retry earlier than a valid server instruction to fit our budget.
+    if server_delay > max_wait:
+        logger.warning(
+            "Embedding server retry delay exceeds the %.2fs wait limit; stopping", max_wait
+        )
+        return None
     ceiling = min(max_wait, 2.0 ** min(attempt - 1, 30))
     return max(0.0, server_delay, random.uniform(ceiling / 2, ceiling))
+
+
+def _server_retry_delay(headers: httpx.Headers) -> float:
+    """Prefer millisecond precision, as the OpenAI SDK does, then standard Retry-After."""
+    for name, divisor in (("retry-after-ms", 1000), ("retry-after", 1)):
+        value = headers.get(name)
+        if value is None:
+            continue
+        try:
+            delay = float(value) / divisor
+        except ValueError:
+            if name == "retry-after-ms":
+                continue
+            try:
+                delay = parsedate_to_datetime(value).timestamp() - time.time()
+            except (TypeError, ValueError, OverflowError):
+                continue
+        if math.isfinite(delay) and delay >= 0:
+            return delay
+    return 0.0
 
 
 @dataclass
