@@ -507,7 +507,11 @@ def test_responses_envelope_maps_root_llm_and_paired_tools(tmp_path):
     assert trace.attributes["gym_source_shape"] == "rollout_envelope"
     assert trace.attributes["logical_case_id"] == "gym-task-index-3"
     assert trace.evaluator_results == {"gym.reward": 1}
-    assert loader.describe()["gap_count"] == 1
+    assert loader.describe()["gap_count"] == 2
+    assert trace.attributes["gym_loader_gaps"] == [
+        {"code": "ng_trajectory_unavailable"},
+        {"code": "responses_output_aggregated"},
+    ]
     (root,) = trace.root_spans
     assert root.kind is SpanKind.AGENT
     assert root.input == [
@@ -531,6 +535,15 @@ def test_responses_envelope_maps_root_llm_and_paired_tools(tmp_path):
     assert unpaired.tool_call.result_count == 0 and unpaired.tool_call.results == []
     assert_result_counts(trace)
     assert [call.tool_name for call in to_tool_issue_trace(trace).calls] == ["lookup", "audit"]
+
+
+def test_deeply_nested_arguments_stay_raw(tmp_path):
+    source = envelope()
+    nested = "[" * 100_000
+    source["response"]["output"][1]["arguments"] = nested
+    trace = next(iter(loader_for(tmp_path, source).load()))
+    paired = trace.root_spans[0].children[1]
+    assert paired.input == nested
 
 
 def test_standalone_responses_object_and_null_attachment(tmp_path):
@@ -591,7 +604,10 @@ def test_response_error_code_marks_model_span(tmp_path):
         "duplicate_result",
         "orphan_result",
         "history",
+        "prompt_after_echo",
+        "prompt_without_input",
         "remote",
+        "remote_on_response",
         "item",
         "namespace",
         "output",
@@ -609,8 +625,21 @@ def test_ambiguous_responses_records_rejected(tmp_path, mutation):
         output[3]["call_id"] = "missing"
     elif mutation == "history":
         output.insert(0, {"role": "user", "content": "Different prompt"})
+    elif mutation == "prompt_after_echo":
+        request = source["responses_create_params"]
+        request["input"] = [{"type": "message", "role": "user", "content": "How many bolts?"}]
+        request.pop("instructions", None)
+        output[:0] = [
+            copy.deepcopy(request["input"][0]),
+            {"type": "message", "role": "user", "content": "Another prompt"},
+        ]
+    elif mutation == "prompt_without_input":
+        source["responses_create_params"]["input"] = []
+        output.insert(0, {"type": "message", "role": "user", "content": "Hidden prompt"})
     elif mutation == "remote":
         source["responses_create_params"]["previous_response_id"] = "resp-0"
+    elif mutation == "remote_on_response":
+        source["response"]["previous_response_id"] = "resp-0"
     elif mutation == "item":
         output.append({"type": "web_search_call"})
     elif mutation == "namespace":
@@ -621,6 +650,24 @@ def test_ambiguous_responses_records_rejected(tmp_path, mutation):
         source = {"output": output}
     with pytest.raises(GymTraceLoadError):
         loader_for(tmp_path, source).load()
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("previous_response_id", "resp-0"), ("conversation", {"id": "conv-0"})],
+)
+def test_standalone_response_with_remote_state_rejected(tmp_path, field, value):
+    response = envelope()["response"]
+    response[field] = value
+    with pytest.raises(GymTraceLoadError, match="remote conversation state"):
+        loader_for(tmp_path, response, format="json").load()
+
+
+def test_standalone_response_with_prompt_output_rejected(tmp_path):
+    response = envelope()["response"]
+    response["output"].insert(0, {"type": "message", "role": "system", "content": "Injected"})
+    with pytest.raises(GymTraceLoadError, match="prompt-role items"):
+        loader_for(tmp_path, response, format="json").load()
 
 
 def test_eval_author_responses_fixtures_load(tmp_path):
