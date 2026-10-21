@@ -31,8 +31,9 @@ def test_local_batch_preserves_character_limit(monkeypatch):
 
 
 def test_remote_batches_preserve_trace_order_and_skip_empty_messages(monkeypatch):
-    monkeypatch.setattr("compass.compass_signals.user_embedding.embedding._BATCH_SIZE", 4)
-    generator = UserEmbeddingGenerator(litellm=LiteLLMEmbeddingConfig(model="openai/qwen"))
+    generator = UserEmbeddingGenerator(
+        litellm=LiteLLMEmbeddingConfig(model="openai/qwen", batch_size=4)
+    )
     generator.remote_tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0}, unk_token="[UNK]"))
     calls = []
 
@@ -65,7 +66,9 @@ def test_remote_batches_preserve_trace_order_and_skip_empty_messages(monkeypatch
 
 
 def test_remote_rejects_oversized_input_before_request_and_propagates_failures(monkeypatch):
-    generator = UserEmbeddingGenerator(litellm=LiteLLMEmbeddingConfig(model="openai/qwen"))
+    generator = UserEmbeddingGenerator(
+        litellm=LiteLLMEmbeddingConfig(model="openai/qwen", batch_size=4)
+    )
     generator.remote_tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0}, unk_token="[UNK]"))
     generator.remote_tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
 
