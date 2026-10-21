@@ -41,58 +41,13 @@ compass_signals:
       model: openai/your-qwen3-embedding-8b-alias
       api_base: https://embeddings.example.com/v1
       api_key_env: EMBEDDING_API_KEY
-      batch_size: 100
-      max_concurrency: 4
-      max_retries: 3
-      request_timeout: 60
-      retry_timeout: 300
-      max_retry_wait: 60
 ```
 
 Set `EMBEDDING_API_KEY` in your [environment file](model-access.md#credentials).
 Replace the model alias and endpoint with your provider’s values.
 
-Remote embeddings start with one request. After a window of clean successes equal
-to the current concurrency, the limit increases by one, up to `max_concurrency`
-(1 to 32). Free slots take the next batch immediately. `batch_size` controls the
-maximum messages per request; results retain input order. Set `max_concurrency: 1`
-for sequential requests. Limits apply to one embedding run, not across processes.
-
-A rate limit halves the active limit, with a minimum of one, and pauses new requests.
-Already-running requests finish normally. Rate limits from the same generation of
-in-flight requests cause only one reduction. Old successes and successful retries
-do not drive recovery; fresh successful requests gradually increase the limit again.
-Connection errors, timeouts, and HTTP 408, 500, 502, 503, or 504 also trigger backoff
-and retries, but do not reduce concurrency. Successful batches are retained.
-
-The YAML above shows the defaults. `max_retries` allows additional attempts per
-batch (0 to 10). Compass owns retries and requests that LiteLLM disable its internal
-retries, including a compatibility workaround for its OpenAI-compatible embedding
-adapter. All provider requests still go through LiteLLM.
-
-`request_timeout` is the per-attempt SDK timeout in seconds. `retry_timeout` is the
-elapsed budget for scheduling retries, measured from the batch's first failure;
-an attempt already in flight can finish after this budget. It is not a hard deadline
-for the entire dataset. `max_retry_wait` caps each cooldown. Backoff uses exponential
-delays with jitter and honors valid `Retry-After` seconds or HTTP dates. A server
-wait that exceeds either budget fails rather than retrying early. Invalid headers
-use normal backoff. Authentication errors, other permanent failures, invalid vectors,
-and exhausted retries fail the run without returning partial results. Active
-requests finish under their SDK timeouts before the error returns.
-
-YAML values can be overridden individually, for example:
-
-```bash
-compass --config config.yaml \
-  --compass-signals.user-sentiment.litellm.max-concurrency 8 \
-  --compass-signals.user-sentiment.litellm.max-retries 2
-```
-
-Concurrency increases are logged at INFO; retries and reductions at WARNING.
-Logs contain batch numbers and error types, without user text or keys. This adapts
-to observed throttling; it does not enforce a provider's token/request quotas or
-guarantee optimal throughput. Tune batch size and the concurrency ceiling for your
-endpoint. The model alias must still refer to the required Qwen embedding model.
+Remote embedding requests use adaptive concurrency and retries. Run
+`compass --help-all` for tuning options and defaults.
 
 To run the 8B embedding model locally, add `local-embedding` to the extras in your
 install command. Keep your source extra too. For LangSmith:
