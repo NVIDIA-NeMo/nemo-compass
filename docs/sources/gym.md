@@ -3,9 +3,11 @@
 
 # Analyze NeMo Gym trajectories
 
-Choose persisted Gym rollout JSONL containing `ng_trajectory` schema `1.0` from a
-supported producer path in Gym's
-[trajectory capability matrix](https://docs.nvidia.com/nemo/gym/reference/trajectory-capabilities/).
+Choose persisted Gym rollout JSONL. Rollouts containing `ng_trajectory` schema `1.0`
+from a supported producer path in Gym's
+[trajectory capability matrix](https://docs.nvidia.com/nemo/gym/reference/trajectory-capabilities/)
+give the most complete evidence. Rollouts without the attachment load from their
+Responses envelope with less detail; see [Rollouts without ng_trajectory](#rollouts-without-ng_trajectory).
 Recorded rewards are included in grader failure analysis.
 
 ## Configure and run
@@ -48,9 +50,8 @@ For captured model calls, enable `observability_enabled`, configure
 Server endpoint as documented by Gym. Direct-provider calls bypass that capture.
 
 Use persisted rollout files; MLflow/W&B exporter views omit `ng_trajectory`.
-Responses-only exports without the attachment are rejected. ATIF import/export and
-round-trip conversion are outside this loader's scope; use the [ATIF loader](files.md#atif)
-for retained original ATIF trajectories.
+ATIF import/export and round-trip conversion are outside this loader's scope; use the
+[ATIF loader](files.md#atif) for retained original ATIF trajectories.
 
 ## File options
 
@@ -71,3 +72,25 @@ status and timing, semantic turns, rewards, and evidence gaps are preserved.
 Task IDs group repeated rollouts. Missing evidence stays missing, nullable token
 counts are not filled with zero, and rewards do not establish execution success.
 Duplicate rollout IDs and ambiguous joins are rejected.
+
+## Rollouts without ng_trajectory
+
+A record without `ng_trajectory` (or with `"ng_trajectory": null`) loads from the
+rollout envelope (`responses_create_params` plus `response`) or from a standalone
+Responses object (`"object": "response"`). Each record becomes one agent span holding
+the request messages, the final assistant text and the declared tools; one model span
+for the recorded response, with its model and token usage; and one tool span per
+`function_call`, paired with its `function_call_output` by `call_id`. A call with no
+recorded output has no result.
+
+These records lack the invocation tree, per-call model grouping and all timing: the
+recorded response can cover several model turns, and no span has start or end times.
+Each record reports the gap `ng_trajectory_unavailable`. The trace ID is `gym-` plus
+the first 16 hex digits of the SHA-256 of the record bytes (the JSONL line or JSON
+file, without surrounding whitespace), so byte-identical records are rejected as
+duplicates. `_ng_task_index` groups repeated rollouts of one task.
+
+Records referencing remote conversation state (`previous_response_id` or
+`conversation`), response output that repeats prompt history other than an exact
+copy of the request input, namespaced functions, unsupported item types such as
+built-in tool calls, and duplicate or unmatched call IDs are rejected.

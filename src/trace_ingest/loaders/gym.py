@@ -1,21 +1,59 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Read Gym rollout JSON/JSONL with the versioned ``ng_trajectory`` attachment.
+"""Read Gym rollout JSON/JSONL: ``ng_trajectory`` attachments or Responses envelopes.
 
 Source: NVIDIA-NeMo/Gym@399e6783e0e879424fc20a23f8e2d46ffa4cfdee,
 nemo_gym/rollout_observability.py (TrajectoryRecord), rollout_collection.py.
 Supported producer paths and required observability configuration:
 https://docs.nvidia.com/nemo/gym/reference/trajectory-capabilities/
 
-Only persisted rollouts with ng_trajectory schema 1.0 are accepted. Coverage is
-path-dependent; recorded gaps and partial evidence are preserved. Responses-only
-exports and ATIF conversion are outside this loader's contract.
-No Gym runtime, inference, media fetching, or filesystem reference resolution.
+Rollouts with ng_trajectory schema 1.0 keep the invocation tree, captured model
+calls, per-call timing and semantic turns. Coverage is path-dependent; recorded
+gaps and partial evidence are preserved.
+
+Records without ``ng_trajectory`` (absent or null) load from the OpenAI
+Responses shape instead: a rollout envelope (``responses_create_params`` plus
+``response``) or a standalone Responses object (``object == "response"``):
+
+- One AGENT root. ``input`` is the request's message items as a list: string
+  input becomes ``[{"role": "user", "content": input}]`` and ``instructions``
+  a leading ``{"role": "system", ...}`` message; non-message items are omitted
+  there and stay in the raw record. ``output`` is the text of the last
+  assistant message in the generated output, else UNSET. Tool definitions come
+  from ``responses_create_params.tools``, else ``response.tools``.
+- One LLM span for the recorded response: ``model`` from ``response.model``
+  (else the request model), ``output`` the response output items, and token
+  counts mapped from ``usage`` exactly like ``token_stats`` (input, cached
+  input and output tokens must all be present). The response can aggregate
+  several model turns of an agent loop; per-call grouping and timing are not
+  inferred, and no span has timestamps. ``error`` is ``response.error.code``
+  or a failed/cancelled status.
+- One TOOL span per ``function_call``, paired with ``function_call_output`` by
+  ``call_id`` over the request input followed by the generated output, in
+  source order. Arguments are decoded JSON, or the raw string when undecodable.
+  Unpaired calls keep ``result_count == 0``; duplicate calls, duplicate
+  results and results without a preceding call are rejected. Tool results have
+  no authoritative error flag, so ``ToolResult.is_error`` is None.
+- When ``response.output`` starts with an exact copy of the request input
+  (ignoring message ``id``/``status``), the copy is counted once. Other
+  prompt-role items in the output, remote conversation state
+  (``previous_response_id``/``conversation``), namespaced functions and item
+  types other than message, reasoning, function_call and function_call_output
+  are rejected.
+- Identity: ``"gym-" + sha256(record bytes)[:16]`` where the record bytes are
+  the JSONL line or whole JSON file with surrounding ASCII whitespace stripped,
+  so byte-identical records collide and are rejected as duplicates.
+  ``_ng_task_index`` sets ``logical_case_id`` to ``gym-task-index-<n>``.
+  The gap ``ng_trajectory_unavailable`` records the missing attachment.
+
+ATIF conversion is outside this loader's contract. No Gym runtime, inference,
+media fetching, or filesystem reference resolution.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from collections.abc import Iterator
@@ -54,7 +92,7 @@ class GymTraceConfig(BaseModel):
 
     ``path`` resolves from the working directory. ``jsonl`` reads one rollout
     per nonblank line; ``json`` reads a single, optionally pretty-printed object.
-    Both formats require the rollout envelope containing ``ng_trajectory``.
+    Records carry ``ng_trajectory`` or the Responses rollout envelope.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -169,16 +207,23 @@ def _finalize_tool_results(spans: list[Span]) -> None:
         _finalize_tool_results(span.children)
 
 
-def _conversation_tools(invocation: dict[str, Any], prefix: str) -> dict[str, Span]:
-    """Pair conversation calls/results by invocation-scoped IDs in source order.
+def _conversation_tools(
+    items: list[tuple[dict[str, Any], dict[str, Any]]],
+    prefix: str,
+    *,
+    raw_unparsed_arguments: bool = False,
+) -> dict[str, Span]:
+    """Pair calls/results in ``(item, location)`` order by scoped call IDs.
 
     A missing result remains UNSET; an explicit result with null output remains
     a matched result. Observations may enrich these spans later with timing.
+    ``raw_unparsed_arguments`` keeps unparseable argument text verbatim and any
+    decoded JSON value; ``ng_trajectory`` conversations require a JSON object.
     """
 
     calls: dict[str, Span] = {}
     user: str | None = None
-    for index, item in enumerate(_rows(invocation.get("conversation", []))):
+    for item, location in items:
         if item.get("type", "message") not in (
             "message",
             "reasoning",
@@ -187,17 +232,7 @@ def _conversation_tools(invocation: dict[str, Any], prefix: str) -> dict[str, Sp
         ):
             raise GymTraceLoadError("unsupported Gym conversation item; add an explicit mapping")
         if item.get("role") == "user":
-            content = item.get("content")
-            user = (
-                content
-                if isinstance(content, str)
-                else "\n".join(
-                    part["text"]
-                    for part in _rows(content)
-                    if part.get("type") in ("input_text", "text")
-                    and isinstance(part.get("text"), str)
-                )
-            )
+            user = _text(item.get("content"), ("input_text", "text"))
         if item.get("type") == "function_call":
             if item.get("namespace") is not None:
                 raise GymTraceLoadError("namespaced Gym functions require an explicit name mapping")
@@ -206,7 +241,13 @@ def _conversation_tools(invocation: dict[str, Any], prefix: str) -> dict[str, Sp
                 raise ValueError("duplicate invocation-scoped tool call ID")
             arguments = item.get("arguments", UNSET)
             if isinstance(arguments, str):
-                arguments = _object(_decode(arguments))
+                if not raw_unparsed_arguments:
+                    arguments = _object(_decode(arguments))
+                else:
+                    try:
+                        arguments = _decode(arguments)
+                    except ValueError:
+                        pass
             elif arguments is not UNSET and arguments is not None:
                 arguments = _object(arguments)
             calls[call_id] = Span(
@@ -217,7 +258,7 @@ def _conversation_tools(invocation: dict[str, Any], prefix: str) -> dict[str, Sp
                 tool_call=ToolCall(
                     call_id=call_id, index=len(calls), result_count=0, prior_user_text=user
                 ),
-                attributes={"gym": {"call": item, "conversation_index": index}},
+                attributes={"gym": {"call": item, **location}},
             )
         elif item.get("type") == "function_call_output":
             call_id = _id(item.get("call_id"))
@@ -230,8 +271,20 @@ def _conversation_tools(invocation: dict[str, Any], prefix: str) -> dict[str, Sp
             span.output = item.get("output", UNSET)
             span.tool_call.result_id = call_id
             span.tool_call.result_count = 1
-            span.attributes["gym_result"] = {"item": item, "conversation_index": index}
+            span.attributes["gym_result"] = {"item": item, **location}
     return calls
+
+
+def _text(content: object, part_types: tuple[str, ...]) -> str:
+    """Return string content unchanged, else join text parts of ``part_types``."""
+
+    if isinstance(content, str):
+        return content
+    return "\n".join(
+        part["text"]
+        for part in _rows(content)
+        if part.get("type") in part_types and isinstance(part.get("text"), str)
+    )
 
 
 def _model_owners(
@@ -281,20 +334,175 @@ def _model_owners(
     return owners
 
 
-def _normalize(record: dict[str, Any]) -> Trace:
+_PROMPT_ROLES = ("user", "system", "developer")
+
+
+def _message_signature(item: object) -> object:
+    """Compare message items without volatile wrapper fields; other items stay exact."""
+
+    if not isinstance(item, dict) or item.get("type", "message") != "message" or "role" not in item:
+        return item
+    return {
+        **{
+            key: value
+            for key, value in item.items()
+            if key not in ("id", "status") and not (key == "phase" and value is None)
+        },
+        "type": "message",
+    }
+
+
+def _normalize_responses(record: dict[str, Any], raw: bytes) -> Trace:
+    """Map a rollout envelope or standalone Responses object without ``ng_trajectory``.
+
+    One AGENT root holds one LLM span for the recorded response and one TOOL
+    span per ``function_call``. Results pair by ``call_id`` over the request
+    input followed by the generated response output.
+    """
+
+    if "response" in record:
+        request, response, shape = (
+            record.get("responses_create_params"),
+            record["response"],
+            ("rollout_envelope"),
+        )
+        if not isinstance(request, dict):
+            raise GymTraceLoadError(
+                "Gym rollout without ng_trajectory requires responses_create_params and "
+                "response; see https://docs.nvidia.com/nemo/gym/reference/trajectory-capabilities/"
+            )
+    elif record.get("object") == "response":
+        request, response, shape = {}, record, "responses_object"
+    else:
+        raise GymTraceLoadError(
+            "Gym record requires ng_trajectory schema 1.0, a rollout envelope, "
+            "or a standalone Responses object"
+        )
+    response = _object(response)
+    output = _rows(response.get("output"))
+    if request.get("previous_response_id") or request.get("conversation"):
+        raise GymTraceLoadError(
+            "Gym request references remote conversation state; supply self-contained input"
+        )
+    incoming = request.get("input", [])
+    if isinstance(incoming, str):
+        incoming = [{"role": "user", "content": incoming}]
+    incoming = _rows(incoming)
+    instructions = request.get("instructions")
+    if instructions is not None and not isinstance(instructions, str):
+        raise ValueError("request instructions must be text")
+
+    # Some agents echo the request input as an exact prefix of response.output;
+    # count those items once. Any other prompt-role output is ambiguous history.
+    echoed = len(output) >= len(incoming) and all(
+        _message_signature(a) == _message_signature(b)
+        for a, b in zip(incoming, output[: len(incoming)], strict=True)
+    )
+    generated = output[len(incoming) :] if echoed else output
+    if not echoed and any(item.get("role") in _PROMPT_ROLES for item in generated):
+        raise GymTraceLoadError(
+            "Gym response output repeats prompt history that is not an exact request prefix"
+        )
+    items = [
+        (item, {"item_path": f"$.responses_create_params.input[{i}]"})
+        for i, item in enumerate(incoming)
+    ]
+    offset = len(incoming) if echoed else 0
+    items += [
+        (item, {"item_path": f"$.response.output[{offset + i}]"})
+        for i, item in enumerate(generated)
+    ]
+    tools = _conversation_tools(items, "gym/response", raw_unparsed_arguments=True)
+
+    root_input = [item for item in incoming if item.get("type", "message") == "message"]
+    if instructions:
+        root_input.insert(0, {"role": "system", "content": instructions})
+    final = next(
+        (
+            _text(item.get("content"), ("output_text", "text"))
+            for item in reversed(generated)
+            if item.get("type", "message") == "message" and item.get("role") == "assistant"
+        ),
+        None,
+    )
+    usage = response.get("usage")
+    token_counts = None
+    if usage is not None:
+        usage = _object(usage)
+        cached = usage.get("input_tokens_details")
+        token_counts = _tokens(
+            {
+                "prompt_tokens": usage.get("input_tokens"),
+                "cached_tokens": _object(cached).get("cached_tokens")
+                if cached is not None
+                else None,
+                "completion_tokens": usage.get("output_tokens"),
+                "total_tokens": usage.get("total_tokens"),
+            }
+        )
+    model = response.get("model") or request.get("model")
+    # Responses failures carry ``error: {code, message}``; status covers the rest.
+    error = response.get("error")
+    if error is not None:
+        code = _object(error).get("code")
+        error = code if isinstance(code, str) and code else "response_error"
+    llm = Span(
+        id="gym/response/model",
+        kind=SpanKind.LLM,
+        input=request if shape == "rollout_envelope" else UNSET,
+        output=response["output"],
+        model=model if isinstance(model, str) and model else None,
+        token_counts=token_counts,
+        error=error or _error(response),
+        attributes={
+            "gym_response_id": response.get("id"),
+            "gym_response_status": response.get("status"),
+        },
+    )
+    root = Span(
+        id="gym/response",
+        kind=SpanKind.AGENT,
+        input=root_input,
+        output=final if final else UNSET,
+        children=[llm, *tools.values()],
+    )
+    _finalize_tool_results([root])
+    definitions = tool_definitions(request.get("tools", response.get("tools")))
+    if definitions is not None:
+        root.tool_definitions = definitions
+    identity = "gym-" + hashlib.sha256(raw.strip()).hexdigest()[:16]
+    task_index = record.get("_ng_task_index")
+    attributes: dict[str, Any] = {
+        "gym": record,
+        "gym_source_shape": shape,
+        "gym_loader_gaps": [{"code": "ng_trajectory_unavailable"}],
+        "gym_gap_count": 1,
+    }
+    if type(task_index) is int:
+        attributes["logical_case_id"] = f"gym-task-index-{task_index}"
+    return Trace(
+        id=identity,
+        root_spans=[root],
+        aggregate=TraceAggregate(),
+        evaluator_results={
+            f"gym.{key}": record[key] for key in ("reward", "reward_components") if key in record
+        },
+        attributes=attributes,
+    )
+
+
+def _normalize(record: dict[str, Any], raw: bytes) -> Trace:
     """Map one native attachment while retaining the complete source envelope.
 
     Rollout IDs identify traces; task IDs group logical cases. Invocations,
     captured calls, tools and semantic turns map to separate span kinds.
     Source gaps remain under ``attributes.gym``; additional join gaps are in
     ``gym_loader_gaps``. Rewards stay evaluation signals, not execution errors.
+    Records without (or with null) ``ng_trajectory`` use ``_normalize_responses``.
     """
 
-    if "ng_trajectory" not in record:
-        raise GymTraceLoadError(
-            "Gym rollout requires ng_trajectory schema 1.0 from a supported producer path; "
-            "see https://docs.nvidia.com/nemo/gym/reference/trajectory-capabilities/"
-        )
+    if record.get("ng_trajectory") is None:
+        return _normalize_responses(record, raw)
     source = _object(record["ng_trajectory"])
     if source.get("schema_version") != "1.0":
         raise GymTraceLoadError("unsupported ng_trajectory schema_version; expected 1.0")
@@ -326,7 +534,13 @@ def _normalize(record: dict[str, Any]) -> Trace:
             attributes={"gym": invocation},
         )
         spans[identifier] = span
-        tools[identifier] = _conversation_tools(invocation, span.id)
+        tools[identifier] = _conversation_tools(
+            [
+                (item, {"conversation_index": index})
+                for index, item in enumerate(_rows(invocation.get("conversation", [])))
+            ],
+            span.id,
+        )
 
     roots: list[Span] = []
     for identifier, invocation in by_id.items():
@@ -515,7 +729,7 @@ class GymTraceLoader:
                 for _line_number, raw in enumerate(records, 1):
                     if not raw.strip():
                         continue
-                    trace = _normalize(_object(_decode(raw)))
+                    trace = _normalize(_object(_decode(raw)), raw)
                     trace.source_url = file_source_url(
                         path, _line_number if self.config.format == "jsonl" else None
                     )
@@ -524,7 +738,7 @@ class GymTraceLoader:
                         span = pending.pop()
                         calls += span.kind is SpanKind.TOOL
                         pending.extend(span.children)
-                    cases.add(str(trace.attributes["logical_case_id"]))
+                    cases.add(str(trace.attributes.get("logical_case_id", trace.id)))
                     count = trace.attributes["gym_gap_count"]
                     assert isinstance(count, int)
                     gap_count += count
