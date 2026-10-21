@@ -4,6 +4,7 @@
 """Synthetic records from Gym's TrajectoryRecord schema at 399e6783e0e8."""
 
 import copy
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -448,3 +449,207 @@ def test_responses_create_params_tools_become_root_definitions(tmp_path):
     assert root.tool_definitions is not UNSET
     assert [definition.raw for definition in root.tool_definitions] == tools[:2]
     assert tool_catalog(trace) == {"search": {"type": "object"}, "open": {"type": "string"}}
+
+
+# Responses-envelope records without ng_trajectory.
+
+RESPONSES_FIXTURES = Path(__file__).parent / "fixtures/gym_responses"
+
+
+def envelope():
+    return {
+        "_ng_task_index": 3,
+        "_ng_rollout_index": 1,
+        "reward": 1.0,
+        "responses_create_params": {
+            "instructions": "Answer from inventory.",
+            "input": "How many bolts?",
+            "tools": [
+                {"type": "function", "name": "lookup", "parameters": {"type": "object"}},
+                {"type": "function", "name": "audit", "parameters": {"type": "object"}},
+            ],
+        },
+        "response": {
+            "object": "response",
+            "id": "resp-1",
+            "model": "test-model",
+            "status": "completed",
+            "usage": {
+                "input_tokens": 30,
+                "input_tokens_details": {"cached_tokens": 10},
+                "output_tokens": 7,
+                "total_tokens": 37,
+            },
+            "output": [
+                {"type": "reasoning", "summary": []},
+                {
+                    "type": "function_call",
+                    "call_id": "a",
+                    "name": "lookup",
+                    "arguments": '{"sku": 1}',
+                },
+                {"type": "function_call", "call_id": "b", "name": "audit", "arguments": "not json"},
+                {"type": "function_call_output", "call_id": "a", "output": "14"},
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "14 bolts."}],
+                },
+            ],
+        },
+    }
+
+
+def test_responses_envelope_maps_root_llm_and_paired_tools(tmp_path):
+    source = envelope()
+    loader = loader_for(tmp_path, source)
+    trace = next(iter(loader.load()))
+    line = loader.config.path.read_bytes()
+    assert trace.id == "gym-" + hashlib.sha256(line.strip()).hexdigest()[:16]
+    assert trace.attributes["gym"] == source
+    assert trace.attributes["gym_source_shape"] == "rollout_envelope"
+    assert trace.attributes["logical_case_id"] == "gym-task-index-3"
+    assert trace.evaluator_results == {"gym.reward": 1}
+    assert loader.describe()["gap_count"] == 1
+    (root,) = trace.root_spans
+    assert root.kind is SpanKind.AGENT
+    assert root.input == [
+        {"role": "system", "content": "Answer from inventory."},
+        {"role": "user", "content": "How many bolts?"},
+    ]
+    assert root.output == "14 bolts."
+    assert tool_catalog(trace) == {"lookup": {"type": "object"}, "audit": {"type": "object"}}
+    model, paired, unpaired = root.children
+    assert model.kind is SpanKind.LLM and model.model == "test-model"
+    assert model.token_counts == TokenCounts(
+        input_tokens=20, cached_input_tokens=10, output_tokens=7
+    )
+    assert model.output == source["response"]["output"]
+    assert model.start_time is None and model.end_time is None
+    assert paired.input == {"sku": 1} and paired.output == "14"
+    assert paired.tool_call.call_id == "a" and paired.tool_call.result_count == 1
+    assert paired.tool_call.prior_user_text == "How many bolts?"
+    assert [(r.content, r.is_error) for r in paired.tool_call.results] == [("14", None)]
+    assert unpaired.input == "not json" and unpaired.output is UNSET
+    assert unpaired.tool_call.result_count == 0 and unpaired.tool_call.results == []
+    assert_result_counts(trace)
+    assert [call.tool_name for call in to_tool_issue_trace(trace).calls] == ["lookup", "audit"]
+
+
+def test_standalone_responses_object_and_null_attachment(tmp_path):
+    response = envelope()["response"]
+    response["tools"] = [{"type": "function", "name": "lookup", "parameters": {}}]
+    trace = next(iter(loader_for(tmp_path, response, format="json").load()))
+    (root,) = trace.root_spans
+    assert trace.attributes["gym_source_shape"] == "responses_object"
+    assert "logical_case_id" not in trace.attributes
+    assert root.input == [] and root.output == "14 bolts."
+    assert root.children[0].input is UNSET
+    assert tool_catalog(trace) == {"lookup": {}}
+    assert_result_counts(trace)
+    record = envelope()
+    record["ng_trajectory"] = None
+    assert next(iter(loader_for(tmp_path, record).load())).root_spans[0].kind is SpanKind.AGENT
+
+
+def test_results_pair_across_request_input_and_echoed_prefix(tmp_path):
+    source = envelope()
+    history = [
+        {"type": "message", "role": "user", "content": "How many bolts?"},
+        {"type": "function_call", "call_id": "a", "name": "lookup", "arguments": "{}"},
+    ]
+    source["responses_create_params"]["input"] = history
+    source["response"]["output"] = [
+        {**history[0], "id": "msg-1", "status": "completed"},
+        history[1],
+        {"type": "function_call_output", "call_id": "a", "output": "14"},
+    ]
+    trace = next(iter(loader_for(tmp_path, source).load()))
+    (tool,) = [span for span in trace.root_spans[0].children if span.kind is SpanKind.TOOL]
+    assert tool.attributes["gym"]["item_path"] == "$.responses_create_params.input[1]"
+    assert tool.attributes["gym_result"]["item_path"] == "$.response.output[2]"
+    assert tool.tool_call.result_count == len(tool.tool_call.results) == 1
+    assert trace.root_spans[0].input == [
+        {"role": "system", "content": "Answer from inventory."},
+        history[0],
+    ]
+    assert trace.root_spans[0].output is UNSET
+
+
+def test_response_error_code_marks_model_span(tmp_path):
+    source = envelope()
+    source["response"]["status"] = "failed"
+    source["response"]["error"] = {"code": "server_error", "message": "private"}
+    model = next(iter(loader_for(tmp_path, source).load())).root_spans[0].children[0]
+    assert model.error == "server_error"
+    source["response"]["error"] = None
+    model = next(iter(loader_for(tmp_path, source).load())).root_spans[0].children[0]
+    assert model.error == "failed"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "duplicate_call",
+        "duplicate_result",
+        "orphan_result",
+        "history",
+        "remote",
+        "item",
+        "namespace",
+        "output",
+        "shape",
+    ],
+)
+def test_ambiguous_responses_records_rejected(tmp_path, mutation):
+    source = envelope()
+    output = source["response"]["output"]
+    if mutation == "duplicate_call":
+        output.append(copy.deepcopy(output[1]))
+    elif mutation == "duplicate_result":
+        output.append(copy.deepcopy(output[3]))
+    elif mutation == "orphan_result":
+        output[3]["call_id"] = "missing"
+    elif mutation == "history":
+        output.insert(0, {"role": "user", "content": "Different prompt"})
+    elif mutation == "remote":
+        source["responses_create_params"]["previous_response_id"] = "resp-0"
+    elif mutation == "item":
+        output.append({"type": "web_search_call"})
+    elif mutation == "namespace":
+        output[1]["namespace"] = "mcp"
+    elif mutation == "output":
+        source["response"]["output"] = None
+    elif mutation == "shape":
+        source = {"output": output}
+    with pytest.raises(GymTraceLoadError):
+        loader_for(tmp_path, source).load()
+
+
+def test_eval_author_responses_fixtures_load(tmp_path):
+    """Fixtures copied verbatim from eval-author skills/gym-to-atif/evals/files (Apache-2.0)."""
+
+    trace = next(
+        iter(
+            GymTraceLoader(
+                GymTraceConfig(path=RESPONSES_FIXTURES / "source.json", format="json")
+            ).load()
+        )
+    )
+    assert trace.root_spans[0].input == [
+        {"role": "user", "content": "How many units of BOLT-17 are available?"}
+    ]
+    assert_result_counts(trace)
+    lines = (RESPONSES_FIXTURES / "ambiguous.jsonl").read_bytes().splitlines()
+    assert len(lines) == 2
+    for index, line in enumerate(lines):
+        path = tmp_path / f"row-{index}.json"
+        path.write_bytes(line)
+        (row,) = GymTraceLoader(GymTraceConfig(path=path, format="json")).load()
+        (tool,) = [span for span in row.root_spans[0].children if span.kind is SpanKind.TOOL]
+        assert tool.tool_name == "lookup_item" and tool.input == {"sku": "BOLT-17"}
+        assert tool.tool_call is not None
+        assert tool.tool_call.result_count == len(tool.tool_call.results) == 1
+    # Byte-identical rows share a content identity, so one JSONL corpus is a duplicate.
+    with pytest.raises(GymTraceLoadError):
+        GymTraceLoader(GymTraceConfig(path=RESPONSES_FIXTURES / "ambiguous.jsonl")).load()
