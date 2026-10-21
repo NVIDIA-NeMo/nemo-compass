@@ -573,6 +573,56 @@ def test_intake_preserves_span_model_and_cost():
     assert span.cost_usd == 0.125
 
 
+def _agent_attributes(*names: str) -> str:
+    definitions = [{"name": name, "parameters": {"type": "object"}} for name in names]
+    return json.dumps({"agent": {"tool_definitions": definitions}})
+
+
+def test_intake_atif_definitions_stay_on_the_span_that_declared_them():
+    trace = next(
+        iter(
+            _loader_for_records(
+                [
+                    _span_record("root", raw_attributes=_agent_attributes("search")),
+                    _span_record(
+                        "sub",
+                        parent_span_id="root",
+                        raw_attributes=_agent_attributes("lookup"),
+                    ),
+                    _span_record(
+                        "step",
+                        kind="CHAIN",
+                        parent_span_id="sub",
+                        raw_attributes=_agent_attributes("lookup", "write"),
+                    ),
+                ]
+            ).load()
+        )
+    )
+
+    root = trace.root_spans[0]
+    sub = root.children[0]
+    assert [definition.name for definition in root.tool_definitions] == ["search"]
+    assert [definition.name for definition in sub.tool_definitions] == ["lookup", "write"]
+    assert sub.children[0].tool_definitions is UNSET
+    assert "intake_loader_gaps" not in trace.attributes
+
+
+def test_intake_atif_definitions_without_owner_are_a_gap():
+    trace = next(
+        iter(
+            _loader_for_records(
+                [_span_record("root", kind="CHAIN", raw_attributes=_agent_attributes("search"))]
+            ).load()
+        )
+    )
+
+    assert tool_catalog(trace) is None
+    assert trace.attributes["intake_loader_gaps"] == [
+        {"code": "tool_definitions_without_owner_span", "span_id": "root"}
+    ]
+
+
 @pytest.mark.parametrize("query_limit", [None, 5])
 @pytest.mark.parametrize("shared_limit", [None, 1])
 def test_intake_shared_limit_maps_to_query(query_limit, shared_limit):

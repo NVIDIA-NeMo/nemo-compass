@@ -37,7 +37,6 @@ from trace_ingest.models import (
     Span,
     SpanKind,
     ToolCall,
-    ToolDefinition,
     ToolResult,
     Trace,
     TraceAggregate,
@@ -580,22 +579,12 @@ def _normalize_trace(
     )
     if logical_case_id is not None:
         attributes["logical_case_id"] = logical_case_id
-    definitions = _atif_tool_definitions(ordered)
-    if definitions:
-        # First AGENT root, else AGENT span, else LLM root, else LLM span (canonical order).
-        canonical = [normalized_by_id[span.span_id] for span in ordered]
-        owner = next(
-            (
-                span
-                for kind in (SpanKind.AGENT, SpanKind.LLM)
-                for candidates in (root_spans, canonical)
-                for span in candidates
-                if span.kind is kind
-            ),
-            None,
-        )
-        if owner is not None:
-            owner.tool_definitions = definitions
+    unowned = _attach_atif_tool_definitions(ordered, normalized_by_id, root_spans)
+    if unowned:
+        attributes["intake_loader_gaps"] = [
+            {"code": "tool_definitions_without_owner_span", "span_id": span_id}
+            for span_id in unowned
+        ]
 
     return Trace(
         id=raw.id,
@@ -796,12 +785,48 @@ def _normalize_atif_tool_payload(
     )
 
 
-def _atif_tool_definitions(spans: list[_IntakeSpan]) -> list[ToolDefinition]:
-    definitions: list[ToolDefinition] = []
-    for span in spans:
-        if span.source != "atif":
+def _attach_atif_tool_definitions(
+    ordered: list[_IntakeSpan],
+    normalized_by_id: Mapping[str, Span],
+    root_spans: list[Span],
+) -> list[str]:
+    """Set ATIF ``agent.tool_definitions`` on the span that recorded them.
+
+    Definitions recorded on a span that cannot declare tools go to its nearest
+    AGENT or LLM ancestor, else to the first AGENT root, AGENT span, LLM root or
+    LLM span. Returns the ids of spans whose definitions found no owner.
+    """
+
+    declaring = (SpanKind.AGENT, SpanKind.LLM)
+    parents = {span.span_id: span.parent_span_id for span in ordered}
+    canonical = [normalized_by_id[span.span_id] for span in ordered]
+    fallback = next(
+        (
+            span
+            for kind in declaring
+            for candidates in (root_spans, canonical)
+            for span in candidates
+            if span.kind is kind
+        ),
+        None,
+    )
+    unowned: list[str] = []
+    for raw_span in ordered:
+        if raw_span.source != "atif":
             continue
-        agent = _raw_attributes(span).get("agent")
-        if isinstance(agent, Mapping):
-            definitions.extend(tool_definitions_from_atif(agent.get("tool_definitions")))
-    return definitions
+        agent = _raw_attributes(raw_span).get("agent")
+        if not isinstance(agent, Mapping):
+            continue
+        definitions = tool_definitions_from_atif(agent.get("tool_definitions"))
+        if not definitions:
+            continue
+        owner_id: str | None = raw_span.span_id
+        while owner_id is not None and normalized_by_id[owner_id].kind not in declaring:
+            owner_id = parents[owner_id]
+        owner = normalized_by_id[owner_id] if owner_id is not None else fallback
+        if owner is None:
+            unowned.append(raw_span.span_id)
+            continue
+        current = [] if owner.tool_definitions is UNSET else owner.tool_definitions
+        owner.tool_definitions = current + [item for item in definitions if item not in current]
+    return unowned
