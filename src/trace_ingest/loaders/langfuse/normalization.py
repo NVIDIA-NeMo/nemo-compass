@@ -249,59 +249,57 @@ def _normalize_v4_trace(
 def _tool_definitions(
     observations: Sequence[LangfuseObservation],
     effective_parents: Mapping[str, str | None],
-) -> list[ToolDefinition]:
-    """Collect tool definitions from API-visible Langfuse inputs.
+) -> dict[str, list[ToolDefinition]]:
+    """Map declaring observation ids to the tool definitions in their Langfuse inputs.
 
     Langfuse normalizes tool definitions from supported instrumentation metadata,
     including ``gen_ai.tool.definitions``, into an observation's top-level
-    ``input.tools`` array. GENERATION catalogs describe the tools actually
-    offered to the model and therefore take precedence; a root AGENT catalog is
-    only a fallback for reduced traces with no generation observations. A
-    generation without a catalog leaves the offered tools unknown. All
-    distinct definitions from the selected source are kept, so catalogs that
-    disagree surface as a conflict in ``trace_ingest.catalog.tool_catalog``.
+    ``input.tools`` array. GENERATION catalogs describe the tools offered to that
+    model call and therefore take precedence; root AGENT catalogs are only a
+    fallback for reduced traces with no generation observations. Each selected
+    observation keeps its own definitions. When a generation has no readable
+    catalog, or the selected observations offer different tool names, nothing is
+    attached, so the trace has no catalog.
     """
 
-    root_agent_catalogs: list[list[ToolDefinition]] = []
-    generation_catalogs: list[list[ToolDefinition] | None] = []
+    root_agents: dict[str, list[ToolDefinition] | None] = {}
+    generations: dict[str, list[ToolDefinition] | None] = {}
     for observation in observations:
         kind, _ = _map_observation_kind(observation.type)
-        if kind not in {SpanKind.AGENT, SpanKind.LLM}:
-            continue
+        observation_id = str(observation.id)
         catalog = _tool_definitions_from_input(observation.input)
         if kind is SpanKind.LLM:
-            generation_catalogs.append(catalog)
-        elif catalog is not None and effective_parents[str(observation.id)] is None:
-            root_agent_catalogs.append(catalog)
+            generations[observation_id] = catalog
+        elif (
+            kind is SpanKind.AGENT
+            and catalog is not None
+            and effective_parents[observation_id] is None
+        ):
+            root_agents[observation_id] = catalog
 
-    if any(catalog is None for catalog in generation_catalogs):
-        # A generation without a recorded catalog leaves the offered tools unknown.
-        return []
-    distinct: dict[str, ToolDefinition] = {}
-    for catalog in generation_catalogs or root_agent_catalogs:
-        for definition in catalog or ():
-            key = json.dumps([definition.name, definition.input_schema], sort_keys=True)
-            distinct.setdefault(key, definition)
-    return list(distinct.values())
+    selected = generations or root_agents
+    declared = {key: catalog for key, catalog in selected.items() if catalog is not None}
+    if len(declared) != len(selected):
+        return {}
+    if (
+        len({frozenset(definition.name for definition in catalog) for catalog in declared.values()})
+        > 1
+    ):
+        return {}
+    return declared
 
 
-def _attach_tool_definitions(roots: list[Span], definitions: list[ToolDefinition]) -> None:
-    """Attach definitions to the first AGENT root, else AGENT span, else LLM root, else LLM span."""
+def _attach_tool_definitions(
+    roots: list[Span], definitions: Mapping[str, list[ToolDefinition]]
+) -> None:
+    """Set each declaring span's own definitions."""
 
-    if not definitions:
-        return
-    depth_first: list[Span] = []
     pending = list(roots)
     while pending:
-        span = pending.pop(0)
-        depth_first.append(span)
-        pending[:0] = span.children
-    for kind in (SpanKind.AGENT, SpanKind.LLM):
-        for candidates in (roots, depth_first):
-            owner = next((span for span in candidates if span.kind is kind), None)
-            if owner is not None:
-                owner.tool_definitions = definitions
-                return
+        span = pending.pop()
+        pending.extend(span.children)
+        if span.id in definitions:
+            span.tool_definitions = definitions[span.id]
 
 
 def _tool_definitions_from_input(value: object) -> list[ToolDefinition] | None:
@@ -323,7 +321,8 @@ def _tool_definitions_from_input(value: object) -> list[ToolDefinition] | None:
         definition = _tool_definition(tool)
         if definition is not None:
             definitions.setdefault(definition.name, definition)
-    return list(definitions.values())
+    # Tools that were listed but could not be read leave the offered tools unknown.
+    return list(definitions.values()) if definitions or not tools else None
 
 
 def _tool_definition(value: object) -> ToolDefinition | None:
