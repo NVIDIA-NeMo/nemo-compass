@@ -12,7 +12,7 @@ import random
 import time
 from collections import deque
 from collections.abc import Iterator
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from functools import cached_property
@@ -116,6 +116,13 @@ class UserEmbedding:
 
     data: bytes
     token_count: int
+
+
+@dataclass(frozen=True)
+class _ActiveRequest:
+    batch: _RemoteBatch
+    generation: int
+    submitted_at: float
 
 
 class UserEmbeddingProjection:
@@ -317,7 +324,7 @@ class UserEmbeddingGenerator:
         cooldown_until = 0.0
         exhausted = False
         with ThreadPoolExecutor(max_workers=config.max_concurrency) as executor:
-            active = {}
+            active: dict[Future[list[UserEmbedding]], _ActiveRequest] = {}
             while active or retries or not exhausted:
                 while len(active) < concurrency and time.monotonic() >= cooldown_until:
                     if retries:
@@ -333,11 +340,8 @@ class UserEmbeddingGenerator:
                             exhausted = True
                             break
                     batch.attempts += 1
-                    active[executor.submit(self._remote_batch, batch, config, api_key)] = (
-                        batch,
-                        generation,
-                        time.monotonic(),
-                    )
+                    future = executor.submit(self._remote_batch, batch, config, api_key)
+                    active[future] = _ActiveRequest(batch, generation, time.monotonic())
                 if not active:
                     if retries or not exhausted:
                         time.sleep(max(0.0, cooldown_until - time.monotonic()))
@@ -347,7 +351,8 @@ class UserEmbeddingGenerator:
                     wake_after = max(0.0, cooldown_until - time.monotonic())
                 done, _ = wait(active, timeout=wake_after, return_when=FIRST_COMPLETED)
                 for future in done:
-                    batch, submitted_generation, submitted_at = active.pop(future)
+                    request = active.pop(future)
+                    batch = request.batch
                     try:
                         completed[batch.index] = future.result()
                     except Exception as error:
@@ -366,7 +371,7 @@ class UserEmbeddingGenerator:
                         cooldown_until = max(cooldown_until, now + delay)
                         if (
                             getattr(error, "status_code", None) == 429
-                            and submitted_generation == generation
+                            and request.generation == generation
                         ):
                             previous = concurrency
                             concurrency = max(1, concurrency // 2)
@@ -388,9 +393,9 @@ class UserEmbeddingGenerator:
                     else:
                         # Old in-flight completions and recovered retries cannot undo backoff.
                         if (
-                            submitted_generation == generation
+                            request.generation == generation
                             and batch.attempts == 1
-                            and submitted_at >= cooldown_until
+                            and request.submitted_at >= cooldown_until
                         ):
                             successes += 1
                             if successes >= concurrency and concurrency < config.max_concurrency:

@@ -403,3 +403,51 @@ def test_multiple_rate_limits_at_cap_halve_once(generator, monkeypatch, caplog):
     assert all(calls[i] == 2 for i in range(6, 10))
     assert caplog.text.count("after rate limit") == 1
     assert "concurrency 4 -> 2" in caplog.text
+
+
+def test_late_success_from_before_rate_limit_does_not_accelerate_recovery(
+    generator, monkeypatch, caplog
+):
+    generator.litellm.max_retry_wait = 0.001
+    groups = [(0,), (1, 2), (3, 4, 5), (6, 7, 8, 9)]
+    barriers = {group: threading.Barrier(len(group), timeout=5) for group in groups}
+    retry_started = threading.Event()
+    rate_limit_observed = threading.Event()
+    calls = Counter()
+
+    def worker(batch, config, key):
+        calls[batch.index] += 1
+        if batch.index == 6 and calls[6] == 2:
+            retry_started.set()
+        elif batch.index < 10:
+            group = next(g for g in groups if batch.index in g)
+            barriers[group].wait()
+            if batch.index == 6:
+                raise limited(0)
+            if batch.index == 9:
+                # Keep an old request alive until work resumes after the reduction.
+                assert retry_started.wait(5)
+            if batch.index in (7, 8):
+                assert rate_limit_observed.wait(5)
+        if batch.index == 10:
+            assert retry_started.wait(5)
+        return result(batch)
+
+    retry_delay = module._retry_delay
+
+    def observe_rate_limit(error, attempt, max_wait):
+        delay = retry_delay(error, attempt, max_wait)
+        rate_limit_observed.set()
+        return delay
+
+    monkeypatch.setattr(module, "_retry_delay", observe_rate_limit)
+    monkeypatch.setattr(generator, "_remote_batch", worker)
+    with caplog.at_level(logging.INFO, logger=module.__name__):
+        actual = generator.generate_batch(["a"] * 11)
+    assert [x.data for x in actual] == [bytes([i]) for i in range(11)]
+    assert calls[6] == 2
+    assert "concurrency 4 -> 2 after rate limit" in caplog.text
+    # Only batch 10 is a fresh success after backoff. The late batch 9 and
+    # recovered batch 6 must not provide the second success needed to grow.
+    recovery_log = caplog.text.split("concurrency 4 -> 2 after rate limit", 1)[1]
+    assert "concurrency 2 -> 3" not in recovery_log
