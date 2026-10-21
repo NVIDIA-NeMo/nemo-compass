@@ -27,8 +27,10 @@ Responses shape instead: a rollout envelope (``responses_create_params`` plus
   counts mapped from ``usage`` exactly like ``token_stats`` (input, cached
   input and output tokens must all be present). The response can aggregate
   several model turns of an agent loop; per-call grouping and timing are not
-  inferred, and no span has timestamps. ``error`` is ``response.error.code``
-  or a failed/cancelled status.
+  inferred, and no span has timestamps. The TOOL spans follow the LLM span as
+  siblings, so the span tree does not show how messages, model turns and tool
+  calls interleaved; ``item_path`` and the LLM output keep the source order.
+  ``error`` is ``response.error.code`` or a failed/cancelled status.
 - One TOOL span per ``function_call``, paired with ``function_call_output`` by
   ``call_id`` over the request input followed by the generated output, in
   source order. Arguments are decoded JSON, or the raw string when undecodable.
@@ -38,14 +40,15 @@ Responses shape instead: a rollout envelope (``responses_create_params`` plus
 - When ``response.output`` starts with an exact copy of the request input
   (ignoring message ``id``/``status``), the copy is counted once. Other
   prompt-role items in the output, remote conversation state
-  (``previous_response_id``/``conversation``), namespaced functions and item
-  types other than message, reasoning, function_call and function_call_output
-  are rejected.
+  (``previous_response_id``/``conversation`` on the request or the response),
+  namespaced functions and item types other than message, reasoning,
+  function_call and function_call_output are rejected.
 - Identity: ``"gym-" + sha256(record bytes)[:16]`` where the record bytes are
   the JSONL line or whole JSON file with surrounding ASCII whitespace stripped,
   so byte-identical records collide and are rejected as duplicates.
   ``_ng_task_index`` sets ``logical_case_id`` to ``gym-task-index-<n>``.
-  The gap ``ng_trajectory_unavailable`` records the missing attachment.
+  The gaps ``ng_trajectory_unavailable`` and ``responses_output_aggregated``
+  record the missing attachment and the lost interleaving.
 
 ATIF conversion is outside this loader's contract. No Gym runtime, inference,
 media fetching, or filesystem reference resolution.
@@ -272,7 +275,7 @@ def _conversation_tools(
                 else:
                     try:
                         arguments = _decode(arguments)
-                    except ValueError:
+                    except (ValueError, RecursionError):
                         pass
             elif arguments is not UNSET and arguments is not None:
                 arguments = _object(arguments)
@@ -406,9 +409,12 @@ def _normalize_responses(record: dict[str, Any], raw: bytes) -> Trace:
         )
     response = _object(response)
     output = _rows(response.get("output"))
-    if request.get("previous_response_id") or request.get("conversation"):
+    if any(
+        source.get("previous_response_id") or source.get("conversation")
+        for source in (request, response)
+    ):
         raise GymTraceLoadError(
-            "Gym request references remote conversation state; supply self-contained input"
+            "Gym record references remote conversation state; supply self-contained input"
         )
     incoming = request.get("input", [])
     if isinstance(incoming, str):
@@ -425,9 +431,9 @@ def _normalize_responses(record: dict[str, Any], raw: bytes) -> Trace:
         for a, b in zip(incoming, output[: len(incoming)], strict=True)
     )
     generated = output[len(incoming) :] if echoed else output
-    if not echoed and any(item.get("role") in _PROMPT_ROLES for item in generated):
+    if any(item.get("role") in _PROMPT_ROLES for item in generated):
         raise GymTraceLoadError(
-            "Gym response output repeats prompt history that is not an exact request prefix"
+            "Gym response output contains prompt-role items beyond an exact request prefix"
         )
     items = [
         (item, {"item_path": f"$.responses_create_params.input[{i}]"})
@@ -501,8 +507,11 @@ def _normalize_responses(record: dict[str, Any], raw: bytes) -> Trace:
     attributes: dict[str, Any] = {
         "gym": record,
         "gym_source_shape": shape,
-        "gym_loader_gaps": [{"code": "ng_trajectory_unavailable"}],
-        "gym_gap_count": 1,
+        "gym_loader_gaps": [
+            {"code": "ng_trajectory_unavailable"},
+            {"code": "responses_output_aggregated"},
+        ],
+        "gym_gap_count": 2,
     }
     if type(task_index) is int:
         attributes["logical_case_id"] = f"gym-task-index-{task_index}"

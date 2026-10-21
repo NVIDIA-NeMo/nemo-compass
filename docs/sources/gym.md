@@ -85,12 +85,16 @@ recorded output has no result.
 
 These records lack the invocation tree, per-call model grouping and all timing: the
 recorded response can cover several model turns, and no span has start or end times.
-Each record reports the gap `ng_trajectory_unavailable`. The trace ID is `gym-` plus
-the first 16 hex digits of the SHA-256 of the record bytes (the JSONL line or JSON
+The tool spans follow the model span as siblings, so the span tree does not show how
+messages, model turns and tool calls were interleaved; each tool span's `item_path`
+and the model span's output keep the source order. Each record reports the gaps
+`ng_trajectory_unavailable` and `responses_output_aggregated`. The trace ID is `gym-`
+plus the first 16 hex digits of the SHA-256 of the record bytes (the JSONL line or JSON
 file, without surrounding whitespace), so byte-identical records are rejected as
 duplicates. `_ng_task_index` groups repeated rollouts of one task.
 
 Records referencing remote conversation state (`previous_response_id` or
-`conversation`), response output that repeats prompt history other than an exact
-copy of the request input, namespaced functions, unsupported item types such as
-built-in tool calls, and duplicate or unmatched call IDs are rejected.
+`conversation`, on the request or the response), response output with user, system
+or developer messages other than an exact copy of the request input, namespaced
+functions, unsupported item types such as built-in tool calls, and duplicate or
+unmatched call IDs are rejected.
