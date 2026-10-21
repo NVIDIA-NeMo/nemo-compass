@@ -87,7 +87,8 @@ class ToolCall(_TraceModel):
         default_factory=list,
         description=(
             "Source results matched to this call, in source order. When non-empty, its "
-            "length equals result_count."
+            "length equals result_count. An empty list with a positive result_count means "
+            "the results were not recorded, as in traces written before schema version 2."
         ),
     )
 
