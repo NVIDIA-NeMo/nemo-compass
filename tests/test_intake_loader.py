@@ -897,13 +897,31 @@ def test_experiment_id_cli_overrides_yaml(tmp_path):
     assert "filter[experiment_id]" not in loader.config.query.params()
 
 
-def _cli_spans() -> list[dict]:
-    """The span pages `_handler` serves, as `--all-pages` would collect them."""
+def _server_span_pages() -> list[dict]:
+    """The span pages `_handler` serves, one per request."""
     params = {"filter[trace_id]": TRACE_ID, "sort": "started_at", "mode": "detailed"}
     return [
         _handler(httpx.Request("GET", f"{BASE_URL}/spans", params={**params, "page": page})).json()
         for page in (1, 2)
     ]
+
+
+def _merged_page(records: list[dict]) -> dict:
+    """The single page `--all-pages` writes (nemo_platform/cli/core/pagination.py)."""
+    return {
+        "data": records,
+        "sort": None,
+        "pagination": {
+            "page": 1,
+            "total_pages": 1,
+            "current_page_size": len(records),
+            "total_results": len(records),
+        },
+    }
+
+
+def _cli_spans() -> dict:
+    return _merged_page([span for page in _server_span_pages() for span in page["data"]])
 
 
 def _trace_shapes() -> dict[str, object]:
@@ -916,21 +934,26 @@ def _trace_shapes() -> dict[str, object]:
     }
 
 
-def _span_shapes() -> dict[str, object]:
-    pages = _cli_spans()
-    spans = [span for page in pages for span in page["data"]]
+def _evaluator_result(result_id: str, span_id: str, value: float) -> dict:
     return {
-        "list": spans,
-        "page": {
-            "data": spans,
-            "pagination": _pagination(page=1, total_pages=1, total_results=2, size=2),
-        },
-        "pages": pages,
+        "evaluator_result_id": result_id,
+        "span_id": span_id,
+        "session_id": "session-1",
+        "workspace": WORKSPACE,
+        "name": "accuracy",
+        "value": value,
+        "data_type": "NUMERIC",
+        "created_at": "2026-08-28T18:41:00",
+        "ingested_at": "2026-08-28T18:41:01",
     }
 
 
 def _file_loader(
-    tmp_path, trace_payload: object, spans_payload: object, **overrides: object
+    tmp_path,
+    trace_payload: object,
+    spans_payload: object,
+    evaluator_payload: object | None = None,
+    **overrides: object,
 ) -> IntakeFileTraceLoader:
     trace_path = tmp_path / "intake-trace.json"
     spans_path = tmp_path / "intake-spans.json"
@@ -941,6 +964,10 @@ def _file_loader(
         "spans_path": spans_path,
         "workspace": WORKSPACE,
     }
+    if evaluator_payload is not None:
+        results_path = tmp_path / "intake-evaluator-results.json"
+        results_path.write_text(json.dumps(evaluator_payload, indent=2))
+        values["evaluator_results_path"] = results_path
     values.update(overrides)
     return IntakeFileTraceLoader(config=IntakeFileTraceConfig.model_validate(values))
 
@@ -964,20 +991,16 @@ def _walk(spans):
 
 
 @pytest.mark.parametrize("trace_shape", ["object", "page"])
-@pytest.mark.parametrize("spans_shape", ["list", "page", "pages"])
-def test_intake_file_loader_matches_online_loader(tmp_path, trace_shape, spans_shape):
+def test_intake_file_loader_matches_online_loader(tmp_path, trace_shape):
     online = IntakeTraceLoader(config=_config(page_size=1), transport=_mock_transport(_handler))
     expected = online.load().get_trace_by_id(TRACE_ID)
 
     with_url = _file_loader(
-        tmp_path,
-        _trace_shapes()[trace_shape],
-        _span_shapes()[spans_shape],
-        base_url=f"{BASE_URL}/",
+        tmp_path, _trace_shapes()[trace_shape], _cli_spans(), base_url=f"{BASE_URL}/"
     )
     assert with_url.load().get_trace_by_id(TRACE_ID).model_dump() == expected.model_dump()
 
-    loader = _file_loader(tmp_path, _trace_shapes()[trace_shape], _span_shapes()[spans_shape])
+    loader = _file_loader(tmp_path, _trace_shapes()[trace_shape], _cli_spans())
     snapshot = loader.load()
     assert loader.load() is snapshot
     trace = snapshot.get_trace_by_id(TRACE_ID)
@@ -1011,29 +1034,112 @@ def test_intake_file_loader_matches_online_loader(tmp_path, trace_shape, spans_s
     assert description["distinct_logical_cases"] == 1
     assert description["workspace"] == WORKSPACE
     assert description["query"]["trace_id"] == TRACE_ID
+    assert "evaluator_results_path" not in description["query"]
+
+
+def test_intake_file_loader_matches_online_evaluator_results(tmp_path):
+    results = [
+        _evaluator_result("result-1", "root", 1.0),
+        _evaluator_result("result-2", "tool", 0.5),
+        _evaluator_result("result-3", "span-of-another-trace", 0.0),
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/evaluator-results"):
+            assert request.url.params["filter[session_id]"] == "session-1"
+            size = len(results)
+            return httpx.Response(
+                200,
+                json={
+                    "data": results,
+                    "pagination": _pagination(page=1, total_pages=1, total_results=size, size=size),
+                },
+            )
+        return _handler(request)
+
+    online = IntakeTraceLoader(config=_config(page_size=1), transport=httpx.MockTransport(handler))
+    expected = online.load().get_trace_by_id(TRACE_ID)
+    assert expected.evaluator_results
+
+    loader = _file_loader(
+        tmp_path, _trace_record(), _cli_spans(), _merged_page(results), base_url=BASE_URL
+    )
+    trace = loader.load().get_trace_by_id(TRACE_ID)
+    assert trace.model_dump() == expected.model_dump()
+    assert loader.describe()["query"]["evaluator_results_path"] == str(
+        (tmp_path / "intake-evaluator-results.json").resolve()
+    )
+
+
+def test_intake_file_loader_rejects_a_single_server_page(tmp_path):
+    for page in _server_span_pages():
+        with pytest.raises(
+            IntakeLoadError, match="spans file is incomplete; export with --all-pages"
+        ):
+            _file_loader(tmp_path, _trace_record(), page).load()
+
+    truncated = _merged_page([_evaluator_result("result-1", "root", 1.0)])
+    truncated["pagination"]["total_results"] = 2
+    with pytest.raises(
+        IntakeLoadError, match="evaluator results file is incomplete; export with --all-pages"
+    ):
+        _file_loader(tmp_path, _trace_record(), _cli_spans(), truncated).load()
 
 
 def test_intake_file_loader_rejects_span_from_another_trace(tmp_path):
-    spans = _span_shapes()["list"]
-    assert isinstance(spans, list)
-    spans[0]["trace_id"] = "trace-2"
+    spans = _cli_spans()
+    spans["data"][0]["trace_id"] = "trace-2"
 
-    with pytest.raises(
-        IntakeLoadError, match="^.*span trace_id does not match the selected trace$"
-    ):
+    with pytest.raises(IntakeLoadError, match="belongs to trace 'trace-2', not 'trace-1'"):
         _file_loader(tmp_path, _trace_record(), spans).load()
+
+
+def test_intake_file_loader_requires_the_root_span(tmp_path):
+    with pytest.raises(IntakeLoadError, match="does not contain the trace's root span"):
+        _file_loader(tmp_path, _trace_record(), _merged_page([])).load()
+
+
+@pytest.mark.parametrize("record", ["trace", "span", "evaluator_result"])
+def test_intake_file_loader_rejects_another_workspace(tmp_path, record):
+    trace, spans = _trace_record(), _cli_spans()
+    results = _merged_page([_evaluator_result("result-1", "root", 1.0)])
+    changed = {"trace": trace, "span": spans["data"][1], "evaluator_result": results["data"][0]}
+    changed[record]["workspace"] = "other-workspace"
+
+    with pytest.raises(IntakeLoadError, match="do not match the configured workspace"):
+        _file_loader(tmp_path, trace, spans, results).load()
+
+
+def test_intake_file_loader_errors_do_not_echo_payloads(tmp_path):
+    trace = _trace_record()
+    trace["input"] = "SECRET-TRACE-INPUT"
+    del trace["status"]
+    with pytest.raises(IntakeLoadError) as missing_status:
+        _file_loader(tmp_path, trace, _cli_spans()).load()
+    assert "status" in str(missing_status.value)
+    assert "SECRET-TRACE-INPUT" not in str(missing_status.value)
+
+    spans = _cli_spans()
+    spans["data"][0]["input"] = {"messages": ["SECRET-SPAN-INPUT"]}
+    with pytest.raises(IntakeLoadError) as object_input:
+        _file_loader(tmp_path, _trace_record(), spans).load()
+    assert "input" in str(object_input.value)
+    assert "SECRET-SPAN-INPUT" not in str(object_input.value)
 
 
 @pytest.mark.parametrize(
     ("trace_payload", "spans_payload"),
     [
-        ([_trace_record()], []),
-        ({"data": []}, []),
-        ({"data": [_trace_record(), _trace_record("trace-2")]}, []),
+        ([_trace_record()], _cli_spans()),
+        ({"data": []}, _cli_spans()),
+        ({"data": [_trace_record(), _trace_record("trace-2")]}, _cli_spans()),
+        (_trace_record(), []),
+        (_trace_record(), _server_span_pages()),
+        (_trace_record(), {"data": _cli_spans()["data"]}),
         (_trace_record(), {"spans": []}),
         (_trace_record(), "spans"),
-        (_trace_record(), [{"data": "spans"}]),
-        (_trace_record(), [["span"]]),
+        (_trace_record(), {"data": "spans", "pagination": {}}),
+        (_trace_record(), {"data": [["span"]], "pagination": {}}),
     ],
 )
 def test_intake_file_loader_rejects_unsupported_shapes(tmp_path, trace_payload, spans_payload):
