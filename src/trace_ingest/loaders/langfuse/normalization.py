@@ -257,12 +257,14 @@ def _tool_definitions(
     ``input.tools`` array. GENERATION catalogs describe the tools offered to that
     model call and therefore take precedence; root AGENT catalogs are only a
     fallback for reduced traces with no generation observations, and each keeps
-    its own definitions. Generation definitions are declared once on the
-    generations' nearest AGENT ancestor, because the TOOL observations a
-    generation triggers are usually its siblings under that agent. A generation
-    with no AGENT ancestor keeps its own definitions. When a generation has no
-    readable catalog, or the selected observations offer different tool names,
-    nothing is attached, so the trace has no catalog.
+    its own definitions. Generations under one nearest AGENT ancestor that offer
+    the same tool names declare them once on that agent, because the TOOL
+    observations a generation triggers are usually its siblings under that agent.
+    Generations that offer different tool names, or that have no AGENT ancestor,
+    keep their own definitions. ``trace_ingest.catalog.tool_catalog`` therefore
+    returns the union, or None when two declarations give one name different
+    schemas. When a generation has no readable catalog, nothing is attached, so
+    the trace has no catalog.
     """
 
     kinds: dict[str, SpanKind] = {}
@@ -286,11 +288,6 @@ def _tool_definitions(
     declared = {key: catalog for key, catalog in selected.items() if catalog is not None}
     if len(declared) != len(selected):
         return {}
-    if (
-        len({frozenset(definition.name for definition in catalog) for catalog in declared.values()})
-        > 1
-    ):
-        return {}
     if not generations:
         return declared
 
@@ -302,7 +299,10 @@ def _tool_definitions(
         by_agent.setdefault(agent_id, []).append(generation_id)
     attached: dict[str, list[ToolDefinition]] = {}
     for agent_id, members in by_agent.items():
-        if agent_id is None:
+        offered = {
+            frozenset(definition.name for definition in declared[member]) for member in members
+        }
+        if agent_id is None or len(offered) > 1:
             attached.update((member, declared[member]) for member in members)
             continue
         distinct: dict[str, ToolDefinition] = {}

@@ -657,8 +657,8 @@ def test_loader_extracts_tool_catalog_from_supported_langfuse_input(
                 {"tools": [{"name": "root_only", "parameters": {"type": "object"}}]},
                 {"tools": [{"name": "write", "parameters": {"type": "object"}}]},
             ],
-            None,
-            id="differing-generation-catalogs",
+            {"root_only": {"type": "object"}, "write": {"type": "object"}},
+            id="differing-generation-catalogs-union",
         ),
         pytest.param(
             [
@@ -782,6 +782,102 @@ def test_tool_beside_the_generation_has_the_agent_definitions_in_scope() -> None
     }
     generation = normalized.root_spans[0].children[0]
     assert generation.tool_definitions is UNSET
+
+
+def test_root_agents_with_different_tools_give_the_union() -> None:
+    roots = [
+        observation(
+            f"agent-{name}",
+            observation_type="AGENT",
+            start_time=START + timedelta(seconds=index),
+            input_value={"tools": [{"name": name, "parameters": {"type": "object"}}]},
+        )
+        for index, name in enumerate(["read", "write"])
+    ]
+    full_trace = provider_trace(observations=roots)
+    client = FakeClient(pages=[([full_trace], 1)], details={"trace-1": full_trace})
+
+    normalized = next(
+        iter(
+            LangfuseV3TraceLoader(
+                LangfuseTraceConfig(START, END, base_url="https://langfuse.example.com"),
+                client=client,
+            ).load()
+        )
+    )
+
+    names = []
+    for span in normalized.root_spans:
+        assert span.tool_definitions is not UNSET
+        names.append([definition.name for definition in span.tool_definitions])
+    assert names == [["read"], ["write"]]
+    assert tool_catalog(normalized) == {"read": {"type": "object"}, "write": {"type": "object"}}
+
+
+def test_differing_generations_keep_their_own_tools_and_agreeing_ones_use_the_agent() -> None:
+    def tools(*names: str) -> dict[str, object]:
+        return {"tools": [{"name": name, "parameters": {"type": "object"}} for name in names]}
+
+    full_trace = provider_trace(
+        observations=[
+            observation("root", observation_type="AGENT", input_value={"task": "find it"}),
+            observation(
+                "read-call",
+                parent_id="root",
+                observation_type="GENERATION",
+                start_time=START + timedelta(seconds=1),
+                input_value=tools("read"),
+            ),
+            observation(
+                "write-call",
+                parent_id="root",
+                observation_type="GENERATION",
+                start_time=START + timedelta(seconds=2),
+                input_value=tools("write"),
+            ),
+            observation(
+                "subagent",
+                parent_id="root",
+                observation_type="AGENT",
+                start_time=START + timedelta(seconds=3),
+                input_value={"task": "search"},
+            ),
+            *(
+                observation(
+                    f"search-call-{index}",
+                    parent_id="subagent",
+                    observation_type="GENERATION",
+                    start_time=START + timedelta(seconds=4 + index),
+                    input_value=tools("search"),
+                )
+                for index in range(2)
+            ),
+        ]
+    )
+    client = FakeClient(pages=[([full_trace], 1)], details={"trace-1": full_trace})
+
+    normalized = next(
+        iter(
+            LangfuseV3TraceLoader(
+                LangfuseTraceConfig(START, END, base_url="https://langfuse.example.com"),
+                client=client,
+            ).load()
+        )
+    )
+
+    declared: dict[str, list[str]] = {}
+    pending = list(normalized.root_spans)
+    while pending:
+        span = pending.pop()
+        pending.extend(span.children)
+        if span.tool_definitions is not UNSET:
+            declared[span.id] = [definition.name for definition in span.tool_definitions]
+    assert declared == {"read-call": ["read"], "write-call": ["write"], "subagent": ["search"]}
+    assert tool_catalog(normalized) == {
+        "read": {"type": "object"},
+        "write": {"type": "object"},
+        "search": {"type": "object"},
+    }
 
 
 @pytest.mark.parametrize(
