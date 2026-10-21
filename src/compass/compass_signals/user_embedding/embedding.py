@@ -21,8 +21,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 import numpy as np
-from litellm import EmbeddingResponse
-from openai import APIConnectionError, OpenAI
+from litellm import APIConnectionError, EmbeddingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from tokenizers import Tokenizer
 
@@ -30,37 +29,23 @@ _BATCH_SIZE = 100
 logger = logging.getLogger(__name__)
 
 
+class _NoRetries(int):
+    """Zero retries, including in LiteLLM adapters that use ``value or default``."""
+
+    def __new__(cls) -> _NoRetries:
+        return super().__new__(cls, 0)
+
+    def __bool__(self) -> bool:
+        # LiteLLM 1.98.0's embedding adapter replaces plain zero with its default.
+        # Keep numeric zero for the SDK without changing LiteLLM's global state.
+        return True
+
+
 def _request_embeddings(
     *, model: str, api_base: str | None, api_key: str | None, input: list[str], timeout: float
 ) -> EmbeddingResponse:
     import litellm
 
-    resolved_model, provider, resolved_key, resolved_base = litellm.get_llm_provider(
-        model=model, api_base=api_base, api_key=api_key
-    )
-    if provider in {"openai", "nvidia_nim", "together_ai", "litellm_proxy"}:
-        # LiteLLM's OpenAI embedding adapter replaces max_retries=0 with its
-        # default, including on supplied clients. Use the SDK directly so each
-        # scheduler attempt sends exactly one request. Keep LiteLLM alias routing.
-        with OpenAI(
-            api_key=resolved_key
-            or api_key
-            or litellm.api_key
-            or litellm.openai_key
-            or os.getenv("OPENAI_API_KEY"),
-            base_url=resolved_base
-            or api_base
-            or litellm.api_base
-            or os.getenv("OPENAI_BASE_URL")
-            or os.getenv("OPENAI_API_BASE")
-            or "https://api.openai.com/v1",
-            timeout=timeout,
-            max_retries=0,
-        ) as client:
-            response = client.embeddings.create(
-                model=resolved_model, input=input, encoding_format="float"
-            )
-            return EmbeddingResponse(**response.model_dump())
     return litellm.embedding(
         model=model,
         api_base=api_base,
@@ -68,7 +53,7 @@ def _request_embeddings(
         input=input,
         encoding_format="float",
         timeout=timeout,
-        max_retries=0,
+        max_retries=_NoRetries(),
         num_retries=0,
     )
 

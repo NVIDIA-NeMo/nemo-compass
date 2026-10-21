@@ -234,23 +234,31 @@ def test_bad_response_fails_without_retry(generator, monkeypatch, rows):
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("status", [429, 503])
 @pytest.mark.parametrize("retries", [0, 1])
-def test_real_transport_obeys_retry_budget(generator, monkeypatch, retries):
+def test_real_transport_obeys_retry_budget(generator, monkeypatch, retries, status):
     import json
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-    from openai import RateLimitError as SDKRateLimitError
+    import litellm
 
+    default_retries = litellm.DEFAULT_MAX_RETRIES
+    monkeypatch.setattr(litellm, "num_retries", 2)
     received = []
 
     class Endpoint(BaseHTTPRequestHandler):
         def do_POST(self):
             received.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
             if len(received) == 1:
-                status = 429
-                body = {"error": {"message": "try again", "type": "rate_limit_error"}}
+                response_status = status
+                body = {
+                    "error": {
+                        "message": "try again",
+                        "type": "rate_limit_error" if status == 429 else "server_error",
+                    }
+                }
             else:
-                status = 200
+                response_status = 200
                 body = {
                     "object": "list",
                     "model": "qwen",
@@ -264,7 +272,7 @@ def test_real_transport_obeys_retry_budget(generator, monkeypatch, retries):
                     "usage": {"prompt_tokens": 1, "total_tokens": 1},
                 }
             encoded = json.dumps(body).encode()
-            self.send_response(status)
+            self.send_response(response_status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(encoded)))
             self.send_header("Retry-After", "0")
@@ -289,9 +297,12 @@ def test_real_transport_obeys_retry_budget(generator, monkeypatch, retries):
         if retries:
             assert len(generator.generate_batch(["hello"])) == 1
         else:
-            with pytest.raises(SDKRateLimitError):
+            with pytest.raises((litellm.RateLimitError, litellm.ServiceUnavailableError)) as exc:
                 generator.generate_batch(["hello"])
+            assert exc.value.status_code == status
         assert len(received) == retries + 1
+        assert litellm.DEFAULT_MAX_RETRIES == default_retries
+        assert litellm.num_retries == 2
     finally:
         server.shutdown()
         server.server_close()
