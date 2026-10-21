@@ -192,7 +192,10 @@ class _Linearizer:
         if first.output is not UNSET and first.output is not None:
             final = _message_text(first.output)
             if final != self._last_agent_message():
-                self.steps.append(_agent_step(first, message=final))
+                step = _agent_step(first, message=final)
+                if first.end_time is not None:
+                    step["timestamp"] = first.end_time.isoformat()
+                self.steps.append(step)
         for number, step in enumerate(self.steps, start=1):
             step["step_id"] = number
 
