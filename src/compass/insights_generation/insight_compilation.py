@@ -301,7 +301,8 @@ class InsightCompilation(Agent):
         Do not select unrelated spans or every span automatically. Omit spans when
         the evidence concerns the whole trace or no specific span can be identified.
         Preserve existing evidence spans when their traces are unavailable.
-        Leave all evidence url fields unset; the application resolves URLs after compilation.
+        Leave all evidence url and session_id fields unset; the application resolves them after
+        compilation.
 
         After validating, narrowing, and merging insights, find all traces that support
         each final claim. Keep only checked examples and existing references in evidence.

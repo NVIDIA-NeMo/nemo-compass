@@ -322,3 +322,37 @@ def test_cli_emits_resolved_span_links(tmp_path, monkeypatch, capsys, select_sig
     assert "https://provider.test/span" not in captured.err
     assert yaml.safe_load(captured.out) == [saved.model_dump()]
     assert "invented.test" not in captured.out + captured.err
+
+
+def test_session_ids_are_resolved_from_traces_and_existing_artifacts_only():
+    old = Insight.model_validate(
+        {
+            "name": "Issue",
+            "description": "Details",
+            "evidence": [
+                {"trace_id": "old", "session_id": "old-session"},
+                {"trace_id": "current", "session_id": "stale-session"},
+            ],
+        }
+    )
+    generated = Insight.model_validate(
+        {
+            "name": old.name,
+            "description": old.description,
+            "evidence": [
+                {"trace_id": "old"},
+                {"trace_id": "current", "session_id": "invented"},
+                {"trace_id": "no-session"},
+            ],
+        }
+    )
+    current = trace("current")
+    current.attributes["logical_case_id"] = "current-session"
+    snapshot = TraceSnapshot([current, trace("no-session")])
+    [resolved] = resolve_trace_links([generated], snapshot, [old])
+    assert {item.trace_id: item.session_id for item in resolved.evidence} == {
+        "old": "old-session",
+        "current": "current-session",
+        "no-session": None,
+    }
+    assert "session_id" not in resolved.model_dump()["evidence"][2]
