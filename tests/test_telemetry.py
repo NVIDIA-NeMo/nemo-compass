@@ -95,7 +95,8 @@ def test_analyzing_telemetry_project_checks_source_endpoint(monkeypatch, capsys,
 @pytest.mark.parametrize(
     "api_key,project", [("", "custom-project"), ("test-key", ""), ("test-key", "custom-project")]
 )
-def test_cli_telemetry_in_fresh_process(tmp_path, api_key, project):
+@pytest.mark.parametrize("tags", [None, "", " , , ", " development, experiment-a,development, ,"])
+def test_cli_telemetry_in_fresh_process(tmp_path, api_key, project, tags):
     """Exercise CLI opt-in, input provenance, library instrumentation, and YAML stdout."""
     source = tmp_path / "input.jsonl"
     source.write_text(
@@ -106,10 +107,15 @@ def test_cli_telemetry_in_fresh_process(tmp_path, api_key, project):
         ).model_dump_json()
         + "\n"
     )
+    environment = {
+        key: value for key, value in os.environ.items() if key != "COMPASS_TELEMETRY_LANGSMITH_TAGS"
+    }
+    if tags is not None:
+        environment["COMPASS_TELEMETRY_LANGSMITH_TAGS"] = tags
     result = subprocess.run(
         [sys.executable, __file__, str(source), str(bool(api_key and project))],
         env={
-            **os.environ,
+            **environment,
             "COMPASS_API_KEY": "dummy",
             "LANGSMITH_API_KEY": "source-key",
             "LANGCHAIN_API_KEY": "legacy-source-key",
@@ -208,6 +214,17 @@ def _run_cli(source, enabled):
             timeout=60,
         )
         root = next(r for r in records if r.name == "compass")
+        expected_tags = (
+            "development,experiment-a"
+            if "development" in os.getenv("COMPASS_TELEMETRY_LANGSMITH_TAGS", "")
+            else None
+        )
+        assert (root.attributes or {}).get("langsmith.span.tags") == expected_tags
+        assert all(
+            "langsmith.span.tags" not in (record.attributes or {})
+            for record in records
+            if record is not root
+        )
         metadata = json.loads(str((root.attributes or {})["metadata"]))
         assert metadata["compass.version"]
         assert metadata["nooa.version"]

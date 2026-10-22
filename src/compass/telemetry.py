@@ -131,6 +131,13 @@ def telemetry_session(config: RunConfig) -> Iterator[OpenInferenceSpan]:
             if api_key:
                 # Use OpenInference span metadata for LangSmith compatibility.
                 root.set_attribute("metadata", json.dumps(_execution_metadata()))
+                tags = [
+                    tag.strip()
+                    for tag in os.getenv("COMPASS_TELEMETRY_LANGSMITH_TAGS", "").split(",")
+                    if tag.strip()
+                ]
+                if tags:
+                    root.set_attribute("langsmith.span.tags", ",".join(dict.fromkeys(tags)))
                 print(
                     f"Compass telemetry: execution content and source provenance to {project}; OTLP trace ID {root.get_span_context().trace_id:032x}",
                     file=sys.stderr,
