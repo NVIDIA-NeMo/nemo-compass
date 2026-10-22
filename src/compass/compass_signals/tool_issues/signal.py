@@ -12,7 +12,6 @@ original pointer supplied by the caller.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import re
 from collections import Counter, defaultdict
@@ -23,6 +22,7 @@ from typing import Any, Literal
 from jsonschema import validators
 from pydantic import BaseModel, Field
 
+from compass.compass_signals._hashing import digest, stable_json
 from compass.compass_signals._trace import walk_spans
 from compass.compass_signals.compass_signals import CompassSignalResult, Problem
 from compass.traces import UNSET, SpanKind, Trace, TraceSnapshot
@@ -115,14 +115,6 @@ STATE_PATTERNS = tuple(
         ),
     )
 )
-
-
-def stable_json(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def digest(value: object) -> str:
-    return hashlib.sha256(stable_json(value).encode("utf-8")).hexdigest()
 
 
 def parse_json(value: object) -> object:

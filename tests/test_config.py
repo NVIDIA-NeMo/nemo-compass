@@ -125,7 +125,9 @@ def test_signals_default_on_and_false_disables_only_that_signal(tmp_path):
     assert all(
         getattr(config.compass_signals, name) is not None
         for name in CompassSignalsConfig.model_fields
+        if name != "cost_efficiency"
     )
+    assert config.compass_signals.cost_efficiency is None
     path = tmp_path / "config.yaml"
     path.write_text(
         "trace:\n  filesystem:\n    path: traces.jsonl\ncompass_signals:\n  ethos_divergence: false\n  tool_issues:\n    retry_threshold: 5\n"
@@ -138,8 +140,11 @@ def test_signals_default_on_and_false_disables_only_that_signal(tmp_path):
             "false",
             "--compass-signals.grader-failure-patterns",
             "true",
+            "--compass-signals.cost-efficiency",
+            "true",
         ]
     )
+    assert config.compass_signals.cost_efficiency is not None
     assert config.compass_signals.ethos_divergence is None
     assert config.compass_signals.user_sentiment is None
     assert config.compass_signals.tool_issues is not None

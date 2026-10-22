@@ -120,10 +120,13 @@ def test_missing_prerequisites_skip_analysis_without_llm_calls(monkeypatch):
     llm = FakeLLMClient()
     progress = []
     results = asyncio.run(
-        _run_compass_signals(CompassSignalsConfig(), snapshot, lambda: llm, progress.append)
+        _run_compass_signals(
+            CompassSignalsConfig(cost_efficiency=True), snapshot, lambda: llm, progress.append
+        )
     )
     assert {item.signal_name for item in results if item.skip_reason} == {
         "tool-issues",
+        "cost-efficiency",
         "ethos-divergence",
         "grader-failure-patterns",
         "user-sentiment",

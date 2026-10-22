@@ -24,6 +24,7 @@ from compass.insights_generation.validation import CandidateProblemRejection
 _SIGNAL_LABELS = {
     "anomaly-and-patterns": "Anomalies and patterns",
     "tool-issues": "Tool issues",
+    "cost-efficiency": "Cost efficiency",
     "ethos-divergence": "Ethos divergence",
     "grader-failure-patterns": "Grader failures",
     "user-sentiment": "Sentiment",
@@ -32,6 +33,7 @@ _SKIP_LABELS = {
     "No ETHOS.md": "no ETHOS.md found",
     "No evaluator results": "no results",
     "No embedding backend configured": "no embedding backend",
+    "No LLM spans with token counts": "no token counts",
 }
 _LOG_INTERVAL = 10
 _SEVERITY_STYLES = {"high": "bold red", "med": "bold yellow", "low": "bold cyan"}
