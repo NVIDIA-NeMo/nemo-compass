@@ -14,11 +14,14 @@ from urllib.parse import quote
 
 from pydantic import JsonValue
 
+from trace_ingest import nemo_relay
+from trace_ingest.loaders.langfuse import langfuse_sdk
 from trace_ingest.loaders.langfuse.config import LangfuseTraceLoadError
 from trace_ingest.models import (
     UNSET,
     Span,
     SpanKind,
+    TokenCounts,
     ToolCall,
     ToolDefinition,
     ToolResult,
@@ -398,6 +401,7 @@ def _normalize_observation(
 ) -> Span:
     observation_id = str(observation.id)
     kind, subtype = _map_observation_kind(observation.type)
+    is_llm = kind is SpanKind.LLM
     started_at = _started_at(observation)
     ended_at = _optional_datetime(observation.end_time)
     pointer: dict[str, JsonValue] = {**base_pointer, "observation_id": observation_id}
@@ -408,6 +412,7 @@ def _normalize_observation(
     status_message = str(observation.status_message) if observation.status_message else None
     error = status_message or "Langfuse observation level ERROR" if level == "ERROR" else None
     name = str(observation.name) if observation.name else None
+    model = str(observation.model) if observation.model else None
     return Span(
         id=observation_id,
         kind=kind,
@@ -416,7 +421,11 @@ def _normalize_observation(
         input=_io_value(observation.input),
         output=_io_value(observation.output),
         cost_usd=_observation_cost(observation),
-        model=str(observation.model) if observation.model else None,
+        model=model,
+        token_counts=_read_token_counts(observation) if is_llm else None,
+        llm_tools=_read_tools(observation) if is_llm else None,
+        llm_params=_read_params(observation) if is_llm else None,
+        agent_id=_read_agent_id(observation),
         tool_name=name if kind is SpanKind.TOOL else None,
         error=error,
         attributes={
@@ -450,6 +459,33 @@ def _map_observation_kind(value: object) -> tuple[SpanKind, str | None]:
         return SpanKind(provider_type), None
     except ValueError:
         return SpanKind.UNKNOWN, provider_type
+
+
+# Each LLM field is read from the first source that records it: NeMo Relay
+# first, then the sources without Relay. The Relay readers also read the
+# OpenInference attributes, which any OpenInference instrumentation writes.
+
+
+def _read_token_counts(observation: LangfuseObservation) -> TokenCounts | None:
+    metadata = observation.metadata
+    return nemo_relay.token_counts(metadata, route=observation.name) or langfuse_sdk.token_counts(
+        metadata, observation.usage_details
+    )
+
+
+def _read_tools(observation: LangfuseObservation) -> list[JsonValue] | None:
+    return nemo_relay.tools(observation.metadata)
+
+
+def _read_params(observation: LangfuseObservation) -> dict[str, JsonValue] | None:
+    return nemo_relay.params(observation.metadata)
+
+
+def _read_agent_id(observation: LangfuseObservation) -> str | None:
+    """Only Relay records an agent ID."""
+
+    metadata = observation.metadata
+    return nemo_relay.agent_id(metadata) if nemo_relay.is_relay(metadata) else None
 
 
 def _started_at(observation: LangfuseObservation) -> datetime:
