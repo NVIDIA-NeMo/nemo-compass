@@ -46,11 +46,6 @@ compass_signals:
 Set `EMBEDDING_API_KEY` in your [environment file](model-access.md#credentials).
 Replace the model alias and endpoint with your provider’s values.
 
-Remote embeddings use up to 8 concurrent batches of 128 messages by default.
-Failed batches retry independently with bounded backoff, honoring server retry
-delays. Set `max_concurrency` and `batch_size` under `litellm` to override these
-defaults; run `compass --help-all` for all tuning options.
-
 To run the 8B embedding model locally, add `local-embedding` to the extras in your
 install command. Keep your source extra too. For LangSmith:
 
