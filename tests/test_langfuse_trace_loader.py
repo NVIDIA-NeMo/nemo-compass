@@ -1607,6 +1607,10 @@ def test_ingestion_reads_each_producer_and_provider(
     assert span.kind is SpanKind.LLM
     assert span.token_counts is not None
     assert span.token_counts.model_dump() == token_counts
-    names = [tool.get("name") for tool in span.llm_tools] if span.llm_tools is not None else None
+    names = (
+        [tool.get("name") for tool in span.llm_tools if isinstance(tool, dict)]
+        if span.llm_tools is not None
+        else None
+    )
     assert names == tool_names
     assert span.llm_params == params

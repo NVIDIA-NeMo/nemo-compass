@@ -45,7 +45,11 @@ def token_counts(
 
     if not is_langfuse_sdk(metadata):
         return None
-    usage = {key: value for key, value in (usage_details or {}).items() if count(value) is not None}
+    usage = {
+        key: tokens
+        for key, value in (usage_details or {}).items()
+        if (tokens := count(value)) is not None
+    }
     if "input" not in usage or "output" not in usage:
         return None
     output = usage["output"] + usage.get("output_reasoning_tokens", 0)
