@@ -70,7 +70,9 @@ USAGE = {"input_tokens": 3, "output_tokens": 50, "cache_read_input_tokens": 4000
     ],
 )
 def test_anthropic_request_ttl(request_body, expected):
-    assert anthropic.token_counts(USAGE, request=request_body).cache_write_ttl_seconds == expected
+    result = anthropic.token_counts(USAGE, request=request_body)
+    assert result is not None
+    assert result.cache_write_ttl_seconds == expected
 
 
 def test_langfuse_sdk_reads_anthropic_cache_creation_key():
@@ -82,6 +84,7 @@ def test_langfuse_sdk_reads_anthropic_cache_creation_key():
         "cache_creation_input_tokens": 21621,
     }
     result = langfuse_sdk.token_counts({"scope": {"name": "langfuse-sdk"}}, usage)
+    assert result is not None
     assert counts(result) == (3, 40000, 50, 21621)
     assert result.cache_write_ttl_seconds is None
 
