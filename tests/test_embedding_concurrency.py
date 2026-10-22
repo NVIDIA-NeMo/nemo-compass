@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import logging
 import threading
 from collections import Counter
 from email.utils import formatdate
@@ -22,8 +21,10 @@ from compass.compass_signals.user_embedding.embedding import (
 
 
 @pytest.fixture
-def generator(monkeypatch):
-    gen = UserEmbeddingGenerator(litellm=LiteLLMEmbeddingConfig(model="openai/qwen", batch_size=1))
+def generator():
+    gen = UserEmbeddingGenerator(
+        litellm=LiteLLMEmbeddingConfig(model="openai/qwen", batch_size=1, max_concurrency=1)
+    )
     gen.remote_tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0}, unk_token="[UNK]"))
     return gen
 
@@ -58,36 +59,78 @@ def test_rolling_queue_refills_before_slow_request_finishes(generator, monkeypat
     assert [x.data for x in actual] == [bytes([i]) for i in range(6)]
 
 
-def test_rate_limit_reduces_once_per_generation_and_recovers(generator, monkeypatch, caplog):
+@pytest.mark.parametrize("concurrency", [None, 1, 2])
+def test_fixed_pool_starts_at_configured_limit(generator, monkeypatch, concurrency):
+    generator.litellm = LiteLLMEmbeddingConfig(
+        model="qwen",
+        batch_size=1,
+        **({} if concurrency is None else {"max_concurrency": concurrency}),
+    )
+    concurrency = 8 if concurrency is None else concurrency
+    barrier = threading.Barrier(concurrency, timeout=5)
+    lock = threading.Lock()
+    active = peak = 0
+
+    def worker(batch, config, key):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            barrier.wait()
+            return result(batch)
+        finally:
+            with lock:
+                active -= 1
+
+    monkeypatch.setattr(generator, "_remote_batch", worker)
+    actual = generator.generate_batch(["a"] * 16)
+    assert peak == concurrency
+    assert [x.data for x in actual] == [bytes([i]) for i in range(16)]
+
+
+def test_default_batch_size(generator, monkeypatch):
+    generator.litellm = LiteLLMEmbeddingConfig(model="qwen")
+    sizes = []
+
+    def worker(batch, config, key):
+        sizes.append(len(batch.inputs))
+        return [UserEmbedding(b"", count) for count in batch.counts]
+
+    monkeypatch.setattr(generator, "_remote_batch", worker)
+    assert len(generator.generate_batch(["a"] * 129)) == 129
+    assert sorted(sizes) == [1, 128]
+
+
+@pytest.mark.parametrize("error", [limited(), APIError(503, "unavailable", "openai", "qwen")])
+def test_retry_only_failed_batch_while_other_workers_continue(generator, monkeypatch, error):
+    generator.litellm.max_concurrency = 2
+    sleeping = threading.Event()
+    next_finished = threading.Event()
     calls = Counter()
-    barrier = threading.Barrier(2, timeout=5)
-    clock = [100.0]
     sleeps = []
 
     def worker(batch, config, key):
         calls[batch.index] += 1
-        if batch.index in (1, 2) and calls[batch.index] == 1:
-            barrier.wait()
-            raise limited(7)
+        if batch.index == 0 and calls[0] == 1:
+            raise error
+        if batch.index == 1:
+            assert sleeping.wait(5)
+        if batch.index == 2:
+            next_finished.set()
         return result(batch)
 
     def sleep(delay):
         sleeps.append(delay)
-        clock[0] += delay
+        sleeping.set()
+        assert next_finished.wait(5)
 
     monkeypatch.setattr(generator, "_remote_batch", worker)
-    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(module.time, "sleep", sleep)
-    with caplog.at_level(logging.INFO, logger=module.__name__):
-        actual = generator.generate_batch([str(i) for i in range(12)])
-    assert [x.data for x in actual] == [bytes([i]) for i in range(12)]
-    assert calls[1] == calls[2] == 2
-    assert sum(calls.values()) == 14
-    assert sleeps == [7]
-    assert caplog.text.count("after rate limit") == 1
-    assert "concurrency 2 -> 1" in caplog.text
-    assert caplog.text.count("concurrency 1 -> 2") == 2
-    assert "concurrency 3 -> 4" in caplog.text
+    actual = generator.generate_batch(["a"] * 6)
+    assert [x.data for x in actual] == [bytes([i]) for i in range(6)]
+    assert calls == Counter({0: 2, 1: 1, 2: 1, 3: 1, 4: 1, 5: 1})
+    assert len(sleeps) == 1
 
 
 @pytest.mark.parametrize(
@@ -316,25 +359,6 @@ def test_real_transport_obeys_retry_budget(generator, monkeypatch, retries, stat
         thread.join(timeout=5)
 
 
-def test_server_error_retries_without_reducing_concurrency(generator, monkeypatch, caplog):
-    clock = [100.0]
-    calls = Counter()
-
-    def worker(batch, config, key):
-        calls[batch.index] += 1
-        if batch.index == 1 and calls[1] == 1:
-            raise APIError(503, "unavailable", "openai", "qwen")
-        return result(batch)
-
-    monkeypatch.setattr(generator, "_remote_batch", worker)
-    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(module.time, "sleep", lambda delay: clock.__setitem__(0, clock[0] + delay))
-    with caplog.at_level(logging.INFO, logger=module.__name__):
-        generator.generate_batch(["a"] * 8)
-    assert calls[1] == 2
-    assert "after rate limit" not in caplog.text
-
-
 def test_retry_budget_does_not_retry_before_server_delay(generator, monkeypatch):
     generator.litellm.retry_timeout = 5
     calls = []
@@ -368,89 +392,21 @@ def test_retry_budget_includes_elapsed_retries(generator, monkeypatch):
     assert calls == [0, 0]
 
 
-def test_multiple_rate_limits_at_cap_halve_once(generator, monkeypatch, caplog):
-    groups = [(0,), (1, 2), (3, 4, 5), (6, 7, 8, 9)]
-    barriers = {group: threading.Barrier(len(group), timeout=5) for group in groups}
-    calls = Counter()
+def test_expired_retry_budget_after_sleep_does_not_resubmit(generator, monkeypatch):
+    generator.litellm.retry_timeout = 2
     clock = [100.0]
-    lock = threading.Lock()
-    active = peak = 0
+    calls = []
 
     def worker(batch, config, key):
-        nonlocal active, peak
-        with lock:
-            calls[batch.index] += 1
-            active += 1
-            peak = max(peak, active)
-        try:
-            if calls[batch.index] == 1 and batch.index < 10:
-                group = next(g for g in groups if batch.index in g)
-                barriers[group].wait()
-                if batch.index >= 6:
-                    raise limited(2)
-            return result(batch)
-        finally:
-            with lock:
-                active -= 1
+        calls.append(batch.index)
+        raise limited(1)
 
     monkeypatch.setattr(generator, "_remote_batch", worker)
     monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(module.time, "sleep", lambda delay: clock.__setitem__(0, clock[0] + delay))
-    with caplog.at_level(logging.INFO, logger=module.__name__):
-        result_rows = generator.generate_batch(["a"] * 10)
-    assert peak == 4
-    assert [x.data for x in result_rows] == [bytes([i]) for i in range(10)]
-    assert all(calls[i] == 2 for i in range(6, 10))
-    assert caplog.text.count("after rate limit") == 1
-    assert "concurrency 4 -> 2" in caplog.text
-
-
-def test_late_success_from_before_rate_limit_does_not_accelerate_recovery(
-    generator, monkeypatch, caplog
-):
-    generator.litellm.max_retry_wait = 0.001
-    groups = [(0,), (1, 2), (3, 4, 5), (6, 7, 8, 9)]
-    barriers = {group: threading.Barrier(len(group), timeout=5) for group in groups}
-    retry_started = threading.Event()
-    rate_limit_observed = threading.Event()
-    calls = Counter()
-
-    def worker(batch, config, key):
-        calls[batch.index] += 1
-        if batch.index == 6 and calls[6] == 2:
-            retry_started.set()
-        elif batch.index < 10:
-            group = next(g for g in groups if batch.index in g)
-            barriers[group].wait()
-            if batch.index == 6:
-                raise limited(0)
-            if batch.index == 9:
-                # Keep an old request alive until work resumes after the reduction.
-                assert retry_started.wait(5)
-            if batch.index in (7, 8):
-                assert rate_limit_observed.wait(5)
-        if batch.index == 10:
-            assert retry_started.wait(5)
-        return result(batch)
-
-    retry_delay = module._retry_delay
-
-    def observe_rate_limit(error, attempt, max_wait):
-        delay = retry_delay(error, attempt, max_wait)
-        rate_limit_observed.set()
-        return delay
-
-    monkeypatch.setattr(module, "_retry_delay", observe_rate_limit)
-    monkeypatch.setattr(generator, "_remote_batch", worker)
-    with caplog.at_level(logging.INFO, logger=module.__name__):
-        actual = generator.generate_batch(["a"] * 11)
-    assert [x.data for x in actual] == [bytes([i]) for i in range(11)]
-    assert calls[6] == 2
-    assert "concurrency 4 -> 2 after rate limit" in caplog.text
-    # Only batch 10 is a fresh success after backoff. The late batch 9 and
-    # recovered batch 6 must not provide the second success needed to grow.
-    recovery_log = caplog.text.split("concurrency 4 -> 2 after rate limit", 1)[1]
-    assert "concurrency 2 -> 3" not in recovery_log
+    monkeypatch.setattr(module.time, "sleep", lambda delay: clock.__setitem__(0, clock[0] + 3))
+    with pytest.raises(RateLimitError):
+        generator.generate_batch(["a"])
+    assert calls == [0]
 
 
 @pytest.mark.parametrize(
@@ -477,7 +433,7 @@ def test_millisecond_retry_header(monkeypatch, milliseconds, seconds, expected):
     assert module._retry_delay(error, 1, 60) == expected
 
 
-def test_millisecond_retry_header_pauses_submissions(generator, monkeypatch):
+def test_millisecond_retry_header_delays_retry(generator, monkeypatch):
     clock = [100.0]
     starts = []
     sleeps = []
