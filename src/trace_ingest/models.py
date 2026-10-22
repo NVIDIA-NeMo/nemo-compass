@@ -83,18 +83,18 @@ class ToolCall(_TraceModel):
         default=UNSET,
         description="Whether the result returned usable data; omit when the source cannot say.",
     )
-    results: list[ToolResult] = Field(
-        default_factory=list,
+    results: list[ToolResult] | UNSET = Field(
+        default=UNSET,
         description=(
-            "Source results matched to this call, in source order. When non-empty, its "
-            "length equals result_count. An empty list with a positive result_count means "
-            "the results were not recorded, as in traces written before schema version 2."
+            "Source results matched to this call, in source order; its length equals "
+            "result_count. Omit when the results were not recorded, as in traces written "
+            "before schema version 2."
         ),
     )
 
     @model_validator(mode="after")
     def results_match_count(self) -> ToolCall:
-        if self.results and len(self.results) != self.result_count:
+        if self.results is not UNSET and len(self.results) != self.result_count:
             raise ValueError("result_count must equal len(results)")
         return self
 

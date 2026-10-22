@@ -29,7 +29,7 @@ from typing import Any, TypedDict, Unpack
 from pydantic import JsonValue
 
 from compass.traces import UNSET, Span, SpanKind, ToolCall, Trace, TraceAggregate
-from trace_ingest.models import ToolDefinition
+from trace_ingest.models import ToolDefinition, ToolResult
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "src" / "compass" / "data"
@@ -170,6 +170,11 @@ class TraceBuilder:
                 instrumentation_alias_of=fields.get("instrumentation_alias_of"),
                 prior_user_text=fields.get("prior_user_text") or self.task_text,
                 returned_data=fields.get("returned_data", UNSET),
+                # Each matched result carries the recorded output; a duplicate
+                # delivery repeats it. is_error mirrors the recorded flag, if any.
+                results=[
+                    ToolResult(content=result, is_error=explicit_error) for _ in range(result_count)
+                ],
             ),
         }
         if not result_is_missing:

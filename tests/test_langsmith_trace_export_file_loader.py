@@ -15,7 +15,7 @@ from compass.trace_loaders.langsmith import (
     LangSmithTraceLoadError,
 )
 from compass.traces import SpanKind
-from trace_ingest.models import ToolResult
+from trace_ingest.models import UNSET, ToolResult
 
 
 def trace_export_run_record(
@@ -383,4 +383,5 @@ def test_tool_results_mark_errors_and_match_result_counts(tmp_path):
     assert calls["tool-1"].results == [ToolResult(content=spans["tool-1"].output, is_error=True)]
     assert calls["tool-2"].results == [ToolResult(content=spans["tool-2"].output, is_error=None)]
     for call in calls.values():
+        assert call.results is not UNSET
         assert len(call.results) == call.result_count

@@ -623,6 +623,59 @@ def test_intake_atif_definitions_without_owner_are_a_gap():
     ]
 
 
+@pytest.mark.parametrize(
+    "status, payload, is_error, result_attributes, explicit_error, error",
+    [
+        ("success", {}, False, {}, False, None),
+        (
+            "success",
+            {"is_error": True},
+            None,
+            {"is_error_status": "conflicting"},
+            True,
+            "ATIF tool result reported is_error",
+        ),
+        ("error", {"is_error": False}, None, {"is_error_status": "conflicting"}, True, "boom"),
+        ("error", {"is_error": True}, True, {}, True, "boom"),
+        (
+            "unknown",
+            {"extra": {"is_error": True}},
+            True,
+            {},
+            True,
+            "ATIF tool result reported is_error",
+        ),
+    ],
+)
+def test_intake_atif_tool_result_combines_status_and_payload_flag(
+    status, payload, is_error, result_attributes, explicit_error, error
+):
+    trace = next(
+        iter(
+            _loader_for_records(
+                [
+                    _span_record("root"),
+                    _span_record(
+                        "tool",
+                        parent_span_id="root",
+                        kind="TOOL",
+                        status=status,
+                        error_message="boom" if status == "error" else None,
+                        output=json.dumps({"source_call_id": "call-1", "content": "x", **payload}),
+                    ),
+                ]
+            ).load()
+        )
+    )
+
+    tool = trace.root_spans[0].children[0]
+    assert tool.tool_call.results == [
+        ToolResult(content="x", is_error=is_error, attributes=result_attributes)
+    ]
+    assert tool.attributes["explicit_error"] is explicit_error
+    assert tool.error == error
+
+
 @pytest.mark.parametrize("query_limit", [None, 5])
 @pytest.mark.parametrize("shared_limit", [None, 1])
 def test_intake_shared_limit_maps_to_query(query_limit, shared_limit):

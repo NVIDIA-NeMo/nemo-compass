@@ -30,7 +30,7 @@ from pydantic import (
     model_validator,
 )
 
-from trace_ingest.loaders.atif import tool_definitions_from_atif
+from trace_ingest.loaders.atif import TOOL_ERROR, tool_definitions_from_atif, tool_result_from_atif
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
     UNSET,
@@ -639,33 +639,54 @@ def _normalize_span(
     output_value = _payload(raw, "output")
     kind, subtype = _span_kind(raw.kind)
     tool_call: ToolCall | None = None
+    payload_result: ToolResult | None = None
     tool_name = raw.tool_name
     if kind is SpanKind.TOOL and raw.source == "atif":
-        input_value, output_value, tool_name, tool_call = _normalize_atif_tool_payload(
-            raw,
-            input_value=input_value,
-            output_value=output_value,
+        input_value, output_value, tool_name, tool_call, payload_result = (
+            _normalize_atif_tool_payload(raw, input_value=input_value, output_value=output_value)
         )
 
     started_at = _aware_utc(raw.started_at)
     ended_at = _aware_utc(raw.ended_at) if raw.ended_at is not None else None
     duration_ms = (ended_at - started_at).total_seconds() * 1000.0 if ended_at is not None else None
-    explicit_error = (
+    status_flag = (
         True
         if raw.status is IntakeStatus.ERROR
         else False
         if raw.status is IntakeStatus.SUCCESS
         else None
     )
+    result_is_error = status_flag
+    result_attributes: dict[str, JsonValue] = {}
+    if payload_result is not None:
+        # The ATIF payload flag and the Intake span status describe the same outcome.
+        result_attributes = dict(payload_result.attributes)
+        if result_is_error is None:
+            result_is_error = payload_result.is_error
+        elif payload_result.is_error not in (None, result_is_error):
+            result_is_error = None
+            result_attributes["is_error_status"] = "conflicting"
+    # As in the ATIF loader, the span failed when any recorded flag reports an error.
+    explicit_error = (
+        True
+        if status_flag is True or (payload_result is not None and payload_result.is_error is True)
+        else result_is_error
+    )
     error = None
     if raw.status is IntakeStatus.ERROR:
         error = raw.error_message or raw.error_type or "Intake span status error"
+    elif explicit_error is True:
+        error = TOOL_ERROR
     if kind is SpanKind.TOOL:
         details = tool_call or ToolCall()
         results = (
             []
             if output_value is UNSET
-            else [ToolResult(content=output_value, is_error=explicit_error)]
+            else [
+                ToolResult(
+                    content=output_value, is_error=result_is_error, attributes=result_attributes
+                )
+            ]
         )
         tool_call = details.model_copy(
             update={"index": tool_call_index, "result_count": len(results), "results": results}
@@ -759,9 +780,10 @@ def _normalize_atif_tool_payload(
     *,
     input_value: JsonValue | UNSET,
     output_value: JsonValue | UNSET,
-) -> tuple[JsonValue | UNSET, JsonValue | UNSET, str | None, ToolCall]:
+) -> tuple[JsonValue | UNSET, JsonValue | UNSET, str | None, ToolCall, ToolResult | None]:
     call_id: str | None = None
     result_id: str | None = None
+    payload_result: ToolResult | None = None
     tool_name = raw.tool_name
     arguments = input_value
     result = output_value
@@ -773,6 +795,7 @@ def _normalize_atif_tool_payload(
         if "arguments" in input_value:
             arguments = input_value["arguments"]
     if isinstance(output_value, Mapping):
+        payload_result = tool_result_from_atif(output_value)
         if output_value.get("source_call_id") is not None:
             result_id = str(output_value["source_call_id"])
         if "content" in output_value:
@@ -782,6 +805,7 @@ def _normalize_atif_tool_payload(
         result,
         tool_name,
         ToolCall(call_id=call_id, result_id=result_id),
+        payload_result,
     )
 
 

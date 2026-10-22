@@ -42,12 +42,18 @@ and recorded evaluation signals. Omit values that were not recorded; `null` mean
 explicitly recorded null. Output links back to this file and its physical line number;
 whether the viewer jumps to that line depends on its support for URL fragments. Repeated problems need supporting evidence across multiple traces.
 
+Declare available tools as `tool_definitions` on the AGENT span that owns them, or on the LLM
+span they were offered to; TOOL spans cannot carry them. Each definition needs a `name` and the
+verbatim source item in `raw`, plus `input_schema` to enable argument checks. Record a tool's
+results in `tool_call.results`, one per result, with `is_error` only when the source recorded
+it. Files written before schema version 2 that carry `attributes.tool_catalog` still work.
+
 ## ATIF
 
 Each nonblank line must contain one complete ATIF trajectory. A path ending in `.json`, such
-as Harbor's `agent/trajectory.json`, is read as one whole-file trajectory instead. The loader
-accepts schema versions `ATIF-v1.0` through `ATIF-v1.8`. Keep tool calls, observations, and
-nested subagent trajectories in the exported record.
+as Harbor's `agent/trajectory.json`, is read as one whole-file trajectory instead, unless it
+holds one trajectory per line. The loader accepts schema versions `ATIF-v1.0` through
+`ATIF-v1.8`. Keep tool calls, observations, and nested subagent trajectories in the exported record.
 
 A trajectory without `trajectory_id` or `session_id` gets the ID `atif-` followed by the first
 16 hex digits of the SHA-256 of its record. `agent.tool_definitions` enable tool-schema checks,

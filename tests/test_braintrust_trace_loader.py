@@ -393,6 +393,7 @@ def test_tool_results_match_result_counts(rows):
         trace = next(iter(BraintrustTraceLoader(config(), client=client).load()))
     first, second = trace.root_spans[0].children[0].children
     assert first.tool_call is not None and second.tool_call is not None
+    assert first.tool_call.results is not UNSET
     assert len(first.tool_call.results) == first.tool_call.result_count == 1
     assert first.tool_call.results[0].is_error is (True if first.error else None)
     assert second.tool_call.results == [] and second.tool_call.result_count == 0

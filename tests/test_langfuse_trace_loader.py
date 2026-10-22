@@ -30,7 +30,7 @@ from compass.trace_loaders.langfuse import (
     LangfuseV3FileTraceLoader,
     LangfuseV3TraceLoader,
 )
-from compass.traces import UNSET, SpanKind
+from compass.traces import UNSET, SpanKind, Trace
 from trace_ingest.catalog import definitions_in_scope, tool_catalog
 
 START = datetime(2026, 8, 1, 12, tzinfo=timezone.utc)
@@ -710,24 +710,10 @@ def test_generation_catalogs_override_root_fallback(generation_inputs, expected)
     assert tool_catalog(normalized) == expected
 
 
-def test_agreeing_generations_declare_their_tools_once_on_the_agent() -> None:
-    root = observation("root", observation_type="AGENT", input_value={"task": "find it"})
-    first = {"name": "search", "description": "first", "parameters": {"type": "object"}}
-    second = {"name": "search", "description": "second", "parameters": {"type": "object"}}
-    generations = [
-        observation(
-            f"generation-{index}",
-            parent_id="root",
-            observation_type="GENERATION",
-            start_time=START + timedelta(seconds=index + 1),
-            input_value={"tools": [tool]},
-        )
-        for index, tool in enumerate([first, second])
-    ]
-    full_trace = provider_trace(observations=[root, *generations])
+def _load_full_trace(observations: list) -> Trace:
+    full_trace = provider_trace(observations=observations)
     client = FakeClient(pages=[([full_trace], 1)], details={"trace-1": full_trace})
-
-    normalized = next(
+    return next(
         iter(
             LangfuseV3TraceLoader(
                 LangfuseTraceConfig(START, END, base_url="https://langfuse.example.com"),
@@ -736,11 +722,162 @@ def test_agreeing_generations_declare_their_tools_once_on_the_agent() -> None:
         )
     )
 
-    root_span = normalized.root_spans[0]
-    assert root_span.tool_definitions is not UNSET
-    assert [definition.raw for definition in root_span.tool_definitions] == [first]
-    assert all(span.tool_definitions is UNSET for span in root_span.children)
+
+def _declarations(normalized) -> dict[str, list[object]]:
+    found: dict[str, list[object]] = {}
+    pending = list(normalized.root_spans)
+    while pending:
+        span = pending.pop()
+        pending.extend(span.children)
+        if span.tool_definitions is not UNSET:
+            found[span.id] = [definition.raw for definition in span.tool_definitions]
+    return found
+
+
+def _scope_names(normalized) -> dict[str, list[str]]:
+    return {
+        span_id: [definition.name for definition in found]
+        for span_id, found in definitions_in_scope(normalized).items()
+    }
+
+
+def _generations(parent_id: str | None, tools: list) -> list:
+    return [
+        observation(
+            f"generation-{index}",
+            parent_id=parent_id,
+            observation_type="GENERATION",
+            start_time=START + timedelta(seconds=index + 1),
+            input_value={"tools": [tool]},
+        )
+        for index, tool in enumerate(tools)
+    ]
+
+
+def test_agreeing_generations_declare_their_tools_once_on_the_agent() -> None:
+    search = {"name": "search", "description": "Search.", "parameters": {"type": "object"}}
+    root = observation("root", observation_type="AGENT", input_value={"task": "find it"})
+
+    normalized = _load_full_trace([root, *_generations("root", [search, dict(search)])])
+
+    assert _declarations(normalized) == {"root": [search]}
     assert tool_catalog(normalized) == {"search": {"type": "object"}}
+
+
+def test_generations_with_different_descriptions_keep_their_own_definitions() -> None:
+    first = {"name": "search", "description": "first", "parameters": {"type": "object"}}
+    second = {"name": "search", "description": "second", "parameters": {"type": "object"}}
+    root = observation("root", observation_type="AGENT", input_value={"task": "find it"})
+
+    normalized = _load_full_trace([root, *_generations("root", [first, second])])
+
+    assert _declarations(normalized) == {"generation-0": [first], "generation-1": [second]}
+    assert tool_catalog(normalized) == {"search": {"type": "object"}}
+
+
+def test_generations_with_conflicting_schemas_keep_their_own_definitions() -> None:
+    first = {"name": "write", "parameters": {"type": "object"}}
+    second = {"name": "write", "parameters": {"type": "string"}}
+    root = observation("root", observation_type="AGENT", input_value={"task": "write it"})
+
+    normalized = _load_full_trace([root, *_generations("root", [first, second])])
+
+    assert _declarations(normalized) == {"generation-0": [first], "generation-1": [second]}
+    assert tool_catalog(normalized) is None
+
+
+def test_empty_generation_tools_declare_an_empty_catalog() -> None:
+    root = observation("root", observation_type="AGENT", input_value={"task": "find it"})
+    generation = observation(
+        "generation", parent_id="root", observation_type="GENERATION", input_value={"tools": []}
+    )
+
+    assert tool_catalog(_load_full_trace([root, generation])) == {}
+
+
+def test_empty_root_agent_tools_declare_an_empty_catalog() -> None:
+    root = observation("root", observation_type="AGENT", input_value={"tools": []})
+
+    assert tool_catalog(_load_full_trace([root])) == {}
+
+
+def _search_tool(parent_id: str | None) -> object:
+    return observation(
+        "tool",
+        parent_id=parent_id,
+        observation_type="TOOL",
+        start_time=START + timedelta(seconds=5),
+        name="search",
+        input_value={},
+    )
+
+
+@pytest.mark.parametrize("root_type", ["SPAN", "CHAIN"])
+def test_tool_beside_a_generation_under_a_non_agent_root_is_in_scope(root_type: str) -> None:
+    search = {"name": "search", "parameters": {"type": "object"}}
+    root = observation("root", observation_type=root_type, input_value={"task": "find it"})
+
+    normalized = _load_full_trace([root, *_generations("root", [search]), _search_tool("root")])
+
+    assert _declarations(normalized) == {"generation-0": [search]}
+    assert _scope_names(normalized) == {"tool": ["search"]}
+
+
+def test_root_tool_beside_a_root_generation_is_in_scope() -> None:
+    search = {"name": "search", "parameters": {"type": "object"}}
+
+    normalized = _load_full_trace([*_generations(None, [search]), _search_tool(None)])
+
+    assert _scope_names(normalized) == {"tool": ["search"]}
+
+
+def test_tool_outside_the_generation_agent_sees_definitions_on_the_enclosing_agent() -> None:
+    search = {"name": "search", "parameters": {"type": "object"}}
+    outer = observation("outer", observation_type="AGENT", input_value={"task": "find it"})
+    inner = observation(
+        "inner",
+        parent_id="outer",
+        observation_type="AGENT",
+        start_time=START + timedelta(milliseconds=500),
+        input_value={"task": "find it"},
+    )
+
+    normalized = _load_full_trace(
+        [outer, inner, *_generations("inner", [search]), _search_tool("outer")]
+    )
+
+    assert _declarations(normalized) == {"outer": [search]}
+    assert _scope_names(normalized) == {"tool": ["search"]}
+
+
+def test_worker_agents_with_identical_tools_keep_them_when_every_tool_is_in_scope() -> None:
+    search = {"name": "search", "parameters": {"type": "object"}}
+    orchestrator = observation("orchestrator", observation_type="AGENT", input_value={})
+    workers = [
+        observation(
+            worker,
+            parent_id="orchestrator",
+            observation_type="AGENT",
+            start_time=START + timedelta(milliseconds=offset),
+            input_value={},
+        )
+        for offset, worker in ((100, "worker-a"), (200, "worker-b"))
+    ]
+    generations = [
+        observation(
+            f"{worker}-generation",
+            parent_id=worker,
+            observation_type="GENERATION",
+            start_time=START + timedelta(seconds=offset),
+            input_value={"tools": [search]},
+        )
+        for offset, worker in ((1, "worker-a"), (2, "worker-b"))
+    ]
+
+    normalized = _load_full_trace([orchestrator, *workers, *generations, _search_tool("worker-a")])
+
+    assert _declarations(normalized) == {"worker-a": [search], "worker-b": [search]}
+    assert _scope_names(normalized) == {"tool": ["search"]}
 
 
 def test_tool_beside_the_generation_has_the_agent_definitions_in_scope() -> None:
@@ -1097,5 +1234,6 @@ def test_generation_root_carries_definitions_and_tool_results() -> None:
     assert tool_catalog(trace) == {"search": {"type": "object"}}
     span = root.children[0]
     assert span.tool_call is not None
+    assert span.tool_call.results is not UNSET
     assert len(span.tool_call.results) == span.tool_call.result_count == 1
     assert span.tool_call.results[0].is_error is (True if span.error else None)

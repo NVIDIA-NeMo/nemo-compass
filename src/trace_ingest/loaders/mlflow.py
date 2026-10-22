@@ -522,7 +522,7 @@ def _normalize_trace(
                 else [
                     ToolResult(
                         content=normalized.output,
-                        is_error=True if status == "ERROR" else False if status == "OK" else None,
+                        is_error=True if status == "ERROR" else None,
                     )
                 ]
             )

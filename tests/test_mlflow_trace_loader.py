@@ -594,9 +594,10 @@ def test_tool_results_follow_mlflow_status():
                 continue
             tools += 1
             assert span.tool_call is not None
+            assert span.tool_call.results is not UNSET
             assert len(span.tool_call.results) == span.tool_call.result_count
             status = span.attributes["status"]
             for result in span.tool_call.results:
                 assert result.content == span.output
-                assert result.is_error is {"ERROR": True, "OK": False}.get(status)
+                assert result.is_error is (True if status == "ERROR" else None)
     assert tools

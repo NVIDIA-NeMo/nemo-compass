@@ -186,10 +186,12 @@ def _finalize_tool_results(spans: list[Span]) -> None:
     """Record one typed result per counted tool output once errors are known."""
 
     for span in spans:
-        if span.tool_call is not None and span.tool_call.result_count:
-            span.tool_call.results = [
-                ToolResult(content=span.output, is_error=True if span.error else None)
-            ]
+        if span.tool_call is not None:
+            span.tool_call.results = (
+                [ToolResult(content=span.output, is_error=True if span.error else None)]
+                if span.tool_call.result_count
+                else []
+            )
         _finalize_tool_results(span.children)
 
 
@@ -473,25 +475,23 @@ def _normalize(record: dict[str, Any]) -> Trace:
     params = record.get("responses_create_params")
     definitions = _tool_definitions(params.get("tools") if isinstance(params, dict) else None)
     if definitions:
-        depth_first: list[Span] = []
-        pending = list(roots)
-        while pending:
-            item = pending.pop(0)
-            depth_first.append(item)
-            pending[:0] = item.children
-        owner = next(
-            (
+        owners = [item for item in roots if item.kind is SpanKind.AGENT]
+        if not owners:
+            depth_first: list[Span] = []
+            pending = list(roots)
+            while pending:
+                item = pending.pop(0)
+                depth_first.append(item)
+                pending[:0] = item.children
+            owners = [
                 item
                 for kind in (SpanKind.AGENT, SpanKind.LLM)
-                for candidates in (roots, depth_first)
-                for item in candidates
+                for item in depth_first
                 if item.kind is kind
-            ),
-            None,
-        )
-        if owner is None:
+            ][:1]
+        if not owners:
             extra_gaps.append({"code": "tool_definitions_without_owner_span"})
-        else:
+        for owner in owners:
             owner.tool_definitions = definitions
     return Trace(
         id=rollout,

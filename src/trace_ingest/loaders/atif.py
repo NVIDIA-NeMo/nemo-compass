@@ -5,25 +5,37 @@
 
 Source contract: https://github.com/harbor-framework/harbor/blob/main/rfcs/0001-trajectory-format.md
 
-A path with the ``.json`` suffix holds one whole-file trajectory (Harbor writes a
-pretty-printed ``agent/trajectory.json``); any other suffix is JSONL with one
-trajectory per non-blank line. A trajectory without ``trajectory_id`` and
-``session_id`` gets the id ``"atif-" + sha256(raw).hexdigest()[:16]``, where
-``raw`` is the whole file for ``.json`` or the line's bytes without its line
-terminator for JSONL, and no ``logical_case_id``.
+A path with the ``.json`` suffix (any case) holds one whole-file trajectory
+(Harbor writes a pretty-printed ``agent/trajectory.json``); any other suffix is
+JSONL with one trajectory per non-blank line. A ``.json`` file that is empty or
+holds one JSON document per line is read as JSONL. A trajectory without
+``trajectory_id`` and ``session_id`` gets the id
+``"atif-" + sha256(raw).hexdigest()[:16]``, where ``raw`` is the whole file for a
+whole-file trajectory or the line's bytes without its line terminator for JSONL,
+and no ``logical_case_id``.
 """
 
 from __future__ import annotations
 
 import hashlib
+import io
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from functools import cached_property
 from pathlib import Path
-from typing import Annotated, Any, Literal, NotRequired, TypedDict
+from typing import Annotated, Any, BinaryIO, Literal, NotRequired, TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, with_config
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+    ValidationError,
+    with_config,
+)
+from pydantic_core import from_json
 
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
@@ -46,6 +58,7 @@ __all__ = [
     "ATIFTraceLoadError",
     "ATIFTraceLoader",
     "tool_definitions_from_atif",
+    "tool_result_from_atif",
 ]
 
 TOOL_ERROR = "ATIF tool result reported is_error"
@@ -170,7 +183,8 @@ def tool_definitions_from_atif(items: object) -> list[ToolDefinition]:
     return definitions
 
 
-def _tool_result(result: Mapping[str, Any]) -> ToolResult:
+def tool_result_from_atif(result: Mapping[str, Any]) -> ToolResult:
+    """Normalize one ATIF observation result, reading ``is_error`` from it and its ``extra``."""
     extra = result.get("extra")
     flags = [
         source[key]
@@ -268,7 +282,7 @@ def _step_span(
         matched[call_id].append(result)
     for index, call in enumerate(calls):
         results = matched[call["tool_call_id"]]
-        tool_results = [_tool_result(result) for result in results]
+        tool_results = [tool_result_from_atif(result) for result in results]
         flags = [result.is_error for result in tool_results]
         attributes: dict[str, Any] = {"atif": {"call": call, "results": results}}
         if True in flags:
@@ -399,6 +413,24 @@ def _normalize(source: _Trajectory, raw: bytes) -> Trace:
     )
 
 
+def _is_jsonl(raw: bytes, error: ValidationError) -> bool:
+    """Whether a failed whole-file parse is JSONL content: empty, or one document per line."""
+    first = next((line for line in raw.splitlines() if line.strip()), None)
+    if first is None:
+        return True
+    if not any(
+        detail["type"] == "json_invalid"
+        and str(detail.get("ctx", {}).get("error", "")).startswith("trailing characters")
+        for detail in error.errors()
+    ):
+        return False
+    try:
+        from_json(first)
+    except ValueError:
+        return False
+    return True
+
+
 @dataclass
 class ATIFTraceLoader:
     """Stream complete ATIF trajectories into a disk-backed canonical snapshot."""
@@ -408,25 +440,36 @@ class ATIFTraceLoader:
     @cached_property
     def _loaded(self) -> tuple[TraceSnapshot, ATIFTraceDescription]:
         path = self.config.path
-        whole_file = path.suffix == ".json"
         _line_number: int | None = None
         call_count = 0
         cases: set[str] = set()
 
-        def records() -> Iterator[tuple[int | None, bytes]]:
+        def records() -> Iterator[tuple[int | None, _Trajectory, bytes]]:
             nonlocal _line_number
-            if whole_file:
-                yield None, path.read_bytes()
-                return
-            with path.open("rb") as corpus:
-                for _line_number, raw in enumerate(corpus, 1):
-                    if raw.strip():
-                        yield _line_number, raw.rstrip(b"\r\n")
+            corpus: BinaryIO
+            if path.suffix.lower() == ".json":
+                raw = path.read_bytes()
+                try:
+                    source = _ATIF.validate_json(raw)
+                except ValidationError as error:
+                    if not _is_jsonl(raw, error):
+                        raise
+                    corpus = io.BytesIO(raw)
+                else:
+                    yield None, source, raw
+                    return
+            else:
+                corpus = path.open("rb")
+            with corpus:
+                for _line_number, line in enumerate(corpus, 1):
+                    if line.strip():
+                        raw = line.rstrip(b"\r\n")
+                        yield _line_number, _ATIF.validate_json(raw), raw
 
         def traces() -> Iterator[Trace]:
             nonlocal call_count
-            for line_number, raw in records():
-                trace = _normalize(_ATIF.validate_json(raw), raw)
+            for line_number, source, raw in records():
+                trace = _normalize(source, raw)
                 trace.source_url = file_source_url(path, line_number)
                 pending = list(trace.root_spans)
                 while pending:

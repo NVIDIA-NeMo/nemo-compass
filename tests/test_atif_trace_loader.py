@@ -537,10 +537,11 @@ def test_subagent_tool_definitions_stay_on_subagent_span(tmp_path):
     assert tool_catalog(trace) == {"lookup": {"type": "object"}}
 
 
-def test_pretty_printed_json_without_ids_uses_content_hash(tmp_path):
+@pytest.mark.parametrize("name", ["trajectory.json", "trajectory.JSON"])
+def test_pretty_printed_json_without_ids_uses_content_hash(tmp_path, name):
     source = minimal()
     del source["session_id"]
-    path = tmp_path / "trajectory.json"
+    path = tmp_path / name
     path.write_text(json.dumps(source, indent=2) + "\n")
     loader = ATIFTraceLoader(ATIFTraceConfig(path=path))
     (trace,) = loader.load()
@@ -563,6 +564,39 @@ def test_invalid_whole_file_json_reports_path(tmp_path):
     path = tmp_path / "trajectory.json"
     path.write_text(json.dumps([minimal()]))
     with pytest.raises(ATIFTraceLoadError, match=r"trajectory\.json: invalid ATIF"):
+        ATIFTraceLoader(ATIFTraceConfig(path=path)).load()
+
+
+def test_jsonl_content_in_json_file_loads_line_by_line(tmp_path):
+    source = minimal()
+    del source["session_id"]
+    second = {**minimal(), "trajectory_id": "another"}
+    path = tmp_path / "traces.json"
+    path.write_text("\n" + json.dumps(source) + "\n\n" + json.dumps(second) + "\n")
+    traces = list(ATIFTraceLoader(ATIFTraceConfig(path=path)).load())
+    line = json.dumps(source).encode()
+    assert [trace.id for trace in traces] == [
+        "atif-" + hashlib.sha256(line).hexdigest()[:16],
+        "another",
+    ]
+    assert [trace.source_url for trace in traces] == [
+        path.resolve().as_uri() + "#L2",
+        path.resolve().as_uri() + "#L4",
+    ]
+
+
+@pytest.mark.parametrize(
+    "raw, match",
+    [
+        (" \n\t", r"trajectory\.json: contains no ATIF trajectories"),
+        (json.dumps(minimal(), indent=2) + "\nxyz", r"trajectory\.json: invalid ATIF"),
+        (json.dumps(minimal(), indent=2) * 2, r"trajectory\.json: invalid ATIF"),
+    ],
+)
+def test_empty_and_malformed_whole_file_json(tmp_path, raw, match):
+    path = tmp_path / "trajectory.json"
+    path.write_text(raw)
+    with pytest.raises(ATIFTraceLoadError, match=match):
         ATIFTraceLoader(ATIFTraceConfig(path=path)).load()
 
 
