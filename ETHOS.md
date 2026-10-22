@@ -2,7 +2,7 @@
 schema_version: 1
 name: nemo-compass
 created_timestamp: 2026-10-15T17:55:19Z
-updated_timestamp: 2026-10-21T20:20:30Z
+updated_timestamp: 2026-10-22T17:26:51Z
 author: Codex
 status: draft
 ---
@@ -52,6 +52,8 @@ problems before compiling findings and rates confidence afterward.
 - Cite real trace and span IDs. Never invent evidence or quotations.
 - Support each new recurring finding with at least two distinct traces.
 - Separate what happened from possible causes and suggested fixes.
+- Describe only the impact and frequency the evidence supports. Distinguish
+  observed consequences from possible risks.
 - Read the context and check whether the agent recovered. A tool error, complaint,
   low score, or unusual event alone does not prove a defect. A correct refusal
   may still prompt a complaint.
@@ -63,9 +65,8 @@ problems before compiling findings and rates confidence afterward.
 
 ## Principles
 
-Prefer a few useful findings backed by evidence over a long list of guesses.
-When evidence is unclear, limit the claim or leave it out. Explain what is unknown.
-Each finding should help a developer make a decision.
+Find opportunities that help developers improve their agents. Make the evidence
+and uncertainty clear.
 
 ## Success Criteria
 
@@ -123,10 +124,3 @@ collections grow are also part of this work.
 Make trace analysis useful across agent workflows and monitoring tools. Teams
 should be able to reuse Compass Signals and check the findings against their
 own traces.
-
-## Open Questions
-
-- Which benchmark and scoring method should measure insight quality and variation
-  between runs?
-- What trace volumes, run times, and costs should define the scale target?
-- Which data-handling and provider limits apply?
