@@ -31,7 +31,9 @@ from compass.trace_loaders.langfuse import (
     LangfuseV3TraceLoader,
 )
 from compass.traces import UNSET, SpanKind
+from trace_ingest import nemo_relay
 from trace_ingest.catalog import tool_catalog
+from trace_ingest.loaders.langfuse.normalization import _normalize_trace
 
 START = datetime(2026, 8, 1, 12, tzinfo=timezone.utc)
 END = START + timedelta(hours=1)
@@ -402,6 +404,8 @@ def observation(
     output_value: object = None,
     total_cost: float | None = None,
     model: str | None = None,
+    metadata: dict | None = None,
+    usage_details: dict | None = None,
 ) -> ObservationsView:
     return ObservationsView(
         id=observation_id,
@@ -415,7 +419,7 @@ def observation(
         model_parameters={"temperature": 0},
         input=input_value,
         version="v2",
-        metadata={"source": "test"},
+        metadata=metadata if metadata is not None else {"source": "test"},
         output=output_value,
         usage=Usage(
             input=10,
@@ -427,7 +431,7 @@ def observation(
         status_message=status_message,
         parent_observation_id=parent_id,
         prompt_id="prompt-1",
-        usage_details={"input": 10, "output": 4},
+        usage_details=usage_details if usage_details is not None else {"input": 10, "output": 4},
         cost_details={"total": total_cost} if total_cost is not None else {},
         environment="test",
         prompt_name="support",
@@ -1094,3 +1098,515 @@ def test_generation_root_carries_definitions_and_tool_results() -> None:
     assert span.tool_call.results is not UNSET
     assert len(span.tool_call.results) == span.tool_call.result_count == 1
     assert span.tool_call.results[0].is_error is (True if span.error else None)
+
+
+def relay_metadata(**attributes: object) -> dict:
+    return {
+        "attributes": {
+            key: value if isinstance(value, str) else json.dumps(value)
+            for key, value in attributes.items()
+        },
+        "scope": {"name": "opentelemetry", "attributes": {}},
+    }
+
+
+def test_relay_spans_become_canonical_llm_calls() -> None:
+    canary = "CANARY-relay-content"
+    request = {
+        "model": "aws/anthropic/bedrock-claude-sonnet-5-5",
+        "max_tokens": 32000,
+        "thinking": {"type": "enabled", "budget_tokens": 2048},
+        "system": [
+            {"type": "text", "text": canary, "cache_control": {"type": "ephemeral", "ttl": "1h"}}
+        ],
+        "messages": [{"role": "user", "content": canary}],
+        "tools": [{"name": "read", "description": canary, "input_schema": {"type": "object"}}],
+        "stream": True,
+    }
+    usage = {
+        "input_tokens": 4,
+        "cache_read_input_tokens": 2170,
+        "cache_creation_input_tokens": 119,
+        "output_tokens": 48,
+        "output_tokens_details": {"thinking_tokens": 0},
+    }
+    session = observation(
+        "session",
+        observation_type="AGENT",
+        name="pi",
+        end_time=START + timedelta(seconds=9),
+        metadata=relay_metadata(
+            **{
+                "nemo_relay.scope_type": "agent",
+                "nemo_relay.start.metadata.nemo_relay_scope_role": "session",
+                "nemo_relay.start.metadata.agent_kind": "pi",
+            }
+        ),
+    )
+    llm = observation(
+        "llm",
+        parent_id="session",
+        observation_type="GENERATION",
+        name="anthropic.messages",
+        start_time=START + timedelta(seconds=1),
+        end_time=START + timedelta(seconds=2),
+        model="aws/anthropic/bedrock-claude-sonnet-5-5",
+        metadata=relay_metadata(
+            **{
+                "nemo_relay.scope_type": "llm",
+                "nemo_relay.start.data.content": request,
+                "nemo_relay.start.data.headers": {"x-claude-code-agent-id": "a8af"},
+                "nemo_relay.end.data.model": "aws/anthropic/bedrock-claude-sonnet-5-5",
+                "nemo_relay.end.data.stop_reason": "tool_use",
+                "nemo_relay.end.data.content": [
+                    {"type": "thinking", "thinking": canary},
+                    {"type": "text", "text": "ok"},
+                    {"type": "tool_use", "input": {"path": "a"}},
+                ],
+                "nemo_relay.end.data.usage": usage,
+            }
+        ),
+    )
+    # Langfuse types count_tokens a generation too; it is kept as one, without usage.
+    count_tokens = observation(
+        "count",
+        parent_id="session",
+        observation_type="GENERATION",
+        name="anthropic.count_tokens",
+        start_time=START + timedelta(seconds=3),
+        metadata=relay_metadata(**{"nemo_relay.scope_type": "llm"}),
+    )
+    normalized = _normalize_trace(
+        provider_trace(observations=[session, llm, count_tokens]),
+        source_pointer={"provider": "langfuse"},
+    )
+
+    assert normalized.attributes["logical_case_id"] == "session-7"
+    (agent,) = normalized.root_spans
+    assert agent.kind is SpanKind.AGENT
+    # Relay records no agent ID on the session span, and none is made up.
+    assert agent.agent_id is None
+    call, counted = agent.children
+    assert counted.kind is SpanKind.LLM
+    assert counted.token_counts is None
+    assert call.kind is SpanKind.LLM
+    assert call.model == "aws/anthropic/bedrock-claude-sonnet-5-5"
+    assert call.token_counts is not None
+    assert call.token_counts.model_dump() == {
+        "input_tokens": 4,
+        "cached_input_tokens": 2170,
+        "output_tokens": 48,
+        "cache_write_tokens": 119,
+        "cache_write_ttl_seconds": 3600,
+    }
+    assert call.llm_params == {
+        "max_tokens": 32000,
+        "thinking": {"type": "enabled", "budget_tokens": 2048},
+        "stream": True,
+    }
+    assert [tool.get("name") for tool in call.llm_tools or [] if isinstance(tool, dict)] == ["read"]
+
+
+def test_relay_openinference_and_legacy_layouts() -> None:
+    openinference = observation(
+        "oi",
+        observation_type="GENERATION",
+        name="anthropic.messages",
+        start_time=START + timedelta(seconds=1),
+        end_time=START + timedelta(seconds=2),
+        model="claude-sonnet-4-6",  # Langfuse takes it from llm.model_name
+        metadata=relay_metadata(
+            **{
+                "nemo_relay.scope_type": "llm",
+                "llm.model_name": "claude-sonnet-4-6",
+                "llm.invocation_parameters": {"model": "gpt-5.5", "max_tokens": 128000},
+                "llm.tools.1.tool.json_schema": {"name": "Write"},
+                "llm.tools.0.tool.json_schema": {"name": "Read"},
+                "llm.token_count.prompt": "2",
+                "llm.token_count.prompt_details.cache_read": "20502",
+                "llm.token_count.completion": "40",
+            }
+        ),
+    )
+    legacy = observation(
+        "legacy",
+        observation_type="GENERATION",
+        name="anthropic.messages",
+        start_time=START + timedelta(seconds=3),
+        end_time=START + timedelta(seconds=4),
+        metadata=relay_metadata(
+            **{
+                "nemo_relay.scope_type": "llm",
+                "nemo_relay.start.data_json": {"model": "claude-opus-4-8", "max_tokens": 10},
+                "nemo_relay.end.data_json": {
+                    "model": "claude-opus-4-8",
+                    "stop_reason": "max_tokens",
+                    "content": [],
+                    "usage": {
+                        "input_tokens": 2,
+                        "cache_read_input_tokens": 51084,
+                        "cache_creation_input_tokens": 12481,
+                        "output_tokens": 10,
+                    },
+                },
+            }
+        ),
+    )
+    normalized = _normalize_trace(
+        provider_trace(observations=[openinference, legacy]),
+        source_pointer={"provider": "langfuse"},
+    )
+    oi, old = normalized.root_spans
+    assert oi.model == "claude-sonnet-4-6"
+    assert oi.llm_tools == [{"name": "Read"}, {"name": "Write"}]
+    assert oi.llm_params == {"max_tokens": 128000}
+    # This Relay build excluded cache from llm.token_count.prompt, against the spec:
+    # prompt < cache_read, so the counts are quarantined and no provider usage remains.
+    assert oi.token_counts is None
+    # The legacy layout records the model only in Relay's JSON, which is not read.
+    assert old.model is None
+    assert old.token_counts is not None
+    assert (old.token_counts.input_tokens, old.token_counts.cache_write_tokens) == (2, 12481)
+
+
+def test_relay_agent_ids_in_both_layouts():
+    flat = {
+        "nemo_relay.start.metadata.nemo_relay_scope_role": "subagent",
+        "nemo_relay.start.metadata.agent_id": "a8af",
+    }
+    openinference = {
+        "openinference.metadata.nemo_relay_scope_role": "session",
+        "openinference.metadata.agent_kind": "pi",
+    }
+    assert nemo_relay.agent_id({"attributes": flat}) == "a8af"
+    assert nemo_relay.agent_id({"attributes": openinference}) is None
+    assert (
+        nemo_relay.agent_id(
+            {"attributes": {"openinference.metadata.nemo_relay_scope_role": "subagent"}}
+        )
+        is None
+    )
+    # An LLM call carries the subagent Relay attributes it to, in either layout.
+    assert (
+        nemo_relay.agent_id(
+            {"attributes": {"nemo_relay.start.metadata.llm_correlation_subagent_id": "a8af"}}
+        )
+        == "a8af"
+    )
+    assert (
+        nemo_relay.agent_id(
+            {"attributes": {"openinference.metadata.llm_correlation_subagent_id": "a8af"}}
+        )
+        == "a8af"
+    )
+
+
+def test_openinference_spans_without_relay() -> None:
+    llm = observation(
+        "oi",
+        observation_type="GENERATION",
+        name="ChatOpenAI",
+        start_time=START + timedelta(seconds=1),
+        end_time=START + timedelta(seconds=2),
+        model="gpt-5.5",
+        metadata=relay_metadata(
+            **{
+                "openinference.span.kind": "LLM",
+                "llm.model_name": "gpt-5.5",
+                "llm.invocation_parameters": {"model": "gpt-5.5", "temperature": 0},
+                "llm.tools.0.tool.json_schema": {"name": "Read"},
+                "llm.token_count.prompt": "11409",
+                "llm.token_count.prompt_details.cache_read": "3712",
+                "llm.token_count.prompt_details.cache_write": {"intValue": 0},
+                "llm.token_count.completion": "81",
+            }
+        ),
+    )
+    chain = observation(
+        "chain",
+        observation_type="CHAIN",
+        start_time=START + timedelta(seconds=3),
+        metadata=relay_metadata(**{"openinference.span.kind": "CHAIN"}),
+    )
+    normalized = _normalize_trace(
+        provider_trace(observations=[llm, chain]),
+        source_pointer={"provider": "langfuse"},
+    )
+
+    call, step = normalized.root_spans
+    assert (call.kind, step.kind) == (SpanKind.LLM, SpanKind.CHAIN)
+    assert call.model == "gpt-5.5"
+    assert call.token_counts is not None
+    # The spec counts cache inside llm.token_count.prompt.
+    assert call.token_counts.model_dump() == {
+        "input_tokens": 7697,
+        "cached_input_tokens": 3712,
+        "output_tokens": 81,
+        "cache_write_tokens": 0,
+    }
+    assert call.llm_tools == [{"name": "Read"}]
+    assert call.llm_params == {"temperature": 0}
+    assert call.token_counts.cache_write_ttl_seconds is None
+
+
+def test_relay_fills_fields_openinference_lacks() -> None:
+    anthropic = observation(
+        "anthropic",
+        observation_type="GENERATION",
+        name="anthropic.messages",
+        start_time=START + timedelta(seconds=1),
+        metadata=relay_metadata(
+            **{
+                "nemo_relay.scope_type": "llm",
+                "openinference.span.kind": "LLM",
+                "llm.model_name": "claude-sonnet-5-5",
+                "llm.token_count.prompt": "23290",
+                "llm.token_count.prompt_details.cache_read": "19673",
+                "llm.token_count.prompt_details.cache_write": "3591",
+                "llm.token_count.completion": "213",
+                "nemo_relay.end.data.usage": {
+                    "input_tokens": 26,
+                    "cache_read_input_tokens": 19673,
+                    "cache_creation_input_tokens": 3591,
+                    "cache_creation": {
+                        "ephemeral_5m_input_tokens": 0,
+                        "ephemeral_1h_input_tokens": 3591,
+                    },
+                    "output_tokens": 213,
+                },
+            }
+        ),
+    )
+    openai = observation(
+        "openai",
+        observation_type="GENERATION",
+        name="openai.responses",
+        start_time=START + timedelta(seconds=2),
+        metadata=relay_metadata(
+            **{
+                "nemo_relay.scope_type": "llm",
+                "llm.token_count.prompt": "11409",
+                "llm.token_count.prompt_details.cache_read": "3712",
+                "llm.token_count.completion": "81",
+                "nemo_relay.end.data.usage": {
+                    "input_tokens": 11409,
+                    "input_tokens_details": {"cached_tokens": 3712, "cache_write_tokens": 0},
+                    "output_tokens": 81,
+                },
+            }
+        ),
+    )
+    normalized = _normalize_trace(
+        provider_trace(observations=[anthropic, openai]),
+        source_pointer={"provider": "langfuse"},
+    )
+
+    claude, gpt = normalized.root_spans
+    assert claude.token_counts is not None and gpt.token_counts is not None
+    assert (claude.token_counts.input_tokens, claude.token_counts.cache_write_tokens) == (26, 3591)
+    # OpenInference has no cache write for OpenAI; Relay's provider usage does.
+    assert gpt.token_counts.cache_write_tokens == 0
+    # No request body in an OpenInference export: the TTL comes from the usage split.
+    assert claude.token_counts.cache_write_ttl_seconds == 3600
+
+
+def test_each_producer_has_its_own_reader() -> None:
+    # Claude Code's Langfuse integration: no OTel attributes, Anthropic cache keys,
+    # zero keys left out.
+    usage = {"input": 2, "output": 56, "input_cache_creation_5m": 22509, "total": 22567}
+    sdk = observation(
+        "sdk",
+        observation_type="GENERATION",
+        name="LLM Call",
+        start_time=START + timedelta(seconds=1),
+        metadata={"scope": {"name": "langfuse-sdk"}},
+        usage_details=usage,
+    )
+    # A user can set metadata.attributes too; the scope still says who sent it.
+    sdk_with_attributes = observation(
+        "sdk_with_attributes",
+        observation_type="GENERATION",
+        name="LLM Call",
+        start_time=START + timedelta(seconds=2),
+        metadata={"scope": {"name": "langfuse-sdk"}, "attributes": {"team": "a"}},
+        usage_details=usage,
+    )
+    # An OTel producer without a reader yet: Langfuse's usage is not guessed at.
+    gen_ai = observation(
+        "gen_ai",
+        observation_type="GENERATION",
+        name="chat",
+        start_time=START + timedelta(seconds=3),
+        metadata=relay_metadata(**{"gen_ai.operation.name": "chat"}),
+        usage_details=usage,
+    )
+    # No scope, such as Langfuse SDK v2 ingestion: its usage keys are not verified.
+    unscoped = observation(
+        "unscoped",
+        observation_type="GENERATION",
+        start_time=START + timedelta(seconds=4),
+        usage_details=usage,
+    )
+    normalized = _normalize_trace(
+        provider_trace(observations=[sdk, sdk_with_attributes, gen_ai, unscoped]),
+        source_pointer={"provider": "langfuse"},
+    )
+
+    from_sdk, from_sdk_with_attributes, from_gen_ai, from_unscoped = normalized.root_spans
+    assert from_sdk_with_attributes.token_counts == from_sdk.token_counts
+    assert from_unscoped.token_counts is None
+    assert from_sdk.token_counts is not None
+    assert from_sdk.token_counts.model_dump() == {
+        "input_tokens": 2,
+        "cached_input_tokens": None,
+        "output_tokens": 56,
+        "cache_write_tokens": 22509,
+        "cache_write_ttl_seconds": 300,
+    }
+    assert from_gen_ai.kind is SpanKind.LLM
+    assert from_gen_ai.token_counts is None
+
+
+# One LLM observation per producer and provider, shaped like the real traces
+# they come from: Relay with Claude (01a1584414787bf28629e6ace9d4d864), Relay with
+# OpenAI, Claude Code through Langfuse (fb947b4de1d5fbed487c3c52a0873f37) and
+# Codex through Langfuse (4742dba44d4416b04a7eefd7a49c1bf2).
+INGESTION_CASES = {
+    "relay-claude": (
+        "anthropic.messages",
+        relay_metadata(
+            **{
+                "nemo_relay.scope_type": "llm",
+                "nemo_relay.start.data.content": {
+                    "model": "aws/anthropic/bedrock-claude-sonnet-5-5",
+                    "max_tokens": 32000,
+                    "thinking": {"type": "adaptive"},
+                    "system": [
+                        {"type": "text", "text": "s", "cache_control": {"type": "ephemeral"}}
+                    ],
+                    "messages": [{"role": "user", "content": "m"}],
+                    "tools": [{"name": "Read", "input_schema": {"type": "object"}}],
+                    "stream": True,
+                },
+                "nemo_relay.end.data.usage": {
+                    "cache_creation": {
+                        "ephemeral_1h_input_tokens": 0,
+                        "ephemeral_5m_input_tokens": 5203,
+                    },
+                    "cache_creation_input_tokens": 5203,
+                    "cache_read_input_tokens": 17347,
+                    "input_tokens": 2,
+                    "output_tokens": 56,
+                },
+            }
+        ),
+        None,
+        {
+            "input_tokens": 2,
+            "cached_input_tokens": 17347,
+            "output_tokens": 56,
+            "cache_write_tokens": 5203,
+            # The breakpoint sets no ttl; the usage says the write went to the 5m cache.
+            "cache_write_ttl_seconds": 300,
+        },
+        ["Read"],
+        {"max_tokens": 32000, "thinking": {"type": "adaptive"}, "stream": True},
+    ),
+    "relay-openai": (
+        "openai.responses",
+        relay_metadata(
+            **{
+                "nemo_relay.scope_type": "llm",
+                "nemo_relay.start.data.content": {
+                    "model": "azure/openai/gpt-5.3-codex",
+                    "instructions": "i",
+                    "input": [{"role": "user", "content": "m"}],
+                    "tools": [{"type": "function", "name": "exec_command"}],
+                    "reasoning": {"effort": "medium"},
+                    "prompt_cache_retention": "24h",
+                },
+                "nemo_relay.end.data.usage": {
+                    "input_tokens": 11409,
+                    "input_tokens_details": {"cached_tokens": 3712, "cache_write_tokens": 0},
+                    "output_tokens": 87,
+                    "output_tokens_details": {"reasoning_tokens": 25},
+                },
+            }
+        ),
+        None,
+        {
+            # input_tokens includes the cache read.
+            "input_tokens": 7697,
+            "cached_input_tokens": 3712,
+            "output_tokens": 87,
+            "cache_write_tokens": 0,
+            "cache_write_ttl_seconds": 86400,
+        },
+        ["exec_command"],
+        {"reasoning": {"effort": "medium"}, "prompt_cache_retention": "24h"},
+    ),
+    "langfuse-sdk-claude": (
+        "LLM Call",
+        {"scope": {"name": "langfuse-sdk"}},
+        {
+            "input": 2,
+            "output": 56,
+            "cache_read_input_tokens": 21088,
+            "input_cache_creation_5m": 3160,
+            "total": 24306,
+        },
+        {
+            "input_tokens": 2,
+            "cached_input_tokens": 21088,
+            "output_tokens": 56,
+            "cache_write_tokens": 3160,
+            "cache_write_ttl_seconds": 300,
+        },
+        None,
+        None,
+    ),
+    "langfuse-sdk-openai": (
+        "LLM",
+        {"scope": {"name": "langfuse-sdk"}},
+        {
+            "input": 133,
+            "output": 54,
+            "total": 12124,
+            "input_cached_tokens": 11904,
+            "output_reasoning_tokens": 33,
+        },
+        # Langfuse splits cache out of input and reasoning out of output; OpenAI
+        # reports no cache write and the SDK records no retention.
+        {"input_tokens": 133, "cached_input_tokens": 11904, "output_tokens": 87},
+        None,
+        None,
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("name", "metadata", "usage_details", "token_counts", "tool_names", "params"),
+    list(INGESTION_CASES.values()),
+    ids=list(INGESTION_CASES),
+)
+def test_ingestion_reads_each_producer_and_provider(
+    name, metadata, usage_details, token_counts, tool_names, params
+) -> None:
+    llm = observation(
+        "llm",
+        observation_type="GENERATION",
+        name=name,
+        metadata=metadata,
+        usage_details=usage_details if usage_details is not None else {},
+    )
+    normalized = _normalize_trace(
+        provider_trace(observations=[llm]), source_pointer={"provider": "langfuse"}
+    )
+
+    (span,) = normalized.root_spans
+    assert span.kind is SpanKind.LLM
+    assert span.token_counts is not None
+    assert span.token_counts.model_dump() == token_counts
+    names = [tool.get("name") for tool in span.llm_tools] if span.llm_tools is not None else None
+    assert names == tool_names
+    assert span.llm_params == params

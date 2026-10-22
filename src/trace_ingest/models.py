@@ -138,9 +138,28 @@ class ToolDefinition(_TraceModel):
 class TokenCounts(_TraceModel):
     """Non-negative token counts using the source's authoritative accounting."""
 
-    input_tokens: int = Field(ge=0, description="Uncached input tokens.")
-    cached_input_tokens: int = Field(ge=0, description="Cached input tokens.")
+    input_tokens: int = Field(
+        ge=0, description="Uncached input tokens; excludes cache reads and cache writes."
+    )
+    cached_input_tokens: int | None = Field(
+        ge=0,
+        description="Input tokens read from the cache; None when the source does not record "
+        "cache reads.",
+    )
     output_tokens: int = Field(ge=0, description="Generated output tokens.")
+    cache_write_tokens: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+        description="Input tokens written to the cache; None when the source does not record it.",
+    )
+    cache_write_ttl_seconds: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+        description="TTL of the prompt cache entries this request writes; None when the source "
+        "does not record it.",
+    )
 
 
 class Span(_TraceModel):
@@ -189,6 +208,24 @@ class Span(_TraceModel):
         default=None,
         description="Source-reported model identifier, when applicable.",
     )
+    llm_tools: list[JsonValue] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Top-level tool list sent to the model, in order; valid only for an LLM span.",
+    )
+    llm_params: dict[str, JsonValue] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Top-level request parameters sent to the model, without the model, tools "
+        "and prompt content; an empty object means all defaults. Valid only for an LLM span.",
+    )
+    agent_id: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description="Source-recorded agent ID, unique within the logical case: an AGENT span's "
+        "own agent, or the agent an LLM call belongs to. Never a name shared by parallel agents.",
+    )
 
     tool_name: str | None = Field(
         default=None,
@@ -234,6 +271,10 @@ class Span(_TraceModel):
             raise ValueError("tool_call metadata requires kind=TOOL")
         if self.tool_definitions is not UNSET and self.kind not in _DECLARING_KINDS:
             raise ValueError("tool_definitions require kind=AGENT or kind=LLM")
+        if self.llm_tools is not None and self.kind is not SpanKind.LLM:
+            raise ValueError("llm_tools requires kind=LLM")
+        if self.llm_params is not None and self.kind is not SpanKind.LLM:
+            raise ValueError("llm_params requires kind=LLM")
         return self
 
 
