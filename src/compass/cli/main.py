@@ -52,9 +52,9 @@ from compass.insights_generation.config import (
 from compass.insights_generation.defaults import DEFAULT_MAX_TOKENS, DEFAULT_MODEL
 from compass.insights_generation.insight_compilation import InsightCompilation
 from compass.insights_generation.validation import (
-    CandidateDecision,
-    CandidateValidation,
-    EvidenceValidation,
+    CandidateProblemDecision,
+    CandidateProblemValidationResult,
+    CandidateProblemValidator,
 )
 from compass.telemetry import record_input_metadata, record_span, telemetry_session
 from compass.trace_loaders.atif import ATIFTraceLoader
@@ -286,31 +286,33 @@ async def _run_compass_signals(
     return [task.result() for task in tasks]
 
 
-async def _validate_evidence(
-    evidence: list[CompassSignalResult],
+async def _validate_candidate_problems(
+    signal_results: list[CompassSignalResult],
     snapshot: TraceSnapshot,
     code_base_path: Path | None,
     llm: UnifiedLLM,
     ethos: str | None = None,
-) -> EvidenceValidation:
-    """Validate candidates concurrently, combining code and ETHOS in each investigation."""
-    validator = CandidateValidation(code_base_path, llm, ethos)
+) -> CandidateProblemValidationResult:
+    """Review the candidate problems in each signal result, preserving their order."""
+    validator = CandidateProblemValidator(code_base_path, llm, ethos)
 
-    async def validate_problem(problem: Problem) -> CandidateDecision:
+    async def validate_problem(problem: Problem) -> CandidateProblemDecision:
         traces = tuple(snapshot.get_trace_by_id(tid) for tid in problem.supporting_trace_ids)
         with telemetry.problem_validation(problem, code_base_path, ethos) as record:
             decision = await validator.validate(problem, traces)
-            telemetry.record_support(record, decision)
+            telemetry.record_problem_decision(record, decision)
             return decision
 
-    async def validate_result(result: CompassSignalResult) -> list[CandidateDecision]:
+    async def validate_signal_problems(
+        result: CompassSignalResult,
+    ) -> list[CandidateProblemDecision]:
         async with asyncio.TaskGroup() as group:
             tasks = [group.create_task(validate_problem(problem)) for problem in result.problems]
         return [task.result() for task in tasks]
 
     async with asyncio.TaskGroup() as group:
-        tasks = [group.create_task(validate_result(result)) for result in evidence]
-    return EvidenceValidation(evidence, [task.result() for task in tasks])
+        tasks = [group.create_task(validate_signal_problems(result)) for result in signal_results]
+    return CandidateProblemValidationResult(signal_results, [task.result() for task in tasks])
 
 
 async def _rate_confidence_with_code(
@@ -430,29 +432,31 @@ async def _compile_evidence(
     output: RunOutput,
     run_timestamp: datetime,
 ) -> list[Insight]:
-    evidence = result.evidence
+    signal_results = result.evidence
     async with _build_llm(config, api_key) as llm:
         ethos_path = config.ethos_path
         ethos = ethos_path.read_text(encoding="utf-8") if ethos_path is not None else None
         if config.code_base is not None or ethos is not None:
             output.activity = "Validating candidate problems"
-            with telemetry.validation(evidence, config.code_base, ethos) as record:
-                validation = await _validate_evidence(
-                    evidence, snapshot, config.code_base, llm, ethos
+            with telemetry.candidate_problem_validation(
+                signal_results, config.code_base, ethos
+            ) as record:
+                validation = await _validate_candidate_problems(
+                    signal_results, snapshot, config.code_base, llm, ethos
                 )
-                telemetry.record_validation(record, validation)
-            evidence = validation.retained_evidence()
+                telemetry.record_candidate_problem_validation(record, validation)
+            signal_results = validation.retained_signal_results()
             result.validation_rejections = validation.rejections
             if validation.unresolved_count:
                 result.limitations.append(
-                    f"Candidate validation was inconclusive for {validation.unresolved_count} problem(s); these were retained for compilation."
+                    f"Candidate problem validation was inconclusive for {validation.unresolved_count} problem(s); these were retained for compilation."
                 )
-        if not any(item.problems for item in evidence):
+        if not any(item.problems for item in signal_results):
             return result.existing_insights
-        output.activity = "Reviewing candidate issues for actionable insights"
-        with telemetry.compilation(evidence, result.existing_insights) as record:
+        output.activity = "Compiling candidate problems into insights"
+        with telemetry.compilation(signal_results, result.existing_insights) as record:
             insights = await InsightCompilation(llm=llm).compile_insights(
-                evidence,
+                signal_results,
                 snapshot,
                 result.existing_insights,
                 run_timestamp,

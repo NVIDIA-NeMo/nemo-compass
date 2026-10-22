@@ -9,7 +9,10 @@ from nooa.unifiedllm import FakeLLMClient, LLMResponse, ToolCall
 from pydantic import ValidationError
 
 from compass.compass_signals.compass_signals import Problem
-from compass.insights_generation.validation import CandidateDecision, CandidateValidation
+from compass.insights_generation.validation import (
+    CandidateProblemDecision,
+    CandidateProblemValidator,
+)
 from compass.traces import Trace, TraceAggregate
 
 ethos = "Ask for approval before issuing any refund."
@@ -50,7 +53,7 @@ def test_ethos_decision_requires_grounding(contradicted, passage, expected):
     )
     problem = Problem(description="Approval adds unnecessary friction", supporting_trace_ids=("t",))
     trace = Trace(id="t", root_spans=[], aggregate=TraceAggregate())
-    decision = asyncio.run(CandidateValidation(None, llm, ethos).validate(problem, (trace,)))
+    decision = asyncio.run(CandidateProblemValidator(None, llm, ethos).validate(problem, (trace,)))
     assert (decision.supported is False) is expected
     assert decision.explanation
     assert ethos in str(llm.last_messages)
@@ -60,7 +63,7 @@ def test_ethos_decision_requires_grounding(contradicted, passage, expected):
 def test_ethos_rejection_requires_nonempty_passage():
     for passage in (None, "", "  "):
         with pytest.raises(ValidationError):
-            CandidateDecision(
+            CandidateProblemDecision(
                 supported=False,
                 rejection_basis="ethos",
                 explanation="Allowed",
@@ -70,7 +73,7 @@ def test_ethos_rejection_requires_nonempty_passage():
 
 def test_empty_ethos_is_configuration_error():
     with pytest.raises(ValueError, match="non-empty"):
-        CandidateValidation(None, FakeLLMClient(), "  ")
+        CandidateProblemValidator(None, FakeLLMClient(), "  ")
 
 
 def test_generation_error_retains_candidate(monkeypatch):
@@ -87,6 +90,8 @@ def test_generation_error_retains_candidate(monkeypatch):
         validation, "_ValidationAgent", lambda *args, **kwargs: SimpleNamespace(decide=fail)
     )
     problem = Problem(description="Problem", supporting_trace_ids=("t",))
-    decision = asyncio.run(CandidateValidation(None, FakeLLMClient(), ethos).validate(problem, ()))
+    decision = asyncio.run(
+        CandidateProblemValidator(None, FakeLLMClient(), ethos).validate(problem, ())
+    )
     assert decision.supported is None
     assert "inconclusive" in decision.explanation

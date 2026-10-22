@@ -246,7 +246,7 @@ def test_code_validation_filters_problems_and_preserves_signal_result(
 
         async def validate(self, problem, supporting_traces):
             received.append((problem, supporting_traces))
-            return cli.CandidateDecision(
+            return cli.CandidateProblemDecision(
                 supported={"Supported": True, "Unsupported": False, "Unknown": None}[
                     problem.description
                 ],
@@ -254,14 +254,16 @@ def test_code_validation_filters_problems_and_preserves_signal_result(
                 rejection_basis="code" if problem.description == "Unsupported" else None,
             )
 
-    monkeypatch.setattr(cli, "CandidateValidation", FakeValidator)
+    monkeypatch.setattr(cli, "CandidateProblemValidator", FakeValidator)
 
-    result = asyncio.run(cli._validate_evidence(evidence, snapshot, tmp_path, FakeLLMClient()))
+    result = asyncio.run(
+        cli._validate_candidate_problems(evidence, snapshot, tmp_path, FakeLLMClient())
+    )
 
-    assert result.retained_evidence()[0].problems == (supported, unknown)
+    assert result.retained_signal_results()[0].problems == (supported, unknown)
     assert result.rejected_count == 1
     assert result.unresolved_count == 1
-    assert result.retained_evidence()[0].artifacts == {"kept": True}
+    assert result.retained_signal_results()[0].artifacts == {"kept": True}
     assert received == [
         (supported, (trace,)),
         (unsupported, (trace,)),
@@ -329,13 +331,13 @@ def test_final_compilation_severity_does_not_require_code_base(
     monkeypatch.setattr(cli, "_run_compass_signals", AsyncMock(return_value=evidence))
     monkeypatch.setattr(
         cli,
-        "_validate_evidence",
+        "_validate_candidate_problems",
         AsyncMock(
-            return_value=cli.EvidenceValidation(
+            return_value=cli.CandidateProblemValidationResult(
                 evidence,
                 [
                     [
-                        cli.CandidateDecision(supported=True, explanation="Supported")
+                        cli.CandidateProblemDecision(supported=True, explanation="Supported")
                         for _ in item.problems
                     ]
                     for item in evidence
@@ -452,18 +454,18 @@ def test_candidates_share_both_contexts_and_run_concurrently(
             await started["retain" if problem.description == "reject" else "reject"].wait()
             calls.append(problem.description)
             rejected = problem.description == "reject"
-            return cli.CandidateDecision(
+            return cli.CandidateProblemDecision(
                 supported=False if rejected else None,
                 explanation="Considered available context.",
                 rejection_basis=("ethos" if ethos_enabled else "code") if rejected else None,
                 ethos_passage="Explicit permission." if rejected and ethos_enabled else None,
             )
 
-    monkeypatch.setattr(cli, "CandidateValidation", Validator)
+    monkeypatch.setattr(cli, "CandidateProblemValidator", Validator)
 
     async def run():
         return await asyncio.wait_for(
-            cli._validate_evidence(
+            cli._validate_candidate_problems(
                 evidence,
                 TraceSnapshot([trace]),
                 tmp_path if code_enabled else None,
@@ -474,8 +476,8 @@ def test_candidates_share_both_contexts_and_run_concurrently(
         )
 
     result = asyncio.run(run())
-    assert result.retained_evidence()[0].problems == (problems[1],)
-    assert result.retained_evidence()[0].artifacts == {"keep": 1}
+    assert result.retained_signal_results()[0].problems == (problems[1],)
+    assert result.retained_signal_results()[0].artifacts == {"keep": 1}
     assert result.rejected_count == 1
     assert result.unresolved_count == 1
     assert sorted(calls) == ["reject", "retain"]
@@ -490,7 +492,7 @@ def test_ethos_validation_can_skip_compilation_and_preserve_existing(
 
     from rich.console import Console
 
-    from compass.insights_generation.validation import CandidateDecision
+    from compass.insights_generation.validation import CandidateProblemDecision
 
     ethos_path = tmp_path / "ETHOS.md"
     ethos_path.write_text("Require approval.")
@@ -514,14 +516,14 @@ def test_ethos_validation_can_skip_compilation_and_preserve_existing(
             assert ethos == "Require approval."
 
         async def validate(self, *args):
-            return CandidateDecision(
+            return CandidateProblemDecision(
                 supported=False,
                 rejection_basis="ethos",
                 ethos_passage="Require approval.",
                 explanation="Required behavior.",
             )
 
-    monkeypatch.setattr(cli, "CandidateValidation", Validator)
+    monkeypatch.setattr(cli, "CandidateProblemValidator", Validator)
     monkeypatch.setattr(cli, "_build_llm", lambda *args: FakeLLMClient())
     monkeypatch.setattr(cli, "InsightCompilation", compilation)
     insights = asyncio.run(

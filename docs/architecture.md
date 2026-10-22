@@ -20,12 +20,11 @@ merges duplicates across signals and existing insights, and ranks the results. I
 require each new insight to have support from more than one trace and to merge symptoms only when
 they establish the same problem. These decisions rely on model judgment.
 
-When `code_base` or ETHOS.md is available, [candidate validation](../src/compass/insights_generation/validation.py)
-runs before compilation. Each candidate gets one investigation with its supporting
+When `code_base` or ETHOS.md is available, [candidate problem validation](../src/compass/insights_generation/validation.py)
+runs before compilation. Each candidate problem gets one investigation with its supporting
 traces and all configured context: intended behavior from ETHOS.md and read-only
-source-code tools. Candidates are investigated concurrently. The validator reconciles
-these sources before deciding; intentional implementation does not excuse a violation
-of ETHOS.md, and permissions apply only within their stated conditions.
+source-code tools. Behavior intentionally defined in source code does not excuse a
+violation of ETHOS.md: the implementation may itself be the cause of the problem.
 
 Concrete contradictions remove candidates; uncertainty retains them. Rejections preserve
 an explanation and evidence basis, including an exact passage when relying on ETHOS.md.
@@ -39,7 +38,7 @@ to the codebase and separate decision contracts, because they operate on differe
 different pipeline stages. If an agent cannot decide within its step budget, validation retains the
 problem and confidence is left unset.
 
-![Architecture overview: a Trace loaders group contains LangSmith, Langfuse, Braintrust, MLflow, and Other, all feeding a normalized snapshot. A Compass Signals group contains the five detectors, which feed candidate problems through optional code validation and insight compilation to ranked insights.](assets/architecture/overview.png)
+![Architecture overview: a Trace loaders group contains LangSmith, Langfuse, Braintrust, MLflow, and Other, all feeding a normalized snapshot. A Compass Signals group contains the five detectors, which feed candidate problems through optional candidate problem validation and insight compilation to ranked insights.](assets/architecture/overview.png)
 
 ## Ethos divergence
 
