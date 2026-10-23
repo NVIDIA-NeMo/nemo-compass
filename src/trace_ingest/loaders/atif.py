@@ -1,21 +1,33 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Load ATIF JSONL into canonical traces.
+"""Load ATIF trajectories into canonical traces.
 
 Source contract: https://github.com/harbor-framework/harbor/blob/main/rfcs/0001-trajectory-format.md
+
+A path with the ``.json`` suffix (any case) holds one whole-file trajectory
+(Harbor writes a pretty-printed ``agent/trajectory.json``); any other suffix is
+JSONL with one trajectory per non-blank line. A ``.json`` file that is empty or
+holds one JSON document per line is read as JSONL. A trajectory without
+``trajectory_id`` and ``session_id`` gets the id
+``"atif-" + sha256(raw).hexdigest()[:16]``, where ``raw`` is the whole file for a
+whole-file trajectory or the line's bytes without its line terminator for JSONL,
+and no ``logical_case_id``.
 """
 
 from __future__ import annotations
 
+import hashlib
+import io
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from functools import cached_property
 from pathlib import Path
-from typing import Annotated, Any, Literal, NotRequired, TypedDict
+from typing import Annotated, Any, BinaryIO, Literal, NotRequired, TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, with_config
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, with_config
+from pydantic_core import from_json
 
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
@@ -34,11 +46,11 @@ __all__ = ["ATIFTraceConfig", "ATIFTraceDescription", "ATIFTraceLoadError", "ATI
 
 
 class ATIFTraceLoadError(ValueError):
-    """An ATIF JSONL corpus cannot be normalized unambiguously."""
+    """An ATIF corpus cannot be normalized unambiguously."""
 
 
 class ATIFTraceConfig(BaseModel):
-    """Settings for an ATIF JSONL file."""
+    """Settings for an ATIF ``.json`` trajectory or JSONL corpus."""
 
     model_config = ConfigDict(extra="forbid")
     path: Path
@@ -224,8 +236,6 @@ def _step_span(
 
 
 def _trajectory_span(source: _Trajectory, prefix: str = "trajectory") -> Span:
-    if not (source.get("trajectory_id") or source.get("session_id")):
-        raise ValueError("trajectory_id or session_id is required for stable trace identity")
     if source.get("continued_trajectory_ref"):
         raise ValueError(
             "external continuation is not supported; combine the complete trajectory first"
@@ -291,14 +301,17 @@ def _trajectory_span(source: _Trajectory, prefix: str = "trajectory") -> Span:
     return root
 
 
-def _normalize(source: _Trajectory) -> Trace:
+def _normalize(source: _Trajectory, raw: bytes) -> Trace:
     root = _trajectory_span(source)
     metrics = source.get("final_metrics") or {}
     attributes = dict(root.attributes)
     if source.get("session_id") is not None:
         attributes["logical_case_id"] = source["session_id"]
-    trace_id = source.get("trajectory_id") or source.get("session_id")
-    assert trace_id is not None
+    trace_id = (
+        source.get("trajectory_id")
+        or source.get("session_id")
+        or "atif-" + hashlib.sha256(raw).hexdigest()[:16]
+    )
     return Trace(
         id=trace_id,
         root_spans=[root],
@@ -307,6 +320,24 @@ def _normalize(source: _Trajectory) -> Trace:
         ),
         attributes=attributes,
     )
+
+
+def _is_jsonl(raw: bytes, error: ValidationError) -> bool:
+    """Whether a failed whole-file parse is JSONL content: empty, or one document per line."""
+    first = next((line for line in raw.splitlines() if line.strip()), None)
+    if first is None:
+        return True
+    if not any(
+        detail["type"] == "json_invalid"
+        and str(detail.get("ctx", {}).get("error", "")).startswith("trailing characters")
+        for detail in error.errors()
+    ):
+        return False
+    try:
+        from_json(first)
+    except ValueError:
+        return False
+    return True
 
 
 @dataclass
@@ -318,29 +349,50 @@ class ATIFTraceLoader:
     @cached_property
     def _loaded(self) -> tuple[TraceSnapshot, ATIFTraceDescription]:
         path = self.config.path
-        _line_number = call_count = 0
+        _line_number: int | None = None
+        call_count = 0
         cases: set[str] = set()
 
+        def records() -> Iterator[tuple[int | None, _Trajectory, bytes]]:
+            nonlocal _line_number
+            corpus: BinaryIO
+            if path.suffix.lower() == ".json":
+                raw = path.read_bytes()
+                try:
+                    source = _ATIF.validate_json(raw)
+                except ValidationError as error:
+                    if not _is_jsonl(raw, error):
+                        raise
+                    corpus = io.BytesIO(raw)
+                else:
+                    yield None, source, raw
+                    return
+            else:
+                corpus = path.open("rb")
+            with corpus:
+                for _line_number, line in enumerate(corpus, 1):
+                    if line.strip():
+                        raw = line.rstrip(b"\r\n")
+                        yield _line_number, _ATIF.validate_json(raw), raw
+
         def traces() -> Iterator[Trace]:
-            nonlocal _line_number, call_count
-            with path.open("rb") as corpus:
-                for _line_number, raw in enumerate(corpus, 1):
-                    if not raw.strip():
-                        continue
-                    trace = _normalize(_ATIF.validate_json(raw))
-                    trace.source_url = file_source_url(path, _line_number)
-                    pending = list(trace.root_spans)
-                    while pending:
-                        span = pending.pop()
-                        call_count += span.kind is SpanKind.TOOL
-                        pending.extend(span.children)
-                    cases.add(str(trace.attributes.get("logical_case_id") or trace.id))
-                    yield trace
+            nonlocal call_count
+            for line_number, source, raw in records():
+                trace = _normalize(source, raw)
+                trace.source_url = file_source_url(path, line_number)
+                pending = list(trace.root_spans)
+                while pending:
+                    span = pending.pop()
+                    call_count += span.kind is SpanKind.TOOL
+                    pending.extend(span.children)
+                cases.add(str(trace.attributes.get("logical_case_id") or trace.id))
+                yield trace
 
         try:
             snapshot = TraceSnapshot(traces())
         except (OSError, ValueError) as error:
-            raise ATIFTraceLoadError(f"{path}:{_line_number}: invalid ATIF: {error}") from error
+            location = path if _line_number is None else f"{path}:{_line_number}"
+            raise ATIFTraceLoadError(f"{location}: invalid ATIF: {error}") from error
         if not snapshot:
             raise ATIFTraceLoadError(f"{path}: contains no ATIF trajectories")
         return snapshot, ATIFTraceDescription(

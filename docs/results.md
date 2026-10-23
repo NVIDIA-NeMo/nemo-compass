@@ -36,10 +36,10 @@ traces use the HTTP tracking server’s UI. Braintrust links require your
 retain trace IDs without viewer links.
 
 Local inputs link to the original file on the machine that ran the analysis. Canonical
-JSONL, ATIF, Gym JSONL, and LangSmith exports include a `#L<number>` fragment for the
-physical source line. Opening the file at that line depends on your viewer’s support.
-Other native exports link to the containing file. Canonical file links always point
-to the input file; user-supplied URLs are not retained.
+JSONL, ATIF JSONL, Gym JSONL, and LangSmith exports include a `#L<number>` fragment for
+the physical source line. Opening the file at that line depends on your viewer’s support.
+Whole-file ATIF `.json` trajectories and other native exports link to the containing file.
+Canonical file links always point to the input file; user-supplied URLs are not retained.
 
 When a provider does not supply a usable URL, or its location cannot be determined
 (for example, an MLflow `databricks` or local tracking URI), the ID remains available.
