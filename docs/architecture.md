@@ -20,12 +20,15 @@ merges duplicates across signals and existing insights, and ranks the results. I
 require each new insight to have support from more than one trace and to merge symptoms only when
 they establish the same problem. These decisions rely on model judgment.
 
-When `code_base` is configured, a [code-aware
-validator](../src/compass/insights_generation/validation.py) runs before compilation and
-removes candidate problems contradicted by the agent’s source while retaining problems the source
-cannot resolve. Compilation then merges the retained evidence into insights, attaches supporting
-trace references, and assigns severity from observed consequences and recovery independently of
-occurrence count.
+When `code_base` or ETHOS.md is available, [candidate problem validation](../src/compass/insights_generation/validation.py)
+runs before compilation. Each candidate problem gets one investigation with its supporting
+traces and all configured context: intended behavior from ETHOS.md and read-only
+source-code tools. Behavior intentionally defined in source code does not excuse a
+violation of ETHOS.md: the implementation may itself be the cause of the problem.
+
+Concrete contradictions remove candidates; uncertainty retains them. Rejections preserve
+an explanation and evidence basis, including an exact passage when relying on ETHOS.md.
+Compilation handles priority, severity, and recurrence after validation.
 
 When `code_base` is configured, a [second code-aware
 review](../src/compass/insights_generation/confidence.py) runs after compilation. It evaluates
@@ -35,7 +38,7 @@ to the codebase and separate decision contracts, because they operate on differe
 different pipeline stages. If an agent cannot decide within its step budget, validation retains the
 problem and confidence is left unset.
 
-![Architecture overview: a Trace loaders group contains LangSmith, Langfuse, Braintrust, MLflow, and Other, all feeding a normalized snapshot. A Compass Signals group contains the five detectors, which feed candidate problems through optional code validation and insight compilation to ranked insights.](assets/architecture/overview.png)
+![Architecture overview: a Trace loaders group contains LangSmith, Langfuse, Braintrust, MLflow, and Other, all feeding a normalized snapshot. A Compass Signals group contains the five detectors, which feed candidate problems through optional candidate problem validation and insight compilation to ranked insights.](assets/architecture/overview.png)
 
 ## Ethos divergence
 
@@ -43,7 +46,7 @@ The ethos-divergence signal compares observed behavior with a document describin
 business purpose, requirements, and limits. This document, called `ETHOS.md`, defines expected
 behavior independently of the implementation. For example, a support agent might be allowed to
 explain refund policy but forbidden to issue refunds. The signal would investigate a recorded refund
-action as a possible violation, even if the tool call succeeded. ETHOS.md can be generated with the 
+action as a possible violation, even if the tool call succeeded. `ETHOS.md` can be generated with the
 help of the [Ethos skills](https://github.com/NVIDIA/skills/blob/main/skills/ethos-orchestrate/README.md#how-to-use). 
 
 The signal supplies the document and trace snapshot to an LLM issue detector. Its instructions

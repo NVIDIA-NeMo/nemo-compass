@@ -115,7 +115,7 @@ Compilation may fill a missing reason for an existing insight with a severity ra
 
 `confidence` describes how well source investigation supports the insight's
 behavior, root cause, scope, and implied remediation. It is set when
-[`code_base`](configuration.md#code-aware-review) is configured, is `low`, `med`, or `high`,
+[`code_base`](configuration.md#confidence-review-after-compilation) is configured, is `low`, `med`, or `high`,
 and is omitted otherwise. Existing insights retain their saved ratings during compilation;
 confidence review updates confidence without changing severity.
 

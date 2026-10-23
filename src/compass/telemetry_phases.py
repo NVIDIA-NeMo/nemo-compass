@@ -34,7 +34,10 @@ from compass.telemetry import record_span
 
 if TYPE_CHECKING:
     from compass.cli.output import RunResult
-    from compass.insights_generation.validation import EvidenceValidation
+    from compass.insights_generation.validation import (
+        CandidateProblemDecision,
+        CandidateProblemValidationResult,
+    )
 
 # These are display names, not keys used to look up configuration.
 _SIGNAL_NAMES = {
@@ -79,46 +82,55 @@ def record_signal_result(record: OpenInferenceSpan, result: CompassSignalResult)
 
 
 def problem_validation(
-    problem: Problem, code_base: Path
+    problem: Problem, code_base: Path | None, ethos: str | None = None
 ) -> AbstractContextManager[OpenInferenceSpan]:
     return _phase(
-        "source_code_validation.problem",
+        "candidate_problem_validation.problem",
         {
             "problem": problem.model_dump(mode="json"),
-            "code_base": str(code_base),
+            "code_base": str(code_base) if code_base is not None else None,
+            "ethos": ethos,
         },
     )
 
 
-def record_support(record: OpenInferenceSpan, decision: bool | None) -> None:
-    record.set_output({"supported": decision})
+def record_problem_decision(record: OpenInferenceSpan, decision: CandidateProblemDecision) -> None:
+    record.set_output(decision.model_dump(mode="json"))
 
 
-def validation(
-    evidence: list[CompassSignalResult], code_base: Path
+def candidate_problem_validation(
+    signal_results: list[CompassSignalResult], code_base: Path | None, ethos: str | None = None
 ) -> AbstractContextManager[OpenInferenceSpan]:
     return _phase(
-        "source_code_validation",
+        "candidate_problem_validation",
         {
             "problems": [
                 {"signal": _signal_name(item.signal_name), "description": problem.description}
-                for item in evidence
+                for item in signal_results
                 for problem in item.problems
             ],
-            "code_base": str(code_base),
+            "code_base": str(code_base) if code_base is not None else None,
+            "ethos": ethos,
         },
     )
 
 
-def record_validation(record: OpenInferenceSpan, result: EvidenceValidation) -> None:
-    groups: dict[str, list[dict[str, str]]] = {"supported": [], "unsupported": [], "unresolved": []}
+def record_candidate_problem_validation(
+    record: OpenInferenceSpan, result: CandidateProblemValidationResult
+) -> None:
+    groups: dict[str, list[dict[str, object]]] = {
+        "supported": [],
+        "unsupported": [],
+        "unresolved": [],
+    }
     categories = {True: "supported", False: "unsupported", None: "unresolved"}
-    for signal_result, decisions in zip(result.evidence, result.decisions, strict=True):
+    for signal_result, decisions in zip(result.signal_results, result.decisions, strict=True):
         for problem, decision in zip(signal_result.problems, decisions, strict=True):
-            groups[categories[decision]].append(
+            groups[categories[decision.supported]].append(
                 {
                     "signal": _signal_name(signal_result.signal_name),
                     "description": problem.description,
+                    "decision": decision.model_dump(mode="json"),
                 }
             )
     record.set_output(groups)
@@ -185,7 +197,9 @@ def record_run(record: OpenInferenceSpan, result: RunResult) -> None:
         {
             "trace_count": result.trace_count,
             "insights": [item.model_dump(mode="json") for item in result.insights],
-            "rejected_by_code": result.rejected_by_code,
+            "validation_rejections": [
+                item.model_dump(mode="json") for item in result.validation_rejections
+            ],
             "limitations": result.limitations,
         }
     )
