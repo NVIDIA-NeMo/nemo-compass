@@ -17,7 +17,7 @@ from pydantic import ValidationError
 import compass.cli.main as cli
 from compass.compass_signals.tool_issues.signal import to_tool_issue_trace
 from compass.config import RunConfig, TraceConfig
-from trace_ingest.catalog import definitions_in_scope, tool_catalog
+from trace_ingest.catalog import tool_catalog
 from trace_ingest.loaders import GymTraceConfig, GymTraceLoader, GymTraceLoadError
 from trace_ingest.models import UNSET, SpanKind, TokenCounts
 
@@ -448,34 +448,3 @@ def test_responses_create_params_tools_become_root_definitions(tmp_path):
     assert root.tool_definitions is not UNSET
     assert [definition.raw for definition in root.tool_definitions] == tools[:2]
     assert tool_catalog(trace) == {"search": {"type": "object"}, "open": {"type": "string"}}
-
-
-def test_tool_definitions_scope_every_root_invocation(tmp_path):
-    record = rollout()
-    t = record["ng_trajectory"]
-    t["invocations"][1]["parent_invocation_id"] = "unobserved"
-    t["invocations"][1]["conversation"] = [
-        {"type": "function_call", "call_id": "c2", "name": "lookup", "arguments": "{}"},
-    ]
-    record["responses_create_params"] = {"tools": [{"type": "function", "name": "lookup"}]}
-    trace = next(iter(loader_for(tmp_path, record).load()))
-    roots = [span for span in trace.root_spans if span.kind is SpanKind.AGENT]
-    assert len(roots) == 2
-    scope = definitions_in_scope(trace)
-    tool_ids = [c.id for root in roots for c in root.children if c.kind is SpanKind.TOOL]
-    assert len(tool_ids) == 2
-    assert all([d.name for d in scope[tool_id]] == ["lookup"] for tool_id in tool_ids)
-
-
-def test_tool_definitions_scope_observed_tools_without_invocations(tmp_path):
-    record = rollout()
-    t = record["ng_trajectory"]
-    t["invocations"] = []
-    t["turns"] = []
-    record["responses_create_params"] = {"tools": [{"type": "function", "name": "lookup"}]}
-    trace = next(iter(loader_for(tmp_path, record).load()))
-    assert not any(span.kind is SpanKind.AGENT for span in trace.root_spans)
-    observed = [span.id for span in trace.root_spans if span.kind is SpanKind.TOOL]
-    assert observed
-    scope = definitions_in_scope(trace)
-    assert all([d.name for d in scope[tool_id]] == ["lookup"] for tool_id in observed)

@@ -180,7 +180,7 @@ class TraceConfig(ConfigModel):
     )
     atif: ATIFTraceConfig | None = Field(
         default=None,
-        description="ATIF loader: one whole-file `.json` trajectory or a JSONL corpus",
+        description="ATIF trajectory JSONL loader",
     )
     mlflow_experiment: MLflowExperimentConfig | None = Field(
         default=None,

@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -202,6 +201,7 @@ def test_naive_timestamps_partial_metrics_and_multimodal_content(tmp_path):
         (lambda t: t["steps"][0].update(step_id=True), "step_id"),
         (lambda t: t["steps"][0].update(message={}), "message"),
         (lambda t: t["steps"][0].update(observation={"results": {}}), "results"),
+        (lambda t: t.pop("session_id"), "stable trace identity"),
         (lambda t: t["steps"][0].update(step_id=2), "sequential"),
         (lambda t: t["steps"].append(t["steps"][0]), "sequential"),
         (lambda t: t["steps"][0].update(source="tool"), "source"),
@@ -233,7 +233,6 @@ def test_invalid_source_has_line_context(tmp_path, mutation, match):
         ("unknown_subagent", "unresolved subagent reference"),
         ("external_subagent", "embed it"),
         ("duplicate_subagent", "unique trajectory_id"),
-        ("anonymous_subagent", "unique trajectory_id"),
         ("multiple_parents", "multiple parents"),
     ],
 )
@@ -251,8 +250,6 @@ def test_invalid_relationships(tmp_path, case, match):
         result["subagent_trajectory_ref"] = [{"trajectory_path": "subagent.json"}]
     elif case == "duplicate_subagent":
         source["subagent_trajectories"].append(source["subagent_trajectories"][0])
-    elif case == "anonymous_subagent":
-        source["subagent_trajectories"][1].pop("trajectory_id")
     else:
         step["observation"]["results"].append(result)
     with pytest.raises(ATIFTraceLoadError, match=match):
@@ -535,69 +532,6 @@ def test_subagent_tool_definitions_stay_on_subagent_span(tmp_path):
     assert root.tool_definitions is UNSET
     assert subagent.tool_definitions == tool_definitions_from_atif(definitions)
     assert tool_catalog(trace) == {"lookup": {"type": "object"}}
-
-
-@pytest.mark.parametrize("name", ["trajectory.json", "trajectory.JSON"])
-def test_pretty_printed_json_without_ids_uses_content_hash(tmp_path, name):
-    source = minimal()
-    del source["session_id"]
-    path = tmp_path / name
-    path.write_text(json.dumps(source, indent=2) + "\n")
-    loader = ATIFTraceLoader(ATIFTraceConfig(path=path))
-    (trace,) = loader.load()
-    assert trace.id == "atif-" + hashlib.sha256(path.read_bytes()).hexdigest()[:16]
-    assert "logical_case_id" not in trace.attributes
-    assert trace.source_url == path.resolve().as_uri()
-    assert loader.describe()["trace_count"] == 1
-
-
-def test_jsonl_without_ids_hashes_line_without_terminator(tmp_path):
-    source = minimal()
-    del source["session_id"]
-    trace = next(iter(loader_for(tmp_path, source).load()))
-    line = json.dumps(source).encode()
-    assert trace.id == "atif-" + hashlib.sha256(line).hexdigest()[:16]
-    assert "logical_case_id" not in trace.attributes
-
-
-def test_invalid_whole_file_json_reports_path(tmp_path):
-    path = tmp_path / "trajectory.json"
-    path.write_text(json.dumps([minimal()]))
-    with pytest.raises(ATIFTraceLoadError, match=r"trajectory\.json: invalid ATIF"):
-        ATIFTraceLoader(ATIFTraceConfig(path=path)).load()
-
-
-def test_jsonl_content_in_json_file_loads_line_by_line(tmp_path):
-    source = minimal()
-    del source["session_id"]
-    second = {**minimal(), "trajectory_id": "another"}
-    path = tmp_path / "traces.json"
-    path.write_text("\n" + json.dumps(source) + "\n\n" + json.dumps(second) + "\n")
-    traces = list(ATIFTraceLoader(ATIFTraceConfig(path=path)).load())
-    line = json.dumps(source).encode()
-    assert [trace.id for trace in traces] == [
-        "atif-" + hashlib.sha256(line).hexdigest()[:16],
-        "another",
-    ]
-    assert [trace.source_url for trace in traces] == [
-        path.resolve().as_uri() + "#L2",
-        path.resolve().as_uri() + "#L4",
-    ]
-
-
-@pytest.mark.parametrize(
-    "raw, match",
-    [
-        (" \n\t", r"trajectory\.json: contains no ATIF trajectories"),
-        (json.dumps(minimal(), indent=2) + "\nxyz", r"trajectory\.json: invalid ATIF"),
-        (json.dumps(minimal(), indent=2) * 2, r"trajectory\.json: invalid ATIF"),
-    ],
-)
-def test_empty_and_malformed_whole_file_json(tmp_path, raw, match):
-    path = tmp_path / "trajectory.json"
-    path.write_text(raw)
-    with pytest.raises(ATIFTraceLoadError, match=match):
-        ATIFTraceLoader(ATIFTraceConfig(path=path)).load()
 
 
 def test_every_tool_span_has_one_result_per_matched_source_result(tmp_path):

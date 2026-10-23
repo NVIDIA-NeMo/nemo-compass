@@ -475,23 +475,25 @@ def _normalize(record: dict[str, Any]) -> Trace:
     params = record.get("responses_create_params")
     definitions = _tool_definitions(params.get("tools") if isinstance(params, dict) else None)
     if definitions:
-        owners = [item for item in roots if item.kind is SpanKind.AGENT]
-        if not owners:
-            depth_first: list[Span] = []
-            pending = list(roots)
-            while pending:
-                item = pending.pop(0)
-                depth_first.append(item)
-                pending[:0] = item.children
-            owners = [
+        depth_first: list[Span] = []
+        pending = list(roots)
+        while pending:
+            item = pending.pop(0)
+            depth_first.append(item)
+            pending[:0] = item.children
+        owner = next(
+            (
                 item
                 for kind in (SpanKind.AGENT, SpanKind.LLM)
-                for item in depth_first
+                for candidates in (roots, depth_first)
+                for item in candidates
                 if item.kind is kind
-            ][:1]
-        if not owners:
+            ),
+            None,
+        )
+        if owner is None:
             extra_gaps.append({"code": "tool_definitions_without_owner_span"})
-        for owner in owners:
+        else:
             owner.tool_definitions = definitions
     return Trace(
         id=rollout,

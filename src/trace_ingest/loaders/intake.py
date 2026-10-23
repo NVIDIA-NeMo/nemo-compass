@@ -579,7 +579,7 @@ def _normalize_trace(
     )
     if logical_case_id is not None:
         attributes["logical_case_id"] = logical_case_id
-    unowned = _attach_atif_tool_definitions(ordered, normalized_by_id, root_spans)
+    unowned = _attach_atif_tool_definitions(ordered, normalized_by_id)
     if unowned:
         attributes["intake_loader_gaps"] = [
             {"code": "tool_definitions_without_owner_span", "span_id": span_id}
@@ -812,28 +812,16 @@ def _normalize_atif_tool_payload(
 def _attach_atif_tool_definitions(
     ordered: list[_IntakeSpan],
     normalized_by_id: Mapping[str, Span],
-    root_spans: list[Span],
 ) -> list[str]:
     """Set ATIF ``agent.tool_definitions`` on the span that recorded them.
 
     Definitions recorded on a span that cannot declare tools go to its nearest
-    AGENT or LLM ancestor, else to the first AGENT root, AGENT span, LLM root or
-    LLM span. Returns the ids of spans whose definitions found no owner.
+    AGENT or LLM ancestor. Returns the ids of spans whose definitions found no
+    owner.
     """
 
     declaring = (SpanKind.AGENT, SpanKind.LLM)
     parents = {span.span_id: span.parent_span_id for span in ordered}
-    canonical = [normalized_by_id[span.span_id] for span in ordered]
-    fallback = next(
-        (
-            span
-            for kind in declaring
-            for candidates in (root_spans, canonical)
-            for span in candidates
-            if span.kind is kind
-        ),
-        None,
-    )
     unowned: list[str] = []
     for raw_span in ordered:
         if raw_span.source != "atif":
@@ -847,10 +835,10 @@ def _attach_atif_tool_definitions(
         owner_id: str | None = raw_span.span_id
         while owner_id is not None and normalized_by_id[owner_id].kind not in declaring:
             owner_id = parents[owner_id]
-        owner = normalized_by_id[owner_id] if owner_id is not None else fallback
-        if owner is None:
+        if owner_id is None:
             unowned.append(raw_span.span_id)
             continue
+        owner = normalized_by_id[owner_id]
         current = [] if owner.tool_definitions is UNSET else owner.tool_definitions
         owner.tool_definitions = current + [item for item in definitions if item not in current]
     return unowned

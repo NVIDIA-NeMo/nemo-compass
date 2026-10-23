@@ -50,15 +50,11 @@ it. Files written before schema version 2 that carry `attributes.tool_catalog` s
 
 ## ATIF
 
-Each nonblank line must contain one complete ATIF trajectory. A path ending in `.json`, such
-as Harbor's `agent/trajectory.json`, is read as one whole-file trajectory instead, unless it
-holds one trajectory per line. The loader accepts schema versions `ATIF-v1.0` through
-`ATIF-v1.8`. Keep tool calls, observations, and nested subagent trajectories in the exported record.
-
-A trajectory without `trajectory_id` or `session_id` gets the ID `atif-` followed by the first
-16 hex digits of the SHA-256 of its record. `agent.tool_definitions` enable tool-schema checks,
-and an observation result with `is_error: true` (on the result or in its `extra`) marks the
-tool call as failed.
+Each nonblank line must contain one complete ATIF trajectory. The loader accepts schema
+versions `ATIF-v1.0` through `ATIF-v1.8`. Keep tool calls, observations, and nested subagent
+trajectories in the exported record. `agent.tool_definitions` enable tool-schema checks, and an
+observation result with `is_error: true` (on the result or in its `extra`) marks the tool call
+as failed.
 
 ## A different trace system
 

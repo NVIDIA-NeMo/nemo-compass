@@ -256,31 +256,17 @@ def _tool_definitions(
     including ``gen_ai.tool.definitions``, into an observation's top-level
     ``input.tools`` array. GENERATION catalogs describe the tools offered to that
     model call and therefore take precedence; root AGENT catalogs are only a
-    fallback for reduced traces with no generation observations, and each keeps
-    its own definitions. When a generation has no readable catalog, or the
-    selected observations offer different tool names, nothing is attached, so
-    the trace has no catalog.
-
-    Otherwise generation definitions are placed where the TOOL observations they
-    describe can see them:
-
-    1. Generations are grouped by their nearest AGENT ancestor. A group whose
-       members offer identical definitions (full equality, order-insensitive)
-       declares them once on that AGENT; otherwise, and for generations with no
-       AGENT ancestor, each generation keeps its own definitions.
-    2. When every generation offers identical definitions but some TOOL
-       observation would see none of them (it is neither under a declaring span
-       nor beside a declaring generation), they are instead declared once on the
-       nearest AGENT enclosing every generation and every TOOL observation.
+    fallback for reduced traces with no generation observations. Each selected
+    observation keeps its own definitions. When a generation has no readable
+    catalog, or the selected observations offer different tool names, nothing is
+    attached, so the trace has no catalog.
     """
 
-    kinds: dict[str, SpanKind] = {}
     root_agents: dict[str, list[ToolDefinition] | None] = {}
     generations: dict[str, list[ToolDefinition] | None] = {}
     for observation in observations:
         kind, _ = _map_observation_kind(observation.type)
         observation_id = str(observation.id)
-        kinds[observation_id] = kind
         catalog = _tool_definitions_from_input(observation.input)
         if kind is SpanKind.LLM:
             generations[observation_id] = catalog
@@ -300,74 +286,7 @@ def _tool_definitions(
         > 1
     ):
         return {}
-    if not generations:
-        return declared
-
-    def identity(catalog: list[ToolDefinition]) -> tuple[str, ...]:
-        return tuple(
-            sorted(json.dumps(item.model_dump(mode="json"), sort_keys=True) for item in catalog)
-        )
-
-    def nearest_agent(observation_id: str | None) -> str | None:
-        while observation_id is not None and kinds[observation_id] is not SpanKind.AGENT:
-            observation_id = effective_parents[observation_id]
-        return observation_id
-
-    def ancestry(observation_id: str) -> list[str]:
-        path: list[str] = []
-        current: str | None = observation_id
-        while current is not None:
-            path.append(current)
-            current = effective_parents[current]
-        return path[::-1]
-
-    by_agent: dict[str | None, list[str]] = {}
-    for generation_id in declared:
-        by_agent.setdefault(nearest_agent(effective_parents[generation_id]), []).append(
-            generation_id
-        )
-    attached: dict[str, list[ToolDefinition]] = {}
-    for agent_id, members in by_agent.items():
-        if agent_id is not None and len({identity(declared[m]) for m in members}) == 1:
-            attached[agent_id] = declared[members[0]]
-        else:
-            attached.update((member, declared[member]) for member in members)
-
-    children: dict[str | None, list[str]] = {}
-    for observation_id, parent_id in effective_parents.items():
-        children.setdefault(parent_id, []).append(observation_id)
-
-    def in_scope(tool_id: str) -> bool:
-        """Mirror ``definitions_in_scope``: under a declaring span or beside a declaring LLM."""
-        current = tool_id
-        while True:
-            parent_id = effective_parents[current]
-            if any(
-                sibling in attached and kinds[sibling] is SpanKind.LLM
-                for sibling in children[parent_id]
-            ):
-                return True
-            if parent_id is None:
-                return False
-            if parent_id in attached:
-                return True
-            current = parent_id
-
-    tools = [key for key, kind in kinds.items() if kind is SpanKind.TOOL]
-    if len({identity(catalog) for catalog in declared.values()}) > 1 or all(
-        in_scope(tool_id) for tool_id in tools
-    ):
-        return attached
-    members = [*declared, *tools]
-    common: list[str] = ancestry(members[0])
-    for member in members[1:]:
-        path = ancestry(member)
-        depth = 0
-        while depth < min(len(common), len(path)) and common[depth] == path[depth]:
-            depth += 1
-        common = common[:depth]
-    agent_id = nearest_agent(common[-1] if common else None)
-    return attached if agent_id is None else {agent_id: next(iter(declared.values()))}
+    return declared
 
 
 def _attach_tool_definitions(
