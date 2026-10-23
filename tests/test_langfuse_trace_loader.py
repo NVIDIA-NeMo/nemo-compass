@@ -1181,12 +1181,11 @@ def test_relay_spans_become_canonical_llm_calls() -> None:
     assert call.kind is SpanKind.LLM
     assert call.model == "aws/anthropic/bedrock-claude-sonnet-5-5"
     assert call.token_counts is not None
-    assert call.token_counts.model_dump() == {
+    assert call.token_counts.model_dump(exclude={"source"}) == {
         "input_tokens": 4,
         "cached_input_tokens": 2170,
         "output_tokens": 48,
         "cache_write_tokens": 119,
-        "cache_write_ttl_seconds": 3600,
     }
     assert call.llm_params == {
         "max_tokens": 32000,
@@ -1249,9 +1248,14 @@ def test_relay_openinference_and_legacy_layouts() -> None:
     assert oi.model == "claude-sonnet-4-6"
     assert oi.llm_tools == [{"name": "Read"}, {"name": "Write"}]
     assert oi.llm_params == {"max_tokens": 128000}
-    # This Relay build excluded cache from llm.token_count.prompt, against the spec:
-    # prompt < cache_read, so the counts are quarantined and no provider usage remains.
-    assert oi.token_counts is None
+    # This Relay build excluded cache from llm.token_count.prompt, against the spec;
+    # the counts are kept as recorded, prompt < cache_read included.
+    assert oi.token_counts is not None
+    assert oi.token_counts.model_dump(exclude_none=True, exclude={"source"}) == {
+        "input_total": 2,
+        "cached_input_tokens": 20502,
+        "output_tokens": 40,
+    }
     # The legacy layout records the model only in Relay's JSON, which is not read.
     assert old.model is None
     assert old.token_counts is not None
@@ -1327,15 +1331,14 @@ def test_openinference_spans_without_relay() -> None:
     assert call.model == "gpt-5.5"
     assert call.token_counts is not None
     # The spec counts cache inside llm.token_count.prompt.
-    assert call.token_counts.model_dump() == {
-        "input_tokens": 7697,
+    assert call.token_counts.model_dump(exclude_none=True, exclude={"source"}) == {
+        "input_total": 11409,
         "cached_input_tokens": 3712,
         "output_tokens": 81,
         "cache_write_tokens": 0,
     }
     assert call.llm_tools == [{"name": "Read"}]
     assert call.llm_params == {"temperature": 0}
-    assert call.token_counts.cache_write_ttl_seconds is None
 
 
 def test_relay_fills_fields_openinference_lacks() -> None:
@@ -1395,8 +1398,7 @@ def test_relay_fills_fields_openinference_lacks() -> None:
     assert (claude.token_counts.input_tokens, claude.token_counts.cache_write_tokens) == (26, 3591)
     # OpenInference has no cache write for OpenAI; Relay's provider usage does.
     assert gpt.token_counts.cache_write_tokens == 0
-    # No request body in an OpenInference export: the TTL comes from the usage split.
-    assert claude.token_counts.cache_write_ttl_seconds == 3600
+    assert claude.token_counts.cache_writes_by_ttl == {300: 0, 3600: 3591}
 
 
 def test_each_producer_has_its_own_reader() -> None:
@@ -1445,12 +1447,10 @@ def test_each_producer_has_its_own_reader() -> None:
     assert from_sdk_with_attributes.token_counts == from_sdk.token_counts
     assert from_unscoped.token_counts is None
     assert from_sdk.token_counts is not None
-    assert from_sdk.token_counts.model_dump() == {
+    assert from_sdk.token_counts.model_dump(exclude_none=True, exclude={"source"}) == {
         "input_tokens": 2,
-        "cached_input_tokens": None,
         "output_tokens": 56,
-        "cache_write_tokens": 22509,
-        "cache_write_ttl_seconds": 300,
+        "cache_writes_by_ttl": {300: 22509},
     }
     assert from_gen_ai.kind is SpanKind.LLM
     assert from_gen_ai.token_counts is None
@@ -1495,8 +1495,8 @@ INGESTION_CASES = {
             "cached_input_tokens": 17347,
             "output_tokens": 56,
             "cache_write_tokens": 5203,
-            # The breakpoint sets no ttl; the usage says the write went to the 5m cache.
-            "cache_write_ttl_seconds": 300,
+            "cache_writes_by_ttl": {300: 5203, 3600: 0},
+            "source": "nemo_relay",
         },
         ["Read"],
         {"max_tokens": 32000, "thinking": {"type": "adaptive"}, "stream": True},
@@ -1524,12 +1524,12 @@ INGESTION_CASES = {
         ),
         None,
         {
-            # input_tokens includes the cache read.
-            "input_tokens": 7697,
+            # input_total includes the cache read.
+            "input_total": 11409,
             "cached_input_tokens": 3712,
             "output_tokens": 87,
             "cache_write_tokens": 0,
-            "cache_write_ttl_seconds": 86400,
+            "source": "nemo_relay",
         },
         ["exec_command"],
         {"reasoning": {"effort": "medium"}, "prompt_cache_retention": "24h"},
@@ -1548,8 +1548,8 @@ INGESTION_CASES = {
             "input_tokens": 2,
             "cached_input_tokens": 21088,
             "output_tokens": 56,
-            "cache_write_tokens": 3160,
-            "cache_write_ttl_seconds": 300,
+            "cache_writes_by_ttl": {300: 3160},
+            "source": "langfuse_sdk",
         },
         None,
         None,
@@ -1564,9 +1564,9 @@ INGESTION_CASES = {
             "input_cached_tokens": 11904,
             "output_reasoning_tokens": 33,
         },
-        # Langfuse splits cache out of input and reasoning out of output; OpenAI
-        # reports no cache write and the SDK records no retention.
-        {"input_tokens": 133, "cached_input_tokens": 11904, "output_tokens": 87},
+        # Langfuse splits cache out of input and reasoning out of output, so
+        # ``output`` alone is not the output count.
+        {"input_tokens": 133, "cached_input_tokens": 11904, "source": "langfuse_sdk"},
         None,
         None,
     ),
@@ -1595,7 +1595,7 @@ def test_ingestion_reads_each_producer_and_provider(
     (span,) = normalized.root_spans
     assert span.kind is SpanKind.LLM
     assert span.token_counts is not None
-    assert span.token_counts.model_dump() == token_counts
+    assert span.token_counts.model_dump(exclude_none=True) == token_counts
     names = (
         [tool.get("name") for tool in span.llm_tools if isinstance(tool, dict)]
         if span.llm_tools is not None

@@ -24,7 +24,7 @@ OpenInference instrumentations.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any
 
 from pydantic import JsonValue
 
@@ -40,10 +40,8 @@ from trace_ingest.otel.openinference import (
 from trace_ingest.token_usage import anthropic, openai
 
 _SCOPE_TYPE = "nemo_relay.scope_type"
-_ANTHROPIC_MESSAGES = "anthropic.messages"
-_OPENAI_RESPONSES = "openai.responses"
-
-_T = TypeVar("_T")
+# The usage reader of each generation route.
+_ROUTES = {"anthropic.messages": anthropic.token_counts, "openai.responses": openai.token_counts}
 
 
 def is_relay(metadata: object) -> bool:
@@ -77,11 +75,21 @@ def token_counts(metadata: object, route: str | None) -> TokenCounts | None:
     ``route`` is the span name, which Relay sets to the API route. A provider
     usage object is self-describing, while llm.token_count.prompt depends on the
     exporter following the spec (July 2026 Relay builds excluded cache from it),
-    so Relay's own usage wins over the OpenInference counts.
+    so Relay's own usage wins over the OpenInference counts. When Relay recorded
+    a usage object but it gives no count, the OpenInference counts say why in
+    ``fallback_reason``.
     """
 
-    own = _own_token_counts(span_attributes(metadata), route)
-    return _first(own, openinference.token_counts(metadata))
+    usage = _response(span_attributes(metadata)).get("usage")
+    if not isinstance(usage, Mapping) or not usage:
+        return openinference.token_counts(metadata)
+    if (own := _own_token_counts(usage, route)) is not None:
+        return own.model_copy(update={"source": "nemo_relay"})
+    fallback = openinference.token_counts(metadata)
+    if fallback is None:
+        return None
+    reason = "unreadable_provider_usage" if route in _ROUTES else "unsupported_route"
+    return fallback.model_copy(update={"fallback_reason": reason})
 
 
 # Tools and parameters: OpenInference attributes first, the request body fills
@@ -105,18 +113,11 @@ def params(metadata: object) -> dict[str, JsonValue] | None:
     return request_params(body) if body else None
 
 
-def _own_token_counts(attributes: Mapping[str, Any], route: str | None) -> TokenCounts | None:
+def _own_token_counts(usage: Mapping[str, Any], route: str | None) -> TokenCounts | None:
     """Counts from the provider usage of a generation route."""
 
-    response = _response(attributes)
-    usage = response.get("usage")
-    if not isinstance(usage, Mapping) or not usage:
-        return None
-    if route == _ANTHROPIC_MESSAGES:
-        return anthropic.token_counts(usage, request=_request(attributes))
-    if route == _OPENAI_RESPONSES:
-        return openai.token_counts(usage, request=_request(attributes), response=response)
-    return None
+    reader = _ROUTES.get(route) if route else None
+    return reader(usage) if reader else None
 
 
 def _request(attributes: Mapping[str, Any]) -> dict[str, Any]:
@@ -137,10 +138,6 @@ def _response(attributes: Mapping[str, Any]) -> dict[str, Any]:
         for key, value in attributes.items()
         if key.startswith(prefix)
     }
-
-
-def _first(*values: _T | None) -> _T | None:
-    return next((value for value in values if value is not None), None)
 
 
 __all__ = ["agent_id", "is_relay", "params", "token_counts", "tools"]
