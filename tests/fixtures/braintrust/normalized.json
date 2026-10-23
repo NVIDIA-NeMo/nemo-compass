@@ -32,9 +32,14 @@
                   {
                     "content": null,
                     "is_error": null,
+                    "subagent_refs": [],
+                    "extra": {},
                     "attributes": {}
                   }
-                ]
+                ],
+                "server": null,
+                "initiator": null,
+                "extra": {}
               },
               "error": null,
               "attributes": {
@@ -90,7 +95,10 @@
                 "result_count": 0,
                 "instrumentation_alias_of": null,
                 "prior_user_text": null,
-                "results": []
+                "results": [],
+                "server": null,
+                "initiator": null,
+                "extra": {}
               },
               "error": "not found",
               "attributes": {
@@ -274,5 +282,6 @@
       "trace_id": "root"
     }
   },
+  "losses": [],
   "schema_version": "2"
 }

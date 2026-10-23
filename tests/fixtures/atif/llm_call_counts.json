@@ -1,0 +1,70 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "trajectory_id": "llm-call-counts",
+  "agent": {
+    "name": "agent",
+    "version": "1",
+    "model_name": "default-model"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": "Go."
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "message": "Unrecorded count.",
+      "metrics": {
+        "prompt_tokens": 10,
+        "cached_tokens": 0,
+        "completion_tokens": 2
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "agent",
+      "message": "One call.",
+      "llm_call_count": 1,
+      "model_name": "step-model",
+      "metrics": {
+        "prompt_tokens": 12
+      }
+    },
+    {
+      "step_id": 4,
+      "source": "agent",
+      "message": "Three calls merged.",
+      "llm_call_count": 3,
+      "metrics": {
+        "prompt_tokens": 30,
+        "cached_tokens": 5,
+        "completion_tokens": 6,
+        "cost_usd": 0.03
+      }
+    },
+    {
+      "step_id": 5,
+      "source": "agent",
+      "message": "Dispatching without a model.",
+      "llm_call_count": 0,
+      "reasoning_effort": "low",
+      "tool_calls": [
+        {
+          "tool_call_id": "run",
+          "function_name": "run_tests",
+          "arguments": {}
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "run",
+            "content": "passed"
+          }
+        ]
+      }
+    }
+  ]
+}
