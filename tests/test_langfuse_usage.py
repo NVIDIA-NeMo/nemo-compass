@@ -95,6 +95,16 @@ def test_openinference_without_cache_keys_is_cache_unknown():
     assert oi_counts(total=900) is None
 
 
+def test_openinference_params_are_only_what_it_records():
+    def params(invocation: dict) -> dict | None:
+        attributes = {"llm.invocation_parameters": json.dumps(invocation)}
+        return openinference.params(span(attributes=attributes))
+
+    assert params({"model": "m", "max_tokens": 10}) == {"max_tokens": 10}
+    # Only the model recorded: the parameters are unknown, not all defaults.
+    assert params({"model": "m"}) is None
+
+
 def sdk_counts(usage: dict | None) -> dict | None:
     counts = langfuse_sdk.token_counts(span(usage_details=usage, scope="langfuse-sdk"))
     return None if counts is None else counts.model_dump(exclude_none=True, exclude={"source"})

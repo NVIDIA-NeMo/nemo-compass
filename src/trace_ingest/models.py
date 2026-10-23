@@ -231,8 +231,9 @@ class Span(_TraceModel):
     llm_params: dict[str, JsonValue] | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
-        description="Top-level request parameters sent to the model, without the model, tools "
-        "and prompt content; an empty object means all defaults. Valid only for an LLM span.",
+        description="Top-level request parameters the source records, without the model, tools "
+        "and prompt content; a parameter not listed was not recorded, not necessarily left at "
+        "its default. Valid only for an LLM span.",
     )
     agent_id: str | None = Field(
         default=None,
