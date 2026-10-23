@@ -138,8 +138,9 @@ class ToolDefinition(_TraceModel):
 class TokenCounts(_TraceModel):
     """Non-negative token counts as the source records them.
 
-    Each count is copied from a source count with the same meaning, never derived
-    from other counts; a count the source does not record is None.
+    Each count is copied from a source count with the same meaning, or summed from
+    the source's buckets that together make it, never derived from other counts;
+    a count the source does not record is None.
     """
 
     input_total: int | None = Field(
@@ -177,12 +178,6 @@ class TokenCounts(_TraceModel):
         exclude_if=lambda value: value is None,
         description="Where the counts were read, such as nemo_relay (the provider's usage), "
         "openinference or langfuse_sdk.",
-    )
-    fallback_reason: str | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-        description="Why a preferred source was passed over for this one; None when no "
-        "preferred source recorded counts.",
     )
 
 

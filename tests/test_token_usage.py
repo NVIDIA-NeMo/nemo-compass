@@ -5,9 +5,9 @@ from __future__ import annotations
 
 import pytest
 
-from trace_ingest.loaders.langfuse import langfuse_sdk
-from trace_ingest.otel.openinference import otel_int
-from trace_ingest.token_usage import anthropic, openai, token_counts
+from trace_ingest.loaders.helper.llm_span import SpanData, langfuse_sdk
+from trace_ingest.loaders.helper.llm_span.openinference import otel_int
+from trace_ingest.loaders.helper.llm_span.token_usage import anthropic, openai, token_counts
 
 
 def counts(value) -> dict | None:
@@ -83,7 +83,8 @@ def test_anthropic_cache_writes_by_ttl(usage, expected):
     assert result.cache_writes_by_ttl == expected
 
 
-SDK_METADATA = {"scope": {"name": "langfuse-sdk"}}
+def sdk(usage: dict) -> SpanData:
+    return SpanData("LLM", "GENERATION", "langfuse-sdk", {}, usage)
 
 
 def test_langfuse_sdk_reads_anthropic_cache_creation_key():
@@ -94,7 +95,7 @@ def test_langfuse_sdk_reads_anthropic_cache_creation_key():
         "cache_read_input_tokens": 40000,
         "cache_creation_input_tokens": 21621,
     }
-    assert counts(langfuse_sdk.token_counts(SDK_METADATA, usage)) == {
+    assert counts(langfuse_sdk.token_counts(sdk(usage))) == {
         "input_tokens": 3,
         "cached_input_tokens": 40000,
         "output_tokens": 50,
@@ -104,16 +105,16 @@ def test_langfuse_sdk_reads_anthropic_cache_creation_key():
 
 def test_langfuse_sdk_leaves_invalid_counts_unknown():
     usage = {"input": 2, "output": 5, "cache_read_input_tokens": -7, "input_cache_creation_5m": 100}
-    assert counts(langfuse_sdk.token_counts(SDK_METADATA, usage)) == {
+    assert counts(langfuse_sdk.token_counts(sdk(usage))) == {
         "input_tokens": 2,
         "output_tokens": 5,
         "cache_writes_by_ttl": {300: 100},
     }
 
 
-def test_langfuse_sdk_unknown_bucket_leaves_its_count_unknown():
-    usage = {"input": 2, "input_audio_tokens": 7, "output": 10, "output_audio_tokens": 3}
-    assert langfuse_sdk.token_counts(SDK_METADATA, usage) is None
+def test_langfuse_sdk_unknown_output_bucket_leaves_output_unknown():
+    usage = {"input": 2, "output": 10, "output_audio_tokens": 3}
+    assert counts(langfuse_sdk.token_counts(sdk(usage))) == {"input_tokens": 2}
 
 
 @pytest.mark.parametrize(

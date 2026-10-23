@@ -5,37 +5,34 @@
 
 See https://github.com/Arize-ai/openinference/blob/main/spec/semantic_conventions.md.
 Any OpenInference instrumentation is read the same way, not only NeMo Relay.
-Each function takes a Langfuse observation's metadata, which keeps the span
-attributes under ``attributes``.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import JsonValue
 
+from trace_ingest.loaders.helper.llm_span.token_usage import token_counts as _token_counts
 from trace_ingest.models import TokenCounts
-from trace_ingest.token_usage import token_counts as _token_counts
 
-_SPAN_KIND = "openinference.span.kind"
-
-
-def is_openinference(metadata: object) -> bool:
-    """The spec requires ``openinference.span.kind`` on every span."""
-
-    return _SPAN_KIND in span_attributes(metadata)
+if TYPE_CHECKING:
+    from trace_ingest.loaders.helper.llm_span import SpanData
 
 
-def params(metadata: object) -> dict[str, JsonValue] | None:
-    attributes = span_attributes(metadata)
-    return request_params(json_object(attributes.get("llm.invocation_parameters")))
+def model(span: SpanData) -> str | None:
+    value = span.attributes.get("llm.model_name")
+    return value if isinstance(value, str) and value else None
 
 
-def token_counts(metadata: object) -> TokenCounts | None:
-    attributes = span_attributes(metadata)
+def params(span: SpanData) -> dict[str, JsonValue] | None:
+    return request_params(json_object(span.attributes.get("llm.invocation_parameters")))
+
+
+def token_counts(span: SpanData) -> TokenCounts | None:
+    attributes = span.attributes
     # The spec counts cache reads and writes inside llm.token_count.prompt.
     return _token_counts(
         input_total=otel_int(attributes.get("llm.token_count.prompt")),
@@ -46,9 +43,9 @@ def token_counts(metadata: object) -> TokenCounts | None:
     )
 
 
-def tools(metadata: object) -> list[JsonValue] | None:
+def tools(span: SpanData) -> list[JsonValue] | None:
     indexed = []
-    for key, value in span_attributes(metadata).items():
+    for key, value in span.attributes.items():
         parts = key.split(".")
         if (
             len(parts) == 5
@@ -71,17 +68,6 @@ def request_params(request: Mapping[str, Any] | None) -> dict[str, JsonValue] | 
     if request is None:
         return None
     return {key: to_json(value) for key, value in request.items() if key not in _NON_PARAM_KEYS}
-
-
-def span_attributes(metadata: object) -> Mapping[str, Any]:
-    """The span attributes in a Langfuse observation's metadata (``metadata.attributes``).
-
-    Langfuse keeps an OTel span's attributes there. Readers find their own data
-    by key, since users can also set metadata.attributes.
-    """
-
-    attributes = metadata.get("attributes") if isinstance(metadata, Mapping) else None
-    return attributes if isinstance(attributes, Mapping) else {}
 
 
 def otel_int(value: object) -> int | None:
@@ -122,4 +108,4 @@ def to_json(value: object) -> JsonValue:
     return json.loads(json.dumps(value, ensure_ascii=False))
 
 
-__all__ = ["is_openinference", "params", "token_counts", "tools"]
+__all__ = ["model", "params", "token_counts", "tools"]

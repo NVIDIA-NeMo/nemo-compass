@@ -13,8 +13,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from trace_ingest.loaders.helper.llm_span.token_usage._core import token_counts as _token_counts
 from trace_ingest.models import TokenCounts
-from trace_ingest.token_usage._core import token_counts as _token_counts
 
 
 def token_counts(usage: Mapping[str, Any]) -> TokenCounts | None:
