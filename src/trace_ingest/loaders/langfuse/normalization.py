@@ -14,6 +14,8 @@ from urllib.parse import quote
 
 from pydantic import JsonValue
 
+from trace_ingest.loaders.helper import llm_span
+from trace_ingest.loaders.helper.llm_span import SpanData, nemo_relay
 from trace_ingest.loaders.langfuse.config import LangfuseTraceLoadError
 from trace_ingest.models import (
     UNSET,
@@ -398,6 +400,11 @@ def _normalize_observation(
 ) -> Span:
     observation_id = str(observation.id)
     kind, subtype = _map_observation_kind(observation.type)
+    data = _span_data(observation)
+    llm = llm_span.normalize(data)
+    if llm is not None and kind is not SpanKind.LLM:
+        # Relay's full export types its LLM calls as plain spans.
+        kind, subtype = SpanKind.LLM, data.type
     started_at = _started_at(observation)
     ended_at = _optional_datetime(observation.end_time)
     pointer: dict[str, JsonValue] = {**base_pointer, "observation_id": observation_id}
@@ -408,6 +415,9 @@ def _normalize_observation(
     status_message = str(observation.status_message) if observation.status_message else None
     error = status_message or "Langfuse observation level ERROR" if level == "ERROR" else None
     name = str(observation.name) if observation.name else None
+    # Langfuse's own model, which it prices by; else the one the span records,
+    # such as Relay's for calls Langfuse does not type as generations.
+    model = str(observation.model) if observation.model else (llm.model if llm else None)
     return Span(
         id=observation_id,
         kind=kind,
@@ -416,7 +426,11 @@ def _normalize_observation(
         input=_io_value(observation.input),
         output=_io_value(observation.output),
         cost_usd=_observation_cost(observation),
-        model=str(observation.model) if observation.model else None,
+        model=model,
+        token_counts=llm.token_counts if llm else None,
+        llm_tools=llm.tools if llm else None,
+        llm_params=llm.params if llm else None,
+        agent_id=nemo_relay.agent_id(data),
         tool_name=name if kind is SpanKind.TOOL else None,
         error=error,
         attributes={
@@ -450,6 +464,23 @@ def _map_observation_kind(value: object) -> tuple[SpanKind, str | None]:
         return SpanKind(provider_type), None
     except ValueError:
         return SpanKind.UNKNOWN, provider_type
+
+
+def _span_data(observation: LangfuseObservation) -> SpanData:
+    """What the LLM span readers need, from where Langfuse keeps it: OTel span
+    attributes and the instrumentation scope under ``metadata``, its own usage in
+    ``usageDetails``."""
+
+    metadata = observation.metadata if isinstance(observation.metadata, Mapping) else {}
+    scope = metadata.get("scope")
+    attributes = metadata.get("attributes")
+    return SpanData(
+        name=str(observation.name) if observation.name else None,
+        type=str(observation.type) if observation.type else None,
+        scope=str(scope.get("name")) if isinstance(scope, Mapping) and scope.get("name") else None,
+        attributes=attributes if isinstance(attributes, Mapping) else {},
+        usage_details=observation.usage_details or {},
+    )
 
 
 def _started_at(observation: LangfuseObservation) -> datetime:

@@ -7,6 +7,20 @@
       },
       "description": "One canonical, recursively nested unit of work in an agent trace.",
       "properties": {
+        "agent_id": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Source-recorded agent ID, unique within the logical case: an AGENT span's own agent, or the agent an LLM call belongs to. Never a name shared by parallel agents.",
+          "title": "Agent Id"
+        },
         "attributes": {
           "additionalProperties": {
             "$ref": "#/$defs/JsonValue"
@@ -78,6 +92,38 @@
         "kind": {
           "$ref": "#/$defs/SpanKind",
           "description": "Normalized span category represented by this source span."
+        },
+        "llm_params": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Top-level request parameters the source records, without the model, tools and prompt content; a parameter not listed was not recorded, not necessarily left at its default. Valid only for an LLM span.",
+          "title": "Llm Params"
+        },
+        "llm_tools": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/JsonValue"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Top-level tool list sent to the model, in order; valid only for an LLM span.",
+          "title": "Llm Tools"
         },
         "model": {
           "anyOf": [
@@ -196,32 +242,108 @@
       "additionalProperties": {
         "$ref": "#/$defs/JsonValue"
       },
-      "description": "Non-negative token counts using the source's authoritative accounting.",
+      "description": "Non-negative token counts as the source records them.\n\nEach count is copied from a source count with the same meaning, or summed from\nthe source's buckets that together make it, never derived from other counts;\na count the source does not record is None.",
       "properties": {
+        "cache_write_tokens": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Input tokens written to the cache, across all TTLs.",
+          "title": "Cache Write Tokens"
+        },
+        "cache_writes_by_ttl": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Input tokens written to the cache per TTL in seconds, as the response reports them; may cover only some of cache_write_tokens.",
+          "title": "Cache Writes By Ttl"
+        },
         "cached_input_tokens": {
-          "description": "Cached input tokens.",
-          "minimum": 0,
-          "title": "Cached Input Tokens",
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Input tokens read from the cache.",
+          "title": "Cached Input Tokens"
         },
         "input_tokens": {
-          "description": "Uncached input tokens.",
-          "minimum": 0,
-          "title": "Input Tokens",
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Uncached input tokens; excludes cache reads and cache writes.",
+          "title": "Input Tokens"
+        },
+        "input_total": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "All input tokens as the source totals them: uncached input plus cache reads and cache writes.",
+          "title": "Input Total"
         },
         "output_tokens": {
-          "description": "Generated output tokens.",
-          "minimum": 0,
-          "title": "Output Tokens",
-          "type": "integer"
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Generated output tokens, reasoning tokens included.",
+          "title": "Output Tokens"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Where the counts were read, such as nemo_relay (the provider's usage), openinference or langfuse_sdk.",
+          "title": "Source"
         }
       },
-      "required": [
-        "input_tokens",
-        "cached_input_tokens",
-        "output_tokens"
-      ],
       "title": "TokenCounts",
       "type": "object"
     },
