@@ -46,9 +46,6 @@ compass_signals:
 Set `EMBEDDING_API_KEY` in your [environment file](model-access.md#credentials).
 Replace the model alias and endpoint with your provider’s values.
 
-Remote embedding requests use adaptive concurrency and retries. Run
-`compass --help-all` for tuning options and defaults.
-
 To run the 8B embedding model locally, add `local-embedding` to the extras in your
 install command. Keep your source extra too. For LangSmith:
 

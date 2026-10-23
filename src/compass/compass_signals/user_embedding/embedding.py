@@ -10,14 +10,14 @@ import math
 import os
 import random
 import time
-from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from functools import cached_property
 from importlib.resources import files
 from importlib.util import find_spec
+from itertools import islice
 from typing import TYPE_CHECKING
 
 import httpx
@@ -109,8 +109,6 @@ class _RemoteBatch:
     index: int
     inputs: list[str]
     counts: list[int]
-    attempts: int = 0
-    retry_deadline: float | None = None
 
 
 if TYPE_CHECKING:
@@ -127,13 +125,6 @@ class UserEmbedding:
 
     data: bytes
     token_count: int
-
-
-@dataclass(frozen=True)
-class _ActiveRequest:
-    batch: _RemoteBatch
-    generation: int
-    submitted_at: float
 
 
 class UserEmbeddingProjection:
@@ -192,9 +183,9 @@ class LiteLLMEmbeddingConfig(BaseModel):
     model: str = Field(min_length=1, description="LiteLLM model alias for Qwen/Qwen3-Embedding-8B")
     api_base: str | None = None
     api_key_env: str | None = Field(default=None, description="API key environment variable")
-    batch_size: int = Field(default=100, ge=1, description="Maximum messages per request")
+    batch_size: int = Field(default=128, ge=1, description="Maximum messages per request")
     max_concurrency: int = Field(
-        default=4, ge=1, le=32, description="Maximum concurrent embedding requests; starts at one"
+        default=8, ge=1, le=32, description="Maximum concurrent embedding requests"
     )
     max_retries: int = Field(
         default=3, ge=0, le=10, description="Retries per failed embedding batch"
@@ -212,135 +203,8 @@ class LiteLLMEmbeddingConfig(BaseModel):
         default=60,
         gt=0,
         allow_inf_nan=False,
-        description="Maximum cooldown in seconds; longer Retry-After fails the run",
+        description="Maximum retry delay in seconds; longer Retry-After fails the run",
     )
-
-
-class _RemoteEmbeddingRun:
-    """Coordinate one run; only the embedding callable executes on worker threads."""
-
-    def __init__(
-        self,
-        config: LiteLLMEmbeddingConfig,
-        batches: Iterator[_RemoteBatch],
-        embed: Callable[[_RemoteBatch], list[UserEmbedding]],
-    ) -> None:
-        self.config = config
-        self.batches = batches
-        self.embed = embed
-        self.retries: deque[tuple[_RemoteBatch, Exception]] = deque()
-        self.active: dict[Future[list[UserEmbedding]], _ActiveRequest] = {}
-        self.completed: dict[int, list[UserEmbedding]] = {}
-        self.concurrency = 1
-        self.successes = 0
-        self.generation = 0
-        self.cooldown_until = 0.0
-        self.exhausted = False
-
-    @property
-    def has_pending_batches(self) -> bool:
-        return bool(self.retries) or not self.exhausted
-
-    def run(self) -> list[UserEmbedding]:
-        # On failure, drain running requests before propagating the error.
-        with ThreadPoolExecutor(max_workers=self.config.max_concurrency) as executor:
-            while self.active or self.has_pending_batches:
-                self._submit_ready_batches(executor)
-                for future in self._wait_for_completions():
-                    self._complete_request(future)
-        return [item for index in sorted(self.completed) for item in self.completed[index]]
-
-    def _next_batch(self) -> _RemoteBatch | None:
-        """Prioritize retries, checking their elapsed budget before resubmission."""
-        if self.retries:
-            batch, error = self.retries.popleft()
-            if batch.retry_deadline is not None and time.monotonic() >= batch.retry_deadline:
-                raise error
-            return batch
-        batch = next(self.batches, None)
-        if batch is None:
-            self.exhausted = True
-        return batch
-
-    def _submit_ready_batches(self, executor: ThreadPoolExecutor) -> None:
-        while len(self.active) < self.concurrency and time.monotonic() >= self.cooldown_until:
-            batch = self._next_batch()
-            if batch is None:
-                return
-            batch.attempts += 1
-            future = executor.submit(self.embed, batch)
-            self.active[future] = _ActiveRequest(batch, self.generation, time.monotonic())
-
-    def _wait_for_completions(self) -> set[Future[list[UserEmbedding]]]:
-        if not self.active:
-            if self.has_pending_batches:
-                time.sleep(max(0.0, self.cooldown_until - time.monotonic()))
-            return set()
-        # Wake when cooldown expires if a free slot can take pending work.
-        timeout = None
-        if len(self.active) < self.concurrency and self.has_pending_batches:
-            timeout = max(0.0, self.cooldown_until - time.monotonic())
-        done, _ = wait(self.active, timeout=timeout, return_when=FIRST_COMPLETED)
-        return done
-
-    def _complete_request(self, future: Future[list[UserEmbedding]]) -> None:
-        request = self.active.pop(future)
-        try:
-            self.completed[request.batch.index] = future.result()
-        except Exception as error:
-            self._schedule_retry(request, error)
-        else:
-            self._record_success(request)
-
-    def _schedule_retry(self, request: _ActiveRequest, error: Exception) -> None:
-        batch = request.batch
-        delay = _retry_delay(error, batch.attempts, self.config.max_retry_wait)
-        now = time.monotonic()
-        if batch.retry_deadline is None:
-            batch.retry_deadline = now + self.config.retry_timeout
-        if (
-            delay is None
-            or batch.attempts > self.config.max_retries
-            or now + delay >= batch.retry_deadline
-        ):
-            raise error
-        self.successes = 0
-        self.cooldown_until = max(self.cooldown_until, now + delay)
-        if getattr(error, "status_code", None) == 429 and request.generation == self.generation:
-            self._reduce_concurrency()
-        self.retries.append((batch, error))
-        logger.warning(
-            "Embedding batch %d retry %d/%d: %s; cooldown %.2fs",
-            batch.index // self.config.batch_size,
-            batch.attempts,
-            self.config.max_retries,
-            type(error).__name__,
-            delay,
-        )
-
-    def _reduce_concurrency(self) -> None:
-        previous = self.concurrency
-        self.concurrency = max(1, self.concurrency // 2)
-        # Other requests already in flight must not cause another reduction.
-        self.generation += 1
-        logger.warning(
-            "Embedding concurrency %d -> %d after rate limit", previous, self.concurrency
-        )
-
-    def _record_success(self, request: _ActiveRequest) -> None:
-        # Old in-flight completions and recovered retries cannot undo backoff.
-        if (
-            request.generation != self.generation
-            or request.batch.attempts != 1
-            or request.submitted_at < self.cooldown_until
-        ):
-            return
-        self.successes += 1
-        if self.successes >= self.concurrency and self.concurrency < self.config.max_concurrency:
-            previous = self.concurrency
-            self.concurrency += 1
-            self.successes = 0
-            logger.info("Embedding concurrency %d -> %d", previous, self.concurrency)
 
 
 class UserEmbeddingGenerator:
@@ -448,19 +312,60 @@ class UserEmbeddingGenerator:
             yield _RemoteBatch(start, inputs, counts)
 
     def generate_remote(self, texts: list[str]) -> list[UserEmbedding]:
-        """Encode with a rolling queue and one coordinator owning retries and limits."""
+        """Encode with a fixed worker pool and bounded, independently retried batches."""
         config = self.litellm
         if config is None:
             raise ValueError("Remote embeddings require LiteLLM configuration")
         if not texts:
             return []
         api_key = os.environ[config.api_key_env] if config.api_key_env else None
-        coordinator = _RemoteEmbeddingRun(
-            config=config,
-            batches=self._remote_batches(texts, config.batch_size),
-            embed=lambda batch: self._remote_batch(batch, config, api_key),
-        )
-        return coordinator.run()
+        batches = self._remote_batches(texts, config.batch_size)
+        active: dict[Future[list[UserEmbedding]], int] = {}
+        completed: dict[int, list[UserEmbedding]] = {}
+        with ThreadPoolExecutor(max_workers=config.max_concurrency) as executor:
+            while True:
+                # Keep only one batch per worker in flight; refill as each finishes.
+                for batch in islice(batches, config.max_concurrency - len(active)):
+                    future = executor.submit(
+                        self._remote_batch_with_retries, batch, config, api_key
+                    )
+                    active[future] = batch.index
+                if not active:
+                    break
+                done, _ = wait(active, return_when=FIRST_COMPLETED)
+                for future in done:
+                    completed[active.pop(future)] = future.result()
+        return [item for index in sorted(completed) for item in completed[index]]
+
+    def _remote_batch_with_retries(
+        self, batch: _RemoteBatch, config: LiteLLMEmbeddingConfig, api_key: str | None
+    ) -> list[UserEmbedding]:
+        attempt = 0
+        deadline = None
+        while True:
+            attempt += 1
+            try:
+                return self._remote_batch(batch, config, api_key)
+            except Exception as error:
+                if attempt > config.max_retries:
+                    raise
+                delay = _retry_delay(error, attempt, config.max_retry_wait)
+                now = time.monotonic()
+                if deadline is None:
+                    deadline = now + config.retry_timeout
+                if delay is None or now + delay >= deadline:
+                    raise
+                logger.warning(
+                    "Embedding batch %d retry %d/%d: %s; waiting %.2fs",
+                    batch.index // config.batch_size,
+                    attempt,
+                    config.max_retries,
+                    type(error).__name__,
+                    delay,
+                )
+                time.sleep(delay)
+                if time.monotonic() >= deadline:
+                    raise
 
     def _remote_batch(
         self, batch: _RemoteBatch, config: LiteLLMEmbeddingConfig, api_key: str | None
