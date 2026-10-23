@@ -169,13 +169,13 @@ class TraceRecord:
     trace_id: str
     calls: Sequence[CallRecord]
     logical_case_id: str | None = None
-    tool_catalog: Mapping[str, Mapping[str, Any] | None] | None = None
+    tool_catalog: Mapping[str, Mapping[str, Any] | bool | None] | None = None
     orphan_results: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
     complete_provenance_context: bool = False
 
 
 def schema_errors(
-    catalog: Mapping[str, Mapping[str, Any] | None], tool_name: str, arguments: object
+    catalog: Mapping[str, Mapping[str, Any] | bool | None], tool_name: str, arguments: object
 ) -> list[dict[str, Any]]:
     """Apply the active catalog/JSON Schema without coercing evidence."""
 
@@ -771,7 +771,11 @@ def to_tool_issue_trace(trace: Trace) -> TraceRecord:
             else None
         ),
         tool_catalog={
-            name: dict(schema) if isinstance(schema, Mapping) else None
+            name: dict(schema)
+            if isinstance(schema, Mapping)
+            else schema
+            if isinstance(schema, bool)
+            else None
             for name, schema in tool_catalog.items()
         }
         if tool_catalog is not None

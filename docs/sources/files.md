@@ -43,10 +43,22 @@ explicitly recorded null. Output links back to this file and its physical line n
 whether the viewer jumps to that line depends on its support for URL fragments. Repeated problems need supporting evidence across multiple traces.
 
 Declare available tools as `tool_definitions` on the AGENT span that owns them, or on the LLM
-span they were offered to; TOOL spans cannot carry them. Each definition needs a `name` and the
-verbatim source item in `raw`, plus `input_schema` to enable argument checks. Record a tool's
-results in `tool_call.results`, one per result, with `is_error` only when the source recorded
-it. Files written before schema version 2 that carry `attributes.tool_catalog` still work.
+span they were offered to; TOOL spans cannot carry them. Preserve every recorded list entry,
+in order, in each definition's `raw`. Add `name`, `description`, `input_schema`, and explicit
+`server` scope when understood; unnamed built-ins and grouped declarations still retain their
+raw entry. Omit the list when unavailable; `[]` means the source explicitly recorded no tools.
+Request tools use this same field. To inspect the recorded list, read
+`[entry.raw for entry in span.tool_definitions]` after checking that it is not `UNSET`.
+
+Tool-schema checks use a single trace-wide catalog. When any LLM declares tools, all LLM
+spans must declare the same names and schemas for these checks to run. When no LLM declares
+tools, the catalog uses agent declarations. Unnamed entries or conflicting schemas make the
+catalog unavailable; the definitions remain available for inspection. This does not resolve
+availability per call.
+
+Record a tool's results in `tool_call.results`, one per result, with `is_error` only when the
+source recorded it. Files written before schema version 2 that carry `attributes.tool_catalog`
+still work when no span declares definitions.
 
 ## ATIF
 

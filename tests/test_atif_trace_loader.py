@@ -502,13 +502,15 @@ def test_tool_definitions_and_catalog(tmp_path):
             raw=items[0],
         ),
         ToolDefinition(name="write", description="Write.", input_schema=write_schema, raw=items[1]),
+        ToolDefinition(raw=items[2]),
+        ToolDefinition(description="nameless", raw=items[3]),
     ]
     assert tool_definitions_from_atif(None) == []
     source = minimal()
     source["agent"]["tool_definitions"] = items
     trace = next(iter(loader_for(tmp_path, source).load()))
     assert trace.root_spans[0].tool_definitions == tool_definitions_from_atif(items)
-    assert tool_catalog(trace) == {"read": read_schema, "write": write_schema}
+    assert tool_catalog(trace) is None  # Unknown entries cannot be treated as absent tools.
 
     source["agent"]["tool_definitions"] = [
         {"name": "read", "parameters": read_schema},

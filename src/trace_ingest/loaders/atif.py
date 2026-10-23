@@ -17,6 +17,7 @@ from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, with_config
 
+from trace_ingest.loaders.helper.tool_definitions import tool_definitions
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
     UNSET,
@@ -131,36 +132,8 @@ def _first(*values: JsonValue) -> JsonValue:
 
 
 def tool_definitions_from_atif(items: object) -> list[ToolDefinition]:
-    """Map ATIF ``agent.tool_definitions`` items; skip non-object or nameless items."""
-
-    definitions = []
-    for item in items if isinstance(items, list) else []:
-        if not isinstance(item, dict):
-            continue
-        function = item.get("function")
-        function = function if isinstance(function, dict) else {}
-        name = _first(item.get("name"), function.get("name"))
-        if not isinstance(name, str) or not name:
-            continue
-        description = _first(item.get("description"), function.get("description"))
-        extra = item.get("extra")
-        scope = extra.get("tool_scope") if isinstance(extra, dict) else None
-        server = scope.get("server") if isinstance(scope, dict) else None
-        definitions.append(
-            ToolDefinition(
-                name=name,
-                server=server if isinstance(server, str) else None,
-                description=description if isinstance(description, str) else None,
-                input_schema=_first(
-                    item.get("inputSchema"),
-                    item.get("input_schema"),
-                    item.get("parameters"),
-                    function.get("parameters"),
-                ),
-                raw=item,
-            )
-        )
-    return definitions
+    """Preserve the ATIF agent's recorded definitions, including unknown entries."""
+    return tool_definitions(items) or []
 
 
 def tool_result_from_atif(result: Mapping[str, Any]) -> ToolResult:

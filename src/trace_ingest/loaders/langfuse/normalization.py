@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 from pydantic import JsonValue
 
+from trace_ingest.loaders.helper.tool_definitions import tool_definitions
 from trace_ingest.loaders.langfuse.config import LangfuseTraceLoadError
 from trace_ingest.models import (
     UNSET,
@@ -59,7 +60,7 @@ def _normalize_trace(
     require_complete_tree: bool = False,
 ) -> Trace:
     trace_id = _trace_id(provider_trace)
-    root_spans, ordered, effective_parents = _normalize_tree(
+    root_spans, ordered = _normalize_tree(
         trace_id, provider_trace.observations, source_pointer, require_complete_tree
     )
     attributes: dict[str, JsonValue] = {
@@ -81,7 +82,6 @@ def _normalize_trace(
             "scores": _json_value(provider_trace.scores),
         },
     }
-    _attach_tool_definitions(root_spans, _tool_definitions(ordered, effective_parents))
     if provider_trace.session_id:
         attributes["logical_case_id"] = str(provider_trace.session_id)
 
@@ -107,7 +107,7 @@ def _normalize_tree(
     observations: Sequence[LangfuseObservation],
     source_pointer: dict[str, JsonValue],
     require_complete_tree: bool = False,
-) -> tuple[list[Span], list[LangfuseObservation], dict[str, str | None]]:
+) -> tuple[list[Span], list[LangfuseObservation]]:
     by_id: dict[str, LangfuseObservation] = {}
     for observation in observations:
         observation_id = str(observation.id)
@@ -165,7 +165,7 @@ def _normalize_tree(
         else:
             normalized_by_id[parent_id].children.append(normalized)
 
-    return root_spans, ordered, effective_parents
+    return root_spans, ordered
 
 
 def _v4_observation_context(observation: LangfuseObservation) -> dict[str, JsonValue]:
@@ -194,7 +194,7 @@ def _normalize_v4_trace(
         **({"base_url": base_url} if base_url else {}),
         "trace_id": trace_id,
     }
-    roots, ordered, parents = _normalize_tree(trace_id, observations, pointer)
+    roots, ordered = _normalize_tree(trace_id, observations, pointer)
     # No single trace-level I/O or session is authoritative when several physical
     # roots exist. Preserve per-observation values rather than choosing arbitrarily.
     physical_roots = [obs for obs in observations if obs.parent_observation_id is None]
@@ -217,7 +217,6 @@ def _normalize_v4_trace(
     sessions = {obs.session_id for obs in observations if obs.session_id}
     if len(sessions) == 1:
         attributes["logical_case_id"] = next(iter(sessions))
-    _attach_tool_definitions(roots, _tool_definitions(ordered, parents))
     results: dict[str, list[JsonValue]] = {}
     for score in sorted(scores, key=lambda item: (item.name, item.id)):
         results.setdefault(score.name, []).append(_json_value(score))
@@ -246,118 +245,15 @@ def _normalize_v4_trace(
     )
 
 
-def _tool_definitions(
-    observations: Sequence[LangfuseObservation],
-    effective_parents: Mapping[str, str | None],
-) -> dict[str, list[ToolDefinition]]:
-    """Map declaring observation ids to the tool definitions in their Langfuse inputs.
-
-    Langfuse normalizes tool definitions from supported instrumentation metadata,
-    including ``gen_ai.tool.definitions``, into an observation's top-level
-    ``input.tools`` array. GENERATION catalogs describe the tools offered to that
-    model call and therefore take precedence; root AGENT catalogs are only a
-    fallback for reduced traces with no generation observations. Each selected
-    observation keeps its own definitions. When a generation has no readable
-    catalog, or the selected observations offer different tool names, nothing is
-    attached, so the trace has no catalog.
-    """
-
-    root_agents: dict[str, list[ToolDefinition] | None] = {}
-    generations: dict[str, list[ToolDefinition] | None] = {}
-    for observation in observations:
-        kind, _ = _map_observation_kind(observation.type)
-        observation_id = str(observation.id)
-        catalog = _tool_definitions_from_input(observation.input)
-        if kind is SpanKind.LLM:
-            generations[observation_id] = catalog
-        elif (
-            kind is SpanKind.AGENT
-            and catalog is not None
-            and effective_parents[observation_id] is None
-        ):
-            root_agents[observation_id] = catalog
-
-    selected = generations or root_agents
-    declared = {key: catalog for key, catalog in selected.items() if catalog is not None}
-    if len(declared) != len(selected):
-        return {}
-    if (
-        len({frozenset(definition.name for definition in catalog) for catalog in declared.values()})
-        > 1
-    ):
-        return {}
-    return declared
-
-
-def _attach_tool_definitions(
-    roots: list[Span], definitions: Mapping[str, list[ToolDefinition]]
-) -> None:
-    """Set each declaring span's own definitions."""
-
-    pending = list(roots)
-    while pending:
-        span = pending.pop()
-        pending.extend(span.children)
-        if span.id in definitions:
-            span.tool_definitions = definitions[span.id]
-
-
 def _tool_definitions_from_input(value: object) -> list[ToolDefinition] | None:
-    """Convert Langfuse ``input.tools`` definitions to canonical definitions."""
+    """Read the platform's recorded list, preserving each entry verbatim."""
 
     if isinstance(value, str):
         try:
             value = json.loads(value)
         except json.JSONDecodeError:
             return None
-    if not isinstance(value, Mapping):
-        return None
-    tools = value.get("tools")
-    if not isinstance(tools, list):
-        return None
-
-    definitions: dict[str, ToolDefinition] = {}
-    for tool in tools:
-        definition = _tool_definition(tool)
-        if definition is not None:
-            definitions.setdefault(definition.name, definition)
-    # Tools that were listed but could not be read leave the offered tools unknown.
-    return list(definitions.values()) if definitions or not tools else None
-
-
-def _tool_definition(value: object) -> ToolDefinition | None:
-    """Flatten the tool-definition forms accepted by Langfuse v3 ingestion."""
-
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except json.JSONDecodeError:
-            return None
-    if not isinstance(value, Mapping):
-        return None
-    nested = value.get("function")
-    definition = nested if isinstance(nested, Mapping) else value
-    name = definition.get("name")
-    if not isinstance(name, str) or not name:
-        return None
-
-    schema = definition.get("parameters")
-    if schema is None:
-        schema = definition.get("parameters_json_schema")
-    if schema is None:
-        schema = definition.get("inputSchema")
-    if isinstance(schema, str):
-        try:
-            schema = json.loads(schema)
-        except json.JSONDecodeError:
-            schema = None
-    description = definition.get("description")
-    return ToolDefinition(
-        name=name,
-        description=description if isinstance(description, str) else None,
-        input_schema=_json_value(schema) if isinstance(schema, Mapping) else None,
-        raw=_json_value(value),
-    )
+    return tool_definitions(value.get("tools")) if isinstance(value, Mapping) else None
 
 
 def _canonical_observation_order(
@@ -398,6 +294,11 @@ def _normalize_observation(
 ) -> Span:
     observation_id = str(observation.id)
     kind, subtype = _map_observation_kind(observation.type)
+    definitions = (
+        _tool_definitions_from_input(observation.input)
+        if kind in (SpanKind.AGENT, SpanKind.LLM)
+        else None
+    )
     started_at = _started_at(observation)
     ended_at = _optional_datetime(observation.end_time)
     pointer: dict[str, JsonValue] = {**base_pointer, "observation_id": observation_id}
@@ -417,6 +318,7 @@ def _normalize_observation(
         output=_io_value(observation.output),
         cost_usd=_observation_cost(observation),
         model=str(observation.model) if observation.model else None,
+        tool_definitions=definitions if definitions is not None else UNSET,
         tool_name=name if kind is SpanKind.TOOL else None,
         error=error,
         attributes={

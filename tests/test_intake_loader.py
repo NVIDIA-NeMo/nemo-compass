@@ -578,12 +578,13 @@ def _agent_attributes(*names: str) -> str:
     return json.dumps({"agent": {"tool_definitions": definitions}})
 
 
-def test_intake_atif_definitions_stay_on_the_span_that_declared_them():
+@pytest.mark.parametrize("root_names", [("search",), ()])
+def test_intake_atif_definitions_stay_on_the_span_that_declared_them(root_names):
     trace = next(
         iter(
             _loader_for_records(
                 [
-                    _span_record("root", raw_attributes=_agent_attributes("search")),
+                    _span_record("root", raw_attributes=_agent_attributes(*root_names)),
                     _span_record(
                         "sub",
                         parent_span_id="root",
@@ -602,8 +603,9 @@ def test_intake_atif_definitions_stay_on_the_span_that_declared_them():
 
     root = trace.root_spans[0]
     sub = root.children[0]
-    assert [definition.name for definition in root.tool_definitions] == ["search"]
-    assert [definition.name for definition in sub.tool_definitions] == ["lookup", "write"]
+    assert root.tool_definitions is not UNSET
+    assert [definition.name for definition in root.tool_definitions] == list(root_names)
+    assert [definition.name for definition in sub.tool_definitions] == ["lookup", "lookup", "write"]
     assert sub.children[0].tool_definitions is UNSET
     assert "intake_loader_gaps" not in trace.attributes
 
