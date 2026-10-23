@@ -58,3 +58,56 @@ jobs:
             --title "nemo-compass $RELEASE_TAG" \
             --verify-tag --draft --generate-notes --prerelease="$PRERELEASE" \
             -- *.whl *.tar.gz SHA256SUMS
+
+  stage-ngc:
+    name: Stage SDK wheel in NGC
+    needs: [validate, draft-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Download validated artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-distributions
+          path: dist
+
+      - name: Verify release artifacts
+        id: artifacts
+        working-directory: dist
+        run: |
+          sha256sum --check SHA256SUMS
+          shopt -s nullglob
+          wheels=(*.whl)
+          if (( ${#wheels[@]} != 1 )); then
+            echo "::error::Expected exactly one wheel, found ${#wheels[@]}"
+            exit 1
+          fi
+          echo "wheel=${wheels[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Install NGC CLI
+        env:
+          NGC_CLI_URL: https://api.ngc.nvidia.com/v2/resources/nvidia/ngc-apps/ngc_cli/versions/4.36.6/files/ngccli_linux.zip
+          NGC_CLI_SHA256: 2972dbe54e80cedae18e82923a9a67a60aef23d041c5790336f8f4b51752bab6
+        run: |
+          curl --fail --location --silent --show-error "$NGC_CLI_URL" --output "$RUNNER_TEMP/ngccli.zip"
+          echo "$NGC_CLI_SHA256  $RUNNER_TEMP/ngccli.zip" | sha256sum --check -
+          unzip -q "$RUNNER_TEMP/ngccli.zip" -d "$RUNNER_TEMP/ngc"
+          chmod +x "$RUNNER_TEMP/ngc/ngc-cli/ngc"
+          echo "$RUNNER_TEMP/ngc/ngc-cli" >> "$GITHUB_PATH"
+
+      - name: Upload SDK wheel to NGC
+        env:
+          NGC_CLI_API_KEY: ${{ secrets.AIRE_NGC_SERVICE_KEY }}
+          NGC_CLI_ORG: "0921617854601259"
+          NGC_CLI_TEAM: nemo-compass
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          WHEEL_FILE: ${{ steps.artifacts.outputs.wheel }}
+        working-directory: dist
+        run: |
+          : "${NGC_CLI_API_KEY:?AIRE_NGC_SERVICE_KEY repository secret is required}"
+          resource_ref="${NGC_CLI_ORG}/${NGC_CLI_TEAM}/nemo-compass:${RELEASE_TAG#v}"
+          ngc registry resource upload-version "$resource_ref" --source "$WHEEL_FILE"
+          printf 'Staged SDK wheel: %s\n' "$resource_ref" >> "$GITHUB_STEP_SUMMARY"
