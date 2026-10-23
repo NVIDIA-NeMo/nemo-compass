@@ -1,0 +1,158 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "trajectory_id": "subagents",
+  "agent": {
+    "name": "lead",
+    "version": "1",
+    "model_name": "lead-model",
+    "tool_definitions": [
+      {
+        "name": "spawn",
+        "parameters": {
+          "type": "object"
+        }
+      },
+      {
+        "name": "search",
+        "parameters": {
+          "type": "object"
+        }
+      }
+    ]
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": "Research the report."
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "message": "Delegating.",
+      "tool_calls": [
+        {
+          "tool_call_id": "spawn-1",
+          "function_name": "spawn",
+          "arguments": {
+            "task": "Find sources."
+          }
+        },
+        {
+          "tool_call_id": "spawn-2",
+          "function_name": "spawn",
+          "arguments": {
+            "task": "Check facts."
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "spawn-1",
+            "content": "Sources found.",
+            "subagent_trajectory_ref": [
+              {
+                "trajectory_id": "researcher"
+              }
+            ]
+          },
+          {
+            "source_call_id": "spawn-2",
+            "content": "Facts checked.",
+            "subagent_trajectory_ref": [
+              {
+                "trajectory_path": "subagent-checker.json"
+              }
+            ]
+          },
+          {
+            "content": "Background note.",
+            "subagent_trajectory_ref": [
+              {
+                "trajectory_id": "background"
+              },
+              {
+                "trajectory_path": "missing-subagent.json"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "step_id": 3,
+      "source": "agent",
+      "message": "Done."
+    }
+  ],
+  "subagent_trajectories": [
+    {
+      "schema_version": "ATIF-v1.7",
+      "trajectory_id": "researcher",
+      "agent": {
+        "name": "researcher",
+        "version": "1"
+      },
+      "steps": [
+        {
+          "step_id": 1,
+          "source": "user",
+          "message": "Find sources."
+        },
+        {
+          "step_id": 2,
+          "source": "agent",
+          "message": "Searching.",
+          "tool_calls": [
+            {
+              "tool_call_id": "s",
+              "function_name": "search",
+              "arguments": {
+                "q": "report"
+              }
+            }
+          ],
+          "observation": {
+            "results": [
+              {
+                "source_call_id": "s",
+                "content": "A source."
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "schema_version": "ATIF-v1.7",
+      "trajectory_id": "background",
+      "agent": {
+        "name": "background",
+        "version": "1"
+      },
+      "steps": [
+        {
+          "step_id": 1,
+          "source": "user",
+          "message": "Take notes."
+        }
+      ]
+    },
+    {
+      "schema_version": "ATIF-v1.7",
+      "trajectory_id": "idle",
+      "agent": {
+        "name": "idle",
+        "version": "1"
+      },
+      "steps": [
+        {
+          "step_id": 1,
+          "source": "user",
+          "message": "Wait."
+        }
+      ]
+    }
+  ]
+}

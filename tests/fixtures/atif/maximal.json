@@ -1,0 +1,222 @@
+{
+  "schema_version": "ATIF-v1.8",
+  "session_id": "max-session",
+  "trajectory_id": "max-trajectory",
+  "agent": {
+    "name": "max-agent",
+    "version": "9.1",
+    "model_name": "max-agent-model",
+    "tool_definitions": [
+      {
+        "name": "read_file",
+        "description": "Read a file.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          }
+        },
+        "extra": {
+          "tool_scope": {
+            "server": "fs-server"
+          }
+        }
+      },
+      {
+        "name": "delegate",
+        "description": "Delegate a task.",
+        "parameters": {
+          "type": "object"
+        }
+      }
+    ],
+    "extra": {
+      "agent_extra": "agent-extra-value"
+    }
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "timestamp": "2026-10-01T09:00:00Z",
+      "source": "system",
+      "message": "max-system-message",
+      "is_copied_context": false,
+      "extra": {
+        "system_extra": "system-extra-value"
+      }
+    },
+    {
+      "step_id": 2,
+      "timestamp": "2026-10-01T09:00:01",
+      "source": "user",
+      "message": [
+        {
+          "type": "text",
+          "text": "max-user-text"
+        },
+        {
+          "type": "image",
+          "source": {
+            "media_type": "image/png",
+            "path": "images/max-screen.png"
+          }
+        },
+        {
+          "type": "audio",
+          "source": {
+            "media_type": "audio/wav",
+            "path": "audio/max-voice.wav",
+            "duration_sec": 2.5
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "content": "max-user-observation"
+          }
+        ]
+      },
+      "extra": {
+        "user_extra": "user-extra-value"
+      }
+    },
+    {
+      "step_id": 3,
+      "timestamp": "2026-10-01T09:00:02+02:00",
+      "source": "agent",
+      "model_name": "max-step-model",
+      "reasoning_effort": "max-effort",
+      "message": "max-agent-message",
+      "reasoning_content": "max-reasoning",
+      "tool_calls": [
+        {
+          "tool_call_id": "max-call-read",
+          "function_name": "read_file",
+          "arguments": {
+            "path": "max-argument-path"
+          },
+          "extra": {
+            "tool_scope": {
+              "server": "max-mcp-server",
+              "transport": "max-transport"
+            },
+            "call_extra": "call-extra-value"
+          }
+        },
+        {
+          "tool_call_id": "max-call-delegate",
+          "function_name": "delegate",
+          "arguments": {
+            "task": "max-delegated-task"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "max-call-read",
+            "content": [
+              {
+                "type": "text",
+                "text": "max-result-text"
+              },
+              {
+                "type": "image",
+                "source": {
+                  "media_type": "image/jpeg",
+                  "path": "https://example.com/max.jpg"
+                }
+              }
+            ],
+            "extra": {
+              "isError": false,
+              "result_extra": "result-extra-value"
+            }
+          },
+          {
+            "source_call_id": "max-call-delegate",
+            "content": "max-delegated",
+            "subagent_trajectory_ref": [
+              {
+                "trajectory_id": "max-child",
+                "session_id": "max-ref-session",
+                "trajectory_path": "max-child.json",
+                "extra": {
+                  "ref_extra": "ref-extra-value"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 500,
+        "completion_tokens": 70,
+        "cached_tokens": 120,
+        "cost_usd": 0.75,
+        "prompt_token_ids": [
+          11,
+          12,
+          13
+        ],
+        "completion_token_ids": [
+          21,
+          22
+        ],
+        "logprobs": [
+          -0.25,
+          -1.5
+        ],
+        "extra": {
+          "metrics_extra": "metrics-extra-value"
+        }
+      },
+      "is_copied_context": true,
+      "llm_call_count": 3,
+      "extra": {
+        "agent_step_extra": "agent-step-extra-value"
+      }
+    }
+  ],
+  "notes": "max-notes",
+  "final_metrics": {
+    "total_prompt_tokens": 900,
+    "total_completion_tokens": 140,
+    "total_cached_tokens": 240,
+    "total_cost_usd": 1.25,
+    "total_steps": 5,
+    "extra": {
+      "final_extra": "final-extra-value"
+    }
+  },
+  "continued_trajectory_ref": "max-continued.json",
+  "extra": {
+    "trajectory_extra": "trajectory-extra-value"
+  },
+  "subagent_trajectories": [
+    {
+      "schema_version": "ATIF-v1.6",
+      "session_id": "max-child-session",
+      "trajectory_id": "max-child",
+      "agent": {
+        "name": "max-child-agent",
+        "version": "2.0"
+      },
+      "steps": [
+        {
+          "step_id": 1,
+          "source": "user",
+          "message": "max-child-task"
+        },
+        {
+          "step_id": 2,
+          "source": "agent",
+          "message": "max-child-answer"
+        }
+      ]
+    }
+  ]
+}

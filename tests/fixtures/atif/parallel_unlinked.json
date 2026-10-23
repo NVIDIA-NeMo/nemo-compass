@@ -1,0 +1,68 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "trajectory_id": "parallel",
+  "agent": {
+    "name": "agent",
+    "version": "1"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": "Read both files."
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "message": "Reading in parallel.",
+      "tool_calls": [
+        {
+          "tool_call_id": "a",
+          "function_name": "read",
+          "arguments": {
+            "path": "a.txt"
+          }
+        },
+        {
+          "tool_call_id": "b",
+          "function_name": "read",
+          "arguments": {
+            "path": "b.txt"
+          }
+        },
+        {
+          "tool_call_id": "c",
+          "function_name": "read",
+          "arguments": {
+            "path": "c.txt"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "b",
+            "content": "B"
+          },
+          {
+            "content": "Progress: 50%"
+          },
+          {
+            "source_call_id": "a",
+            "content": "A, part 1"
+          },
+          {
+            "source_call_id": "a"
+          },
+          {
+            "source_call_id": "a",
+            "content": null
+          },
+          {
+            "content": "Progress: 100%"
+          }
+        ]
+      }
+    }
+  ]
+}

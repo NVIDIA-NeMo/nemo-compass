@@ -4,25 +4,73 @@
 """Load ATIF JSONL into canonical traces.
 
 Source contract: https://github.com/harbor-framework/harbor/blob/main/rfcs/0001-trajectory-format.md
+
+Each non-blank line is one trajectory with a ``trajectory_id`` or ``session_id``.
+``trace.attributes["logical_case_id"]`` is the ``session_id``, when recorded.
+
+Accepted input is Harbor's ``Trajectory`` field set for ATIF-v1.0 through v1.8,
+validated strictly (no type coercion, unknown keys rejected), plus
+``isError``/``is_error`` flags on a result's root. Every field lands in a typed
+field or an ``extra`` slot:
+
+* Each trajectory (root ``trajectory``, embedded subagent ``<parent>/subagent/{i}``)
+  is an AGENT span with ``agent`` (``AgentInfo``), ``tool_definitions``, ``run``
+  (``RunInfo``), and ``turns``.
+* Each step is a ``Turn`` with id ``<agent>/turn/{step_id}``.
+* An agent step is a span ``<agent>/step/{step_id}``: LLM, or CHAIN when
+  ``llm_call_count`` is 0 (the turn's ``dispatch_span_id``). Its output is the
+  message; it carries the model, cost, token counts, and ``llm_call``
+  (``LLMCallInfo``). User and system steps have no span.
+* Tool calls are TOOL spans ``<step span>/tool/{k}`` under the step span, with
+  ``prior_user_text`` from the nearest preceding user step. Results with
+  ``source_call_id`` go to that call's ``ToolCall.results`` and the span's
+  ``output`` (the content, or a list of contents for several results); the rest
+  go to ``Turn.unlinked_results``.
+* A ``subagent_trajectory_ref`` resolves to an embedded trajectory by
+  ``trajectory_id``. The subagent AGENT span is a child of the referencing TOOL
+  span (or of the step span, or the AGENT span, for an unlinked result).
+  Unreferenced embedded subagents follow the steps. External
+  ``trajectory_path`` files are not read.
+
+``Trace.losses`` records what the source did not keep or the loader did not
+follow. Each ``Loss.detail`` is structured:
+
+* ``llm_calls_aggregated``: ``{"llm_call_count": n}``.
+* ``unresolved_subagent_ref`` (no embedded trajectory matches): ``{"ref": {...}}``,
+  the reference object as recorded.
+* ``continued_trajectory_not_followed``: ``{"continued_trajectory_ref": value}``.
+* ``duplicate_tool_call_id``: ``{"tool_call_id": id}``; its results are matched
+  to the first call with that id.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
 from functools import cached_property
 from pathlib import Path
-from typing import Annotated, Any, Literal, NotRequired, TypedDict
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, with_config
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from trace_ingest.loaders.helper.tool_definitions import tool_definitions
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
     UNSET,
+    AgentInfo,
+    AudioPart,
+    Authorship,
+    ImagePart,
+    Initiator,
+    LLMCallInfo,
+    Loss,
+    RunInfo,
+    RunTotals,
     Span,
     SpanKind,
+    SubagentRef,
+    TextPart,
     TokenCounts,
     ToolCall,
     ToolDefinition,
@@ -30,6 +78,8 @@ from trace_ingest.models import (
     Trace,
     TraceAggregate,
     TraceSnapshot,
+    Turn,
+    TurnRole,
 )
 from trace_ingest.source_links import file_source_url
 
@@ -43,6 +93,7 @@ __all__ = [
 ]
 
 TOOL_ERROR = "ATIF tool result reported is_error"
+_ERROR_FLAGS = ("isError", "is_error")
 
 
 class ATIFTraceLoadError(ValueError):
@@ -60,75 +111,193 @@ class ATIFTraceDescription(TraceDescription):
     path: str
 
 
-# Validate source dictionaries without filling absent fields or discarding extensions.
-@with_config(ConfigDict(extra="allow", strict=True))
-class _Source(TypedDict):
-    pass
+# Source models mirror harbor.models.trajectories (harbor 0.20.0) field for field.
+class _Source(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
 
 
-_Identifier = Annotated[str, Field(min_length=1)]
+_Extra = dict[str, JsonValue] | None
+
+
+class _ImageSource(_Source):
+    media_type: Literal["image/jpeg", "image/png", "image/gif", "image/webp"]
+    path: str
+
+
+class _AudioSource(_Source):
+    media_type: Literal[
+        "audio/wav",
+        "audio/mpeg",
+        "audio/mp4",
+        "audio/aac",
+        "audio/ogg",
+        "audio/flac",
+        "audio/webm",
+        "audio/aiff",
+    ]
+    path: str
+    duration_sec: Annotated[float, Field(ge=0)] | None = None
+
+
+class _ContentPart(_Source):
+    type: Literal["text", "image", "audio"]
+    text: str | None = None
+    source: _ImageSource | _AudioSource | None = None
+
+    @model_validator(mode="after")
+    def _matches_type(self) -> _ContentPart:
+        expected = {"text": None, "image": _ImageSource, "audio": _AudioSource}[self.type]
+        if (expected is None) != (self.text is not None) or not isinstance(
+            self.source, expected or type(None)
+        ):
+            raise ValueError(
+                "a text part needs only 'text'; an image or audio part needs only a matching 'source'"
+            )
+        return self
+
+
+_Content = str | list[_ContentPart]
 
 
 class _Agent(_Source):
     name: str
     version: str
-    model_name: NotRequired[str | None]
+    model_name: str | None = None
+    tool_definitions: list[dict[str, JsonValue]] | None = None
+    extra: _Extra = None
 
 
 class _Call(_Source):
-    tool_call_id: _Identifier
-    function_name: _Identifier
-    arguments: NotRequired[dict[str, Any] | None]
+    tool_call_id: str
+    function_name: str
+    arguments: dict[str, JsonValue]
+    extra: _Extra = None
 
 
-class _Reference(_Source, total=False):
-    trajectory_id: str | None
-    trajectory_path: str | None
-    session_id: str | None
+class _Reference(_Source):
+    trajectory_id: str | None = None
+    session_id: str | None = None
+    trajectory_path: str | None = None
+    extra: _Extra = None
+
+    @model_validator(mode="after")
+    def _resolvable(self) -> _Reference:
+        if self.trajectory_id is None and self.trajectory_path is None:
+            raise ValueError("a subagent reference needs trajectory_id or trajectory_path")
+        return self
 
 
-class _Result(_Source, total=False):
-    source_call_id: str | None
-    content: Any
-    subagent_trajectory_ref: list[_Reference] | None
+class _Result(_Source):
+    source_call_id: str | None = None
+    content: _Content | None = None
+    subagent_trajectory_ref: list[_Reference] | None = None
+    extra: _Extra = None
+    # Not in Harbor's model; tolerated so error flags on the result root are interpreted.
+    isError: JsonValue = None
+    is_error: JsonValue = None
 
 
 class _Observation(_Source):
     results: list[_Result]
 
 
+class _Metrics(_Source):
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cached_tokens: int | None = None
+    cost_usd: float | None = None
+    prompt_token_ids: list[int] | None = None
+    completion_token_ids: list[int] | None = None
+    logprobs: list[float] | None = None
+    extra: _Extra = None
+
+
+class _FinalMetrics(_Source):
+    total_prompt_tokens: int | None = None
+    total_completion_tokens: int | None = None
+    total_cached_tokens: int | None = None
+    total_cost_usd: float | None = None
+    total_steps: Annotated[int, Field(ge=0)] | None = None
+    extra: _Extra = None
+
+
 class _Step(_Source):
-    step_id: int
+    step_id: Annotated[int, Field(ge=1)]
+    timestamp: str | None = None
     source: Literal["system", "user", "agent"]
-    message: str | list[dict[str, Any]]
-    timestamp: NotRequired[str | None]
-    model_name: NotRequired[str | None]
-    llm_call_count: NotRequired[Annotated[int, Field(ge=0)] | None]
-    tool_calls: NotRequired[list[_Call] | None]
-    observation: NotRequired[_Observation | None]
-    metrics: NotRequired[dict[str, Any] | None]
+    model_name: str | None = None
+    reasoning_effort: str | float | None = None
+    message: _Content
+    reasoning_content: str | None = None
+    tool_calls: list[_Call] | None = None
+    observation: _Observation | None = None
+    metrics: _Metrics | None = None
+    is_copied_context: bool | None = None
+    llm_call_count: Annotated[int, Field(ge=0)] | None = None
+    extra: _Extra = None
+
+    @model_validator(mode="after")
+    def _source_fields(self) -> _Step:
+        if self.timestamp is not None:
+            datetime.fromisoformat(self.timestamp.replace("Z", "+00:00"))
+        agent_only = (
+            "model_name",
+            "reasoning_effort",
+            "reasoning_content",
+            "tool_calls",
+            "metrics",
+        )
+        if self.source != "agent" and any(getattr(self, key) is not None for key in agent_only):
+            raise ValueError(f"{', '.join(agent_only)} require source='agent'")
+        if (
+            self.source == "agent"
+            and self.llm_call_count == 0
+            and (self.metrics is not None or self.reasoning_content is not None)
+        ):
+            raise ValueError("llm_call_count=0 cannot have metrics or reasoning_content")
+        return self
 
 
 class _Trajectory(_Source):
-    schema_version: Annotated[str, Field(pattern=r"^ATIF-v1\.[0-8]$")]
-    trajectory_id: NotRequired[_Identifier | None]
-    session_id: NotRequired[_Identifier | None]
+    schema_version: (
+        Literal[
+            "ATIF-v1.0",
+            "ATIF-v1.1",
+            "ATIF-v1.2",
+            "ATIF-v1.3",
+            "ATIF-v1.4",
+            "ATIF-v1.5",
+            "ATIF-v1.6",
+            "ATIF-v1.7",
+            "ATIF-v1.8",
+        ]
+        | None
+    ) = None
+    session_id: str | None = None
+    trajectory_id: str | None = None
     agent: _Agent
-    steps: list[_Step]
-    final_metrics: NotRequired[dict[str, Any] | None]
-    subagent_trajectories: NotRequired[list[_Trajectory] | None]
-    continued_trajectory_ref: NotRequired[str | None]
+    steps: Annotated[list[_Step], Field(min_length=1)]
+    notes: str | None = None
+    final_metrics: _FinalMetrics | None = None
+    continued_trajectory_ref: str | None = None
+    extra: _Extra = None
+    subagent_trajectories: list[_Trajectory] | None = None
 
-
-_ATIF = TypeAdapter(_Trajectory)
-
-
-def _metadata(source: Mapping[str, Any], *exclude: str) -> dict[str, Any]:
-    return {key: value for key, value in source.items() if key not in exclude}
-
-
-def _first(*values: JsonValue) -> JsonValue:
-    return next((value for value in values if value is not None), None)
+    @model_validator(mode="after")
+    def _relationships(self) -> _Trajectory:
+        for index, step in enumerate(self.steps, start=1):
+            if step.step_id != index:
+                raise ValueError(f"step_id must be sequential from 1; expected {index}")
+            calls = {call.tool_call_id for call in step.tool_calls or []}
+            for result in step.observation.results if step.observation else []:
+                if result.source_call_id is not None and result.source_call_id not in calls:
+                    raise ValueError(
+                        f"step {step.step_id}: unknown source_call_id {result.source_call_id!r}"
+                    )
+        ids = [child.trajectory_id for child in self.subagent_trajectories or []]
+        if None in ids or len(set(ids)) != len(ids):
+            raise ValueError("embedded subagents require unique trajectory_id values")
+        return self
 
 
 def tool_definitions_from_atif(items: object) -> list[ToolDefinition]:
@@ -136,38 +305,85 @@ def tool_definitions_from_atif(items: object) -> list[ToolDefinition]:
     return tool_definitions(items) or []
 
 
+def _error_verdict(flags: list[JsonValue]) -> tuple[bool | None, dict[str, JsonValue]]:
+    """Interpret error flags; return the flag and result attributes."""
+
+    verdicts = [flag for flag in flags if type(flag) is bool]
+    if len(verdicts) != len(flags):
+        return None, {"is_error_status": "invalid"}
+    if len(set(verdicts)) > 1:
+        return None, {"is_error_status": "conflicting"}
+    return (verdicts[0] if verdicts else None), {}
+
+
 def tool_result_from_atif(result: Mapping[str, Any]) -> ToolResult:
     """Normalize one ATIF observation result, reading ``is_error`` from it and its ``extra``."""
     extra = result.get("extra")
-    flags = [
-        source[key]
-        for source in (result, extra if isinstance(extra, Mapping) else {})
-        for key in ("isError", "is_error")
-        if key in source
-    ]
-    attributes = {}
-    is_error = None
-    if any(type(flag) is not bool for flag in flags):
-        attributes["is_error_status"] = "invalid"
-    elif len(set(flags)) > 1:
-        attributes["is_error_status"] = "conflicting"
-    elif flags:
-        is_error = flags[0]
+    is_error, attributes = _error_verdict(
+        [
+            source[key]
+            for source in (result, extra if isinstance(extra, Mapping) else {})
+            for key in _ERROR_FLAGS
+            if key in source
+        ]
+    )
     return ToolResult(
         content=result.get("content", UNSET), is_error=is_error, attributes=attributes
     )
 
 
-def _tokens(metrics: dict[str, Any], prefix: str = "") -> TokenCounts | None:
-    prompt, cached, completion = (
-        metrics.get(prefix + key) for key in ("prompt_tokens", "cached_tokens", "completion_tokens")
+def _is_error(result: _Result) -> tuple[bool | None, dict[str, JsonValue]]:
+    extra = result.extra or {}
+    return _error_verdict(
+        [
+            *(getattr(result, key) for key in _ERROR_FLAGS if key in result.model_fields_set),
+            *(extra[key] for key in _ERROR_FLAGS if key in extra),
+        ]
     )
+
+
+def _content_json(content: _Content | None) -> JsonValue:
+    if content is None or isinstance(content, str):
+        return content
+    parts = _turn_content(content)
+    assert not isinstance(parts, str)
+    return [part.model_dump(mode="json") for part in parts]
+
+
+def _turn_content(content: _Content) -> str | list[TextPart | ImagePart | AudioPart]:
+    if isinstance(content, str):
+        return content
+    parts: list[TextPart | ImagePart | AudioPart] = []
+    for part in content:
+        if isinstance(part.source, _AudioSource):
+            parts.append(
+                AudioPart(
+                    media_type=part.source.media_type,
+                    path=part.source.path,
+                    duration_sec=part.source.duration_sec,
+                )
+            )
+        elif part.source is not None:
+            parts.append(ImagePart(media_type=part.source.media_type, path=part.source.path))
+        else:
+            assert part.text is not None
+            parts.append(TextPart(text=part.text))
+    return parts
+
+
+def _text(content: _Content) -> str:
+    if isinstance(content, str):
+        return content
+    return "\n".join(part.text for part in content if part.text is not None)
+
+
+def _tokens(prompt: int | None, cached: int | None, completion: int | None) -> TokenCounts | None:
     for value in (prompt, cached, completion):
-        if value is not None and (type(value) is not int or value < 0):
+        if value is not None and value < 0:
             raise ValueError("ATIF token counts must be non-negative integers")
     if prompt is not None and cached is not None and cached > prompt:
         raise ValueError("cached_tokens exceeds prompt_tokens")
-    # Partial accounting remains in metadata; unknown counts are not zero.
+    # Partial accounting is kept as recorded; unknown counts are not zero.
     if prompt is None or cached is None or completion is None:
         return None
     return TokenCounts(
@@ -175,193 +391,345 @@ def _tokens(metrics: dict[str, Any], prefix: str = "") -> TokenCounts | None:
     )
 
 
-def _cost(value: object) -> float | None:
-    if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
-        raise ValueError("ATIF cost must be a number")
-    return value
+def _aware(timestamp: str | None) -> datetime | None:
+    if timestamp is None:
+        return None
+    parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    # Naive timestamps stay on the turn only; a timezone is never invented.
+    return parsed if parsed.utcoffset() is not None else None
 
 
-def _step_span(
+def _call_scope(extra: _Extra) -> tuple[str | None, dict[str, JsonValue]]:
+    """Move ``extra.tool_scope.server`` into a typed server when it is a string."""
+
+    remaining = dict(extra or {})
+    scope = remaining.get("tool_scope")
+    if not isinstance(scope, dict) or not isinstance(scope.get("server"), str):
+        return None, remaining
+    rest = {key: value for key, value in scope.items() if key != "server"}
+    if rest:
+        remaining["tool_scope"] = rest
+    else:
+        del remaining["tool_scope"]
+    server = scope["server"]
+    assert isinstance(server, str)
+    return server, remaining
+
+
+@dataclass
+class _Subagents:
+    """Resolve one trajectory's subagent references to AGENT spans."""
+
+    prefix: str
+    source: _Trajectory
+    losses: list[Loss]
+    attached: set[str] = field(default_factory=set)
+    embedded: dict[str | None, tuple[int, _Trajectory]] = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.embedded = {
+            child.trajectory_id: (index, child)
+            for index, child in enumerate(self.source.subagent_trajectories or [])
+        }
+
+    def embedded_id(self, index: int) -> str:
+        return f"{self.prefix}/subagent/{index}"
+
+    def resolve(
+        self, result: _Result, *, owner: str, turn_id: str
+    ) -> tuple[list[SubagentRef], list[Span]]:
+        refs: list[SubagentRef] = []
+        spans: list[Span] = []
+        for ref in result.subagent_trajectory_ref or []:
+            span_id, span = self._resolve(ref, owner=owner, turn_id=turn_id)
+            refs.append(
+                SubagentRef(
+                    span_id=span_id,
+                    trajectory_id=ref.trajectory_id,
+                    session_id=ref.session_id,
+                    trajectory_path=ref.trajectory_path,
+                    extra=ref.extra or {},
+                )
+            )
+            if span is not None:
+                spans.append(span)
+        return refs, spans
+
+    def _resolve(
+        self, ref: _Reference, *, owner: str, turn_id: str
+    ) -> tuple[str | None, Span | None]:
+        if ref.trajectory_id is not None and ref.trajectory_id in self.embedded:
+            index, child = self.embedded[ref.trajectory_id]
+            span_id = self.embedded_id(index)
+            if span_id in self.attached:
+                return span_id, None
+            self.attached.add(span_id)
+            return span_id, _agent_span(child, span_id, self.losses)
+        self.losses.append(
+            Loss(
+                code="unresolved_subagent_ref",
+                detail={"ref": ref.model_dump(mode="json", exclude_none=True)},
+                span_id=owner,
+                turn_id=turn_id,
+            )
+        )
+        return None, None
+
+    def unattached(self) -> list[Span]:
+        return [
+            _agent_span(child, self.embedded_id(index), self.losses)
+            for index, child in self.embedded.values()
+            if self.embedded_id(index) not in self.attached
+        ]
+
+
+def _step(
     step: _Step,
     *,
-    span_id: str,
-    model: str | None,
+    prefix: str,
+    agent: _Agent,
+    subagents: _Subagents,
+    losses: list[Loss],
     prior_user_text: str | None,
-    subagents: Callable[[_Result], list[Span]],
-) -> Span:
-    is_agent = step["source"] == "agent"
-    if not is_agent and any(
-        step.get(key) is not None
-        for key in ("model_name", "tool_calls", "metrics", "reasoning_content", "reasoning_effort")
-    ):
-        raise ValueError("model, tool calls, reasoning, and metrics require source='agent'")
-    is_llm = is_agent and step.get("llm_call_count") != 0
-    if (
-        is_agent
-        and not is_llm
-        and any(step.get(key) is not None for key in ("metrics", "reasoning_content"))
-    ):
-        raise ValueError("llm_call_count=0 cannot have metrics or reasoning_content")
-    raw_timestamp = step.get("timestamp")
-    timestamp = (
-        datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
-        if raw_timestamp is not None
-        else None
-    )
-    metrics = step.get("metrics") or {}
-    span = Span(
-        id=span_id,
-        kind=SpanKind.LLM if is_llm else SpanKind.CHAIN,
-        # Keep naive timestamps in metadata rather than inventing a timezone.
-        start_time=timestamp if timestamp and timestamp.utcoffset() is not None else None,
-        input=UNSET
-        if is_agent
-        else {"messages": [{"role": step["source"], "content": step["message"]}]},
-        output={"role": "assistant", "content": step["message"]} if is_agent else UNSET,
-        model=(step.get("model_name") or model) if is_llm else None,
-        cost_usd=_cost(metrics.get("cost_usd")),
-        token_counts=_tokens(metrics),
-        attributes={"atif": _metadata(step, "message", "tool_calls", "observation")},
-    )
-    calls = step.get("tool_calls") or []
-    matched: dict[str | None, list[_Result]] = {call["tool_call_id"]: [] for call in calls}
-    if len(matched) != len(calls):
-        raise ValueError(f"step {step['step_id']} contains duplicate tool_call_id values")
-    matched[None] = []  # Observations not associated with a tool call.
-    for result in (step.get("observation") or {}).get("results", []):
-        call_id = result.get("source_call_id")
-        if call_id not in matched:
-            raise ValueError(f"step {step['step_id']}: unknown source_call_id {call_id!r}")
-        matched[call_id].append(result)
+) -> tuple[Turn, list[Span]]:
+    """Map one step to its turn and the spans it adds under the AGENT span."""
+
+    turn_id = f"{prefix}/turn/{step.step_id}"
+    span_id = f"{prefix}/step/{step.step_id}"
+    step_span: Span | None = None
+    if step.source == "agent":
+        dispatch = step.llm_call_count == 0
+        metrics = step.metrics or _Metrics()
+        token_counts = _tokens(
+            metrics.prompt_tokens, metrics.cached_tokens, metrics.completion_tokens
+        )
+        partial = (
+            (metrics.prompt_tokens, metrics.cached_tokens, metrics.completion_tokens)
+            if token_counts is None
+            else (None, None, None)
+        )
+        llm_call = LLMCallInfo(
+            call_count=step.llm_call_count,
+            reasoning_effort=step.reasoning_effort,
+            prompt_token_ids=metrics.prompt_token_ids,
+            completion_token_ids=metrics.completion_token_ids,
+            logprobs=metrics.logprobs,
+            prompt_tokens=partial[0],
+            cached_tokens=partial[1],
+            completion_tokens=partial[2],
+            metrics_extra=metrics.extra or {},
+        )
+        step_span = Span(
+            id=span_id,
+            kind=SpanKind.CHAIN if dispatch else SpanKind.LLM,
+            start_time=_aware(step.timestamp),
+            model=step.model_name if dispatch else step.model_name or agent.model_name,
+            cost_usd=metrics.cost_usd,
+            token_counts=token_counts,
+            output={"role": "assistant", "content": _content_json(step.message)},
+            llm_call=llm_call if dispatch or llm_call != LLMCallInfo() else UNSET,
+        )
+        if step.llm_call_count is not None and step.llm_call_count > 1:
+            losses.append(
+                Loss(
+                    code="llm_calls_aggregated",
+                    detail={"llm_call_count": step.llm_call_count},
+                    span_id=span_id,
+                    turn_id=turn_id,
+                )
+            )
+
+    calls = step.tool_calls or []
+    first_call: dict[str, int] = {}
     for index, call in enumerate(calls):
-        results = matched[call["tool_call_id"]]
-        tool_results = [tool_result_from_atif(result) for result in results]
+        if first_call.setdefault(call.tool_call_id, index) != index:
+            losses.append(
+                Loss(
+                    code="duplicate_tool_call_id",
+                    detail={"tool_call_id": call.tool_call_id},
+                    span_id=f"{span_id}/tool/{index}",
+                    turn_id=turn_id,
+                )
+            )
+    matched: list[list[_Result]] = [[] for _ in calls]
+    unlinked_source: list[_Result] = []
+    for result in step.observation.results if step.observation else []:
+        if result.source_call_id is None:
+            unlinked_source.append(result)
+        else:
+            matched[first_call[result.source_call_id]].append(result)
+
+    def tool_result(result: _Result, owner: str) -> tuple[ToolResult, list[Span]]:
+        is_error, attributes = _is_error(result)
+        refs, spans = subagents.resolve(result, owner=owner, turn_id=turn_id)
+        return (
+            ToolResult(
+                content=_content_json(result.content)
+                if "content" in result.model_fields_set
+                else UNSET,
+                is_error=is_error,
+                subagent_refs=refs,
+                extra=result.extra or {},
+                attributes=attributes,
+            ),
+            spans,
+        )
+
+    tool_spans: list[Span] = []
+    for index, (call, results) in enumerate(zip(calls, matched, strict=True)):
+        tool_id = f"{span_id}/tool/{index}"
+        pairs = [tool_result(result, tool_id) for result in results]
+        tool_results = [result for result, _ in pairs]
         flags = [result.is_error for result in tool_results]
-        attributes: dict[str, Any] = {"atif": {"call": call, "results": results}}
+        attributes: dict[str, JsonValue] = {}
         if True in flags:
             attributes["explicit_error"] = True
         elif flags and all(flag is False for flag in flags):
             attributes["explicit_error"] = False
-        output = results[0].get("content", UNSET) if len(results) == 1 else results or UNSET
-        span.children.append(
+        server, extra = _call_scope(call.extra)
+        tool_spans.append(
             Span(
-                id=f"{span_id}/tool/{index}",
+                id=tool_id,
                 kind=SpanKind.TOOL,
-                input=call.get("arguments", UNSET),
-                output=output,
-                tool_name=call["function_name"],
+                input=call.arguments,
+                output=tool_results[0].content
+                if len(results) == 1
+                else [_content_json(result.content) for result in results] or UNSET,
+                tool_name=call.function_name,
                 tool_call=ToolCall(
-                    call_id=call["tool_call_id"],
-                    result_id=call["tool_call_id"] if results else None,
+                    call_id=call.tool_call_id,
+                    result_id=call.tool_call_id if results else None,
                     result_count=len(results),
                     prior_user_text=prior_user_text,
                     results=tool_results,
+                    server=server,
+                    initiator=Initiator.HARNESS if step.llm_call_count == 0 else Initiator.MODEL,
+                    extra=extra,
                 ),
                 error=TOOL_ERROR if True in flags else None,
-                children=[child for result in results for child in subagents(result)],
+                children=[span for _, spans in pairs for span in spans],
                 attributes=attributes,
             )
         )
-    for index, result in enumerate(matched[None]):
-        span.children.append(
-            Span(
-                id=f"{span_id}/observation/{index}",
-                kind=SpanKind.CHAIN,
-                output=result.get("content", UNSET),
-                children=subagents(result),
-                attributes={"atif": result},
+
+    unlinked_owner = span_id if step_span is not None else prefix
+    unlinked = [tool_result(result, unlinked_owner) for result in unlinked_source]
+    unlinked_spans = [span for _, spans in unlinked for span in spans]
+    added: list[Span]
+    if step_span is not None:
+        step_span.children = [*tool_spans, *unlinked_spans]
+        added = [step_span]
+    else:
+        added = unlinked_spans
+
+    turn = Turn(
+        id=turn_id,
+        index=step.step_id,
+        role=TurnRole(step.source),
+        authorship=Authorship.COPIED_CONTEXT
+        if step.is_copied_context
+        else {"system": Authorship.HARNESS, "agent": Authorship.MODEL}.get(
+            step.source, Authorship.UNKNOWN
+        ),
+        content=_turn_content(step.message),
+        reasoning=step.reasoning_content if step.reasoning_content is not None else UNSET,
+        timestamp=step.timestamp if step.timestamp is not None else UNSET,
+        llm_span_ids=[span_id] if step_span is not None and step_span.kind is SpanKind.LLM else [],
+        dispatch_span_id=span_id
+        if step_span is not None and step_span.kind is SpanKind.CHAIN
+        else None,
+        tool_call_span_ids=[span.id for span in tool_spans],
+        unlinked_results=[result for result, _ in unlinked],
+        extra=step.extra or {},
+    )
+    return turn, added
+
+
+def _agent_span(source: _Trajectory, prefix: str, losses: list[Loss]) -> Span:
+    subagents = _Subagents(prefix, source, losses)
+    if source.continued_trajectory_ref is not None:
+        losses.append(
+            Loss(
+                code="continued_trajectory_not_followed",
+                detail={"continued_trajectory_ref": source.continued_trajectory_ref},
+                span_id=prefix,
             )
         )
-    return span
-
-
-def _trajectory_span(source: _Trajectory, prefix: str = "trajectory") -> Span:
-    if not (source.get("trajectory_id") or source.get("session_id")):
-        raise ValueError("trajectory_id or session_id is required for stable trace identity")
-    if source.get("continued_trajectory_ref"):
-        raise ValueError(
-            "external continuation is not supported; combine the complete trajectory first"
+    turns: list[Turn] = []
+    children: list[Span] = []
+    prior_user_text: str | None = None
+    for step in source.steps:
+        if step.source == "user":
+            prior_user_text = _text(step.message)
+        turn, spans = _step(
+            step,
+            prefix=prefix,
+            agent=source.agent,
+            subagents=subagents,
+            losses=losses,
+            prior_user_text=prior_user_text,
         )
-    embedded: dict[str, tuple[int, _Trajectory]] = {}
-    for index, child in enumerate(source.get("subagent_trajectories") or []):
-        child_id = child.get("trajectory_id")
-        if child_id is None or child_id in embedded:
-            raise ValueError("embedded subagents require unique trajectory_id values")
-        embedded[child_id] = (index, child)
-    attached: set[str] = set()
-
-    def subagents(result: _Result) -> list[Span]:
-        children = []
-        for ref in result.get("subagent_trajectory_ref") or []:
-            child_id = ref.get("trajectory_id")
-            if child_id is None or child_id not in embedded:
-                raise ValueError(
-                    f"unresolved subagent reference {ref!r}; embed it in subagent_trajectories with a matching trajectory_id"
-                )
-            if child_id in attached:
-                raise ValueError(f"subagent {child_id!r} has multiple parents")
-            attached.add(child_id)
-            index, child = embedded[child_id]
-            children.append(_trajectory_span(child, f"{prefix}/subagent/{index}"))
-        return children
-
-    definitions = source["agent"].get("tool_definitions")
-    root = Span(
+        turns.append(turn)
+        children.extend(spans)
+    # Unreferenced subagents belong to the trajectory, not an invented calling step.
+    children.extend(subagents.unattached())
+    metrics = source.final_metrics
+    agent = source.agent
+    return Span(
         id=prefix,
         kind=SpanKind.AGENT,
-        attributes={"atif": _metadata(source, "steps", "subagent_trajectories")},
-        tool_definitions=tool_definitions_from_atif(definitions)
-        if isinstance(definitions, list)
+        agent=AgentInfo(
+            name=agent.name,
+            version=agent.version,
+            model_name=agent.model_name,
+            extra=agent.extra or {},
+        ),
+        tool_definitions=tool_definitions_from_atif(agent.tool_definitions)
+        if agent.tool_definitions is not None
         else UNSET,
+        run=RunInfo(
+            schema_version=source.schema_version,
+            session_id=source.session_id,
+            trajectory_id=source.trajectory_id,
+            notes=source.notes,
+            continued_trajectory_ref=source.continued_trajectory_ref,
+            final_metrics=None
+            if metrics is None
+            else RunTotals(
+                prompt_tokens=metrics.total_prompt_tokens,
+                completion_tokens=metrics.total_completion_tokens,
+                cached_tokens=metrics.total_cached_tokens,
+                cost_usd=metrics.total_cost_usd,
+                steps=metrics.total_steps,
+                extra=metrics.extra or {},
+            ),
+            extra=source.extra or {},
+        ),
+        turns=turns,
+        children=children,
     )
-    prior_user_text = None
-    for index, step in enumerate(source["steps"], start=1):
-        if step["step_id"] != index:
-            raise ValueError(f"step_id must be sequential from 1; expected {index}")
-        if step["source"] == "user":
-            message = step["message"]
-            prior_user_text = (
-                message
-                if isinstance(message, str)
-                else "\n".join(
-                    part["text"]
-                    for part in message
-                    if part.get("type") == "text" and isinstance(part.get("text"), str)
-                )
-            )
-        root.children.append(
-            _step_span(
-                step,
-                span_id=f"{prefix}/step/{index}",
-                model=source["agent"].get("model_name"),
-                prior_user_text=prior_user_text,
-                subagents=subagents,
-            )
-        )
-    # Unreferenced subagents belong to the trajectory, not an invented calling step.
-    root.children.extend(
-        _trajectory_span(child, f"{prefix}/subagent/{index}")
-        for child_id, (index, child) in embedded.items()
-        if child_id not in attached
-    )
-    return root
 
 
 def _normalize(source: _Trajectory) -> Trace:
-    root = _trajectory_span(source)
-    metrics = source.get("final_metrics") or {}
-    attributes = dict(root.attributes)
-    if source.get("session_id") is not None:
-        attributes["logical_case_id"] = source["session_id"]
-    trace_id = source.get("trajectory_id") or source.get("session_id")
-    assert trace_id is not None
+    trace_id = source.trajectory_id or source.session_id
+    if not trace_id:
+        raise ValueError("trajectory_id or session_id is required for stable trace identity")
+    losses: list[Loss] = []
+    root = _agent_span(source, "trajectory", losses)
+    metrics = source.final_metrics or _FinalMetrics()
     return Trace(
         id=trace_id,
         root_spans=[root],
         aggregate=TraceAggregate(
-            cost_usd=_cost(metrics.get("total_cost_usd")), token_counts=_tokens(metrics, "total_")
+            cost_usd=metrics.total_cost_usd,
+            token_counts=_tokens(
+                metrics.total_prompt_tokens,
+                metrics.total_cached_tokens,
+                metrics.total_completion_tokens,
+            ),
         ),
-        attributes=attributes,
+        attributes={} if source.session_id is None else {"logical_case_id": source.session_id},
+        losses=losses,
     )
 
 
@@ -383,7 +751,7 @@ class ATIFTraceLoader:
                 for _line_number, raw in enumerate(corpus, 1):
                     if not raw.strip():
                         continue
-                    trace = _normalize(_ATIF.validate_json(raw))
+                    trace = _normalize(_Trajectory.model_validate_json(raw))
                     trace.source_url = file_source_url(path, _line_number)
                     pending = list(trace.root_spans)
                     while pending:
