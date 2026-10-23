@@ -65,8 +65,7 @@ class _StrictModel(BaseModel):
 
 
 class _WireModel(BaseModel):
-    # Validation errors name the field and problem but never echo record content.
-    model_config = ConfigDict(extra="ignore", hide_input_in_errors=True)
+    model_config = ConfigDict(extra="ignore")
 
 
 class _Pagination(_WireModel):
@@ -74,13 +73,6 @@ class _Pagination(_WireModel):
     page_size: int = Field(ge=1)
     current_page_size: int = Field(ge=0)
     total_pages: int = Field(ge=0)
-    total_results: int = Field(ge=0)
-
-
-class _ExportPagination(_WireModel):
-    """The part of a CLI page's ``pagination`` block that shows whether it is complete."""
-
-    current_page_size: int = Field(ge=0)
     total_results: int = Field(ge=0)
 
 
@@ -248,14 +240,11 @@ class IntakeFileTraceConfig(_StrictModel):
 
     `trace_path` holds `nemo intake traces get --output-format=json --mode=detailed TRACE_ID`;
     `spans_path` holds `nemo intake spans list --output-format=json --mode=detailed
-    --filter.trace-id=TRACE_ID --sort=started_at --all-pages`. The optional
-    `evaluator_results_path` holds `nemo intake evaluator-results list --output-format=json
-    --filter.session-id=SESSION_ID --sort=created_at --all-pages`.
+    --filter.trace-id=TRACE_ID --sort=started_at --all-pages`.
     """
 
     trace_path: Path
     spans_path: Path
-    evaluator_results_path: Path | None = None
     workspace: str = Field(min_length=1)
     base_url: str | None = None
 
@@ -530,30 +519,16 @@ class IntakeFileTraceLoader:
             )
             raw_spans = [
                 _IntakeSpan.model_validate(span)
-                for span in _page_records(_read_json(self.config.spans_path), "spans")
+                for span in _span_records(_read_json(self.config.spans_path))
             ]
-            results_path = self.config.evaluator_results_path
-            raw_results = (
-                []
-                if results_path is None
-                else [
-                    _EvaluatorResult.model_validate(result)
-                    for result in _page_records(_read_json(results_path), "evaluator results")
-                ]
-            )
             if raw_trace.root_span_id is not None and raw_trace.root_span_id not in {
                 span.span_id for span in raw_spans
             }:
                 raise ValueError("spans file does not contain the trace's root span")
-            if any(
-                record.workspace != self.config.workspace
-                for record in (raw_trace, *raw_spans, *raw_results)
-            ):
-                raise ValueError("trace files do not match the configured workspace")
             trace = _normalize_trace(
                 raw_trace,
                 raw_spans,
-                raw_results,
+                [],
                 base_url=self.config.base_url,
                 workspace=self.config.workspace,
             )
@@ -572,13 +547,6 @@ class IntakeFileTraceLoader:
             query={
                 "trace_path": str(self.config.trace_path.resolve()),
                 "spans_path": str(self.config.spans_path.resolve()),
-                **(
-                    {}
-                    if self.config.evaluator_results_path is None
-                    else {
-                        "evaluator_results_path": str(self.config.evaluator_results_path.resolve())
-                    }
-                ),
                 **({"trace_id": next(iter(traces)).id} if traces else {}),
             },
         )
@@ -601,23 +569,14 @@ def _trace_record(value: JsonValue) -> Mapping[str, JsonValue]:
     return data[0]
 
 
-def _page_records(value: JsonValue, name: str) -> list[Mapping[str, JsonValue]]:
-    """Return the records of the one merged page that ``--all-pages`` writes.
-
-    The page is ``{"data": [...], "pagination": {...}}``; a page whose pagination
-    reports more results than it holds came from an export without ``--all-pages``.
-    """
-    if not isinstance(value, Mapping):
-        raise ValueError(_UNSUPPORTED_SHAPE)
-    data, pagination = value.get("data"), value.get("pagination")
-    if not isinstance(data, list) or not isinstance(pagination, Mapping):
+def _span_records(value: JsonValue) -> list[Mapping[str, JsonValue]]:
+    """Return the records of the `{"data": [...], ...}` page `nemo intake spans list` writes."""
+    data = value.get("data") if isinstance(value, Mapping) else None
+    if not isinstance(data, list):
         raise ValueError(_UNSUPPORTED_SHAPE)
     records = [item for item in data if isinstance(item, Mapping)]
     if len(records) != len(data):
         raise ValueError(_UNSUPPORTED_SHAPE)
-    counts = _ExportPagination.model_validate(pagination)
-    if counts.total_results != len(records) or counts.current_page_size != len(records):
-        raise ValueError(f"{name} file is incomplete; export with --all-pages")
     return records
 
 

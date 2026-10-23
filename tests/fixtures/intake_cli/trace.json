@@ -1,0 +1,34 @@
+{
+  "id": "probe-session-1",
+  "session_id": "probe-session-1",
+  "started_at": "2026-09-01T10:00:00",
+  "status": "success",
+  "workspace": "default",
+  "agent_name": "assistant",
+  "agent_version": "1",
+  "cached_tokens": 20,
+  "cost_input_usd": null,
+  "cost_output_usd": null,
+  "cost_usd": 0.01,
+  "duration_ms": 1000.0,
+  "ended_at": "2026-09-01T10:00:01",
+  "error_count": 0,
+  "evaluation_context": {
+    "evaluation_id": "probe-eval",
+    "evaluation_name": "probe-eval",
+    "test_case_id": "probe-case-1",
+    "test_case_name": "probe-case-1"
+  },
+  "input": "Find the report.",
+  "input_tokens": 100,
+  "models": [
+    "test-model"
+  ],
+  "name": "assistant",
+  "output": "Done.",
+  "output_tokens": 10,
+  "providers": [],
+  "root_span_id": "span-14b2d2ac683c9487da2c7436a22414ad",
+  "span_count": 13,
+  "total_tokens": 110
+}
