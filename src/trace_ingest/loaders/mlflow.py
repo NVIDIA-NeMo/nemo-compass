@@ -23,6 +23,7 @@ from trace_ingest.models import (
     Span,
     SpanKind,
     ToolCall,
+    ToolResult,
     Trace,
     TraceAggregate,
     TraceSnapshot,
@@ -514,10 +515,22 @@ def _normalize_trace(
             base_pointer=base_pointer,
         )
         if normalized.kind is SpanKind.TOOL:
+            status = normalized.attributes.get("status")
+            results = (
+                []
+                if normalized.output is UNSET
+                else [
+                    ToolResult(
+                        content=normalized.output,
+                        is_error=True if status == "ERROR" else None,
+                    )
+                ]
+            )
             normalized.tool_call = ToolCall(
                 call_id=span_id,
                 index=tool_call_index,
-                result_count=0 if normalized.output is UNSET else 1,
+                result_count=len(results),
+                results=results,
             )
             tool_call_index += 1
         normalized_by_id[span_id] = normalized

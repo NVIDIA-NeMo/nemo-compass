@@ -1,0 +1,540 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "Span": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "One canonical, recursively nested unit of work in an agent trace.",
+      "properties": {
+        "attributes": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "description": "Additional lossless source metadata not represented by a typed field.",
+          "title": "Attributes",
+          "type": "object"
+        },
+        "children": {
+          "description": "Direct child spans in deterministic source execution order.",
+          "items": {
+            "$ref": "#/$defs/Span"
+          },
+          "title": "Children",
+          "type": "array"
+        },
+        "cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Source-reported span cost in US dollars, when available.",
+          "title": "Cost Usd"
+        },
+        "end_time": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Timezone-aware source end time, when recorded.",
+          "title": "End Time"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Authoritative source error text or status; do not infer one from output text.",
+          "title": "Error"
+        },
+        "id": {
+          "description": "Stable span identifier, unique within its containing trace.",
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "input": {
+          "$ref": "#/$defs/JsonValue",
+          "description": "Raw recorded input. Omit when absent; explicit JSON null remains null.",
+          "title": "Input"
+        },
+        "kind": {
+          "$ref": "#/$defs/SpanKind",
+          "description": "Normalized span category represented by this source span."
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Source-reported model identifier, when applicable.",
+          "title": "Model"
+        },
+        "output": {
+          "$ref": "#/$defs/JsonValue",
+          "description": "Raw recorded output. Omit when absent; explicit JSON null remains null.",
+          "title": "Output"
+        },
+        "source_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Url"
+        },
+        "start_time": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Timezone-aware source start time, when recorded.",
+          "title": "Start Time"
+        },
+        "token_counts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TokenCounts"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Source-reported token counts for this span, when available."
+        },
+        "tool_call": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolCall"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Call/result join metadata; valid only for a TOOL span."
+        },
+        "tool_definitions": {
+          "description": "Tools declared to this agent, or offered to this model call; valid only for an AGENT or LLM span.",
+          "items": {
+            "$ref": "#/$defs/ToolDefinition"
+          },
+          "title": "Tool Definitions",
+          "type": "array"
+        },
+        "tool_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Observed tool name for a TOOL span; preserve the source value.",
+          "title": "Tool Name"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "title": "Span",
+      "type": "object"
+    },
+    "SpanKind": {
+      "enum": [
+        "LLM",
+        "TOOL",
+        "AGENT",
+        "CHAIN",
+        "RETRIEVER",
+        "EMBEDDING",
+        "RERANKER",
+        "EVALUATOR",
+        "GUARDRAIL",
+        "UNKNOWN"
+      ],
+      "title": "SpanKind",
+      "type": "string"
+    },
+    "TokenCounts": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Non-negative token counts using the source's authoritative accounting.",
+      "properties": {
+        "cached_input_tokens": {
+          "description": "Cached input tokens.",
+          "minimum": 0,
+          "title": "Cached Input Tokens",
+          "type": "integer"
+        },
+        "input_tokens": {
+          "description": "Uncached input tokens.",
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "description": "Generated output tokens.",
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens"
+      ],
+      "title": "TokenCounts",
+      "type": "object"
+    },
+    "ToolCall": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Source metadata that identifies and joins one tool invocation.",
+      "properties": {
+        "call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The source's tool-call identifier. Preserve repeated IDs so duplicate instrumentation remains observable.",
+          "title": "Call Id"
+        },
+        "index": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Zero-based tool-call execution order when the source records it.",
+          "title": "Index"
+        },
+        "instrumentation_alias_of": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Canonical tool name when the observed name is an instrumentation alias.",
+          "title": "Instrumentation Alias Of"
+        },
+        "prior_user_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Nearest preceding user text, only when captured from the source.",
+          "title": "Prior User Text"
+        },
+        "result_count": {
+          "default": 1,
+          "description": "Number of source results matched to this call; use zero when none exists.",
+          "minimum": 0,
+          "title": "Result Count",
+          "type": "integer"
+        },
+        "result_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The source result's genuine reference to this call, when available.",
+          "title": "Result Id"
+        },
+        "results": {
+          "description": "Source results matched to this call, in source order; its length equals result_count. Omit when the results were not recorded, as in traces written before schema version 2.",
+          "items": {
+            "$ref": "#/$defs/ToolResult"
+          },
+          "title": "Results",
+          "type": "array"
+        },
+        "returned_data": {
+          "description": "Whether the result returned usable data; omit when the source cannot say.",
+          "title": "Returned Data",
+          "type": "boolean"
+        }
+      },
+      "title": "ToolCall",
+      "type": "object"
+    },
+    "ToolDefinition": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "One tool the source declared as available to an agent.",
+      "properties": {
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Declared tool description.",
+          "title": "Description"
+        },
+        "input_schema": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Declared input JSON Schema, when recorded."
+        },
+        "name": {
+          "description": "Declared tool name.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "raw": {
+          "$ref": "#/$defs/JsonValue",
+          "description": "Verbatim source definition."
+        },
+        "server": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Explicit source scope such as an MCP server; never inferred from the name.",
+          "title": "Server"
+        }
+      },
+      "required": [
+        "name",
+        "raw"
+      ],
+      "title": "ToolDefinition",
+      "type": "object"
+    },
+    "ToolResult": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "One source result returned for a tool invocation.",
+      "properties": {
+        "attributes": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "description": "Additional lossless result metadata not represented by a typed field.",
+          "title": "Attributes",
+          "type": "object"
+        },
+        "content": {
+          "$ref": "#/$defs/JsonValue",
+          "description": "Raw recorded result content. Omit when absent; explicit JSON null remains null.",
+          "title": "Content"
+        },
+        "is_error": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Source-recorded error flag; null when the source did not record a usable flag.",
+          "title": "Is Error"
+        }
+      },
+      "title": "ToolResult",
+      "type": "object"
+    },
+    "TraceAggregate": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Source-reported or deterministically derived whole-trace measurements.",
+      "properties": {
+        "cost_usd": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Whole-trace cost in US dollars, when available.",
+          "title": "Cost Usd"
+        },
+        "latency_ms": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Whole-trace latency in milliseconds, when available.",
+          "title": "Latency Ms"
+        },
+        "token_counts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TokenCounts"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Whole-trace token counts, when available."
+        }
+      },
+      "title": "TraceAggregate",
+      "type": "object"
+    }
+  },
+  "additionalProperties": {
+    "$ref": "#/$defs/JsonValue"
+  },
+  "description": "Canonical representation of one complete end-to-end agent run.\n\nSource loaders deterministically construct this model before any Compass\nSignal runs. Provider-specific parsing or compatibility logic does not\nbelong downstream of this boundary.",
+  "properties": {
+    "aggregate": {
+      "$ref": "#/$defs/TraceAggregate",
+      "description": "Whole-trace measurements; use an empty object when none are available."
+    },
+    "attributes": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Additional lossless trace-level source metadata; do not invent values.",
+      "title": "Attributes",
+      "type": "object"
+    },
+    "evaluator_results": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Normalized evaluation signals keyed by adapter-assigned names.",
+      "title": "Evaluator Results",
+      "type": "object"
+    },
+    "id": {
+      "description": "Stable trace identifier, unique within the loaded corpus.",
+      "minLength": 1,
+      "title": "Id",
+      "type": "string"
+    },
+    "root_spans": {
+      "description": "Complete root span trees in deterministic source execution order.",
+      "items": {
+        "$ref": "#/$defs/Span"
+      },
+      "title": "Root Spans",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "2",
+      "default": "2",
+      "description": "Canonical trace contract version.",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_url": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Loader-resolved link to the original trace or local source file.",
+      "title": "Source Url"
+    }
+  },
+  "required": [
+    "id",
+    "root_spans",
+    "aggregate"
+  ],
+  "title": "Trace",
+  "type": "object"
+}

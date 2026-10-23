@@ -15,7 +15,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, with_config
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, with_config
 
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
@@ -24,13 +24,24 @@ from trace_ingest.models import (
     SpanKind,
     TokenCounts,
     ToolCall,
+    ToolDefinition,
+    ToolResult,
     Trace,
     TraceAggregate,
     TraceSnapshot,
 )
 from trace_ingest.source_links import file_source_url
 
-__all__ = ["ATIFTraceConfig", "ATIFTraceDescription", "ATIFTraceLoadError", "ATIFTraceLoader"]
+__all__ = [
+    "ATIFTraceConfig",
+    "ATIFTraceDescription",
+    "ATIFTraceLoadError",
+    "ATIFTraceLoader",
+    "tool_definitions_from_atif",
+    "tool_result_from_atif",
+]
+
+TOOL_ERROR = "ATIF tool result reported is_error"
 
 
 class ATIFTraceLoadError(ValueError):
@@ -115,6 +126,65 @@ def _metadata(source: Mapping[str, Any], *exclude: str) -> dict[str, Any]:
     return {key: value for key, value in source.items() if key not in exclude}
 
 
+def _first(*values: JsonValue) -> JsonValue:
+    return next((value for value in values if value is not None), None)
+
+
+def tool_definitions_from_atif(items: object) -> list[ToolDefinition]:
+    """Map ATIF ``agent.tool_definitions`` items; skip non-object or nameless items."""
+
+    definitions = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        function = item.get("function")
+        function = function if isinstance(function, dict) else {}
+        name = _first(item.get("name"), function.get("name"))
+        if not isinstance(name, str) or not name:
+            continue
+        description = _first(item.get("description"), function.get("description"))
+        extra = item.get("extra")
+        scope = extra.get("tool_scope") if isinstance(extra, dict) else None
+        server = scope.get("server") if isinstance(scope, dict) else None
+        definitions.append(
+            ToolDefinition(
+                name=name,
+                server=server if isinstance(server, str) else None,
+                description=description if isinstance(description, str) else None,
+                input_schema=_first(
+                    item.get("inputSchema"),
+                    item.get("input_schema"),
+                    item.get("parameters"),
+                    function.get("parameters"),
+                ),
+                raw=item,
+            )
+        )
+    return definitions
+
+
+def tool_result_from_atif(result: Mapping[str, Any]) -> ToolResult:
+    """Normalize one ATIF observation result, reading ``is_error`` from it and its ``extra``."""
+    extra = result.get("extra")
+    flags = [
+        source[key]
+        for source in (result, extra if isinstance(extra, Mapping) else {})
+        for key in ("isError", "is_error")
+        if key in source
+    ]
+    attributes = {}
+    is_error = None
+    if any(type(flag) is not bool for flag in flags):
+        attributes["is_error_status"] = "invalid"
+    elif len(set(flags)) > 1:
+        attributes["is_error_status"] = "conflicting"
+    elif flags:
+        is_error = flags[0]
+    return ToolResult(
+        content=result.get("content", UNSET), is_error=is_error, attributes=attributes
+    )
+
+
 def _tokens(metrics: dict[str, Any], prefix: str = "") -> TokenCounts | None:
     prompt, cached, completion = (
         metrics.get(prefix + key) for key in ("prompt_tokens", "cached_tokens", "completion_tokens")
@@ -192,6 +262,13 @@ def _step_span(
         matched[call_id].append(result)
     for index, call in enumerate(calls):
         results = matched[call["tool_call_id"]]
+        tool_results = [tool_result_from_atif(result) for result in results]
+        flags = [result.is_error for result in tool_results]
+        attributes: dict[str, Any] = {"atif": {"call": call, "results": results}}
+        if True in flags:
+            attributes["explicit_error"] = True
+        elif flags and all(flag is False for flag in flags):
+            attributes["explicit_error"] = False
         output = results[0].get("content", UNSET) if len(results) == 1 else results or UNSET
         span.children.append(
             Span(
@@ -205,9 +282,11 @@ def _step_span(
                     result_id=call["tool_call_id"] if results else None,
                     result_count=len(results),
                     prior_user_text=prior_user_text,
+                    results=tool_results,
                 ),
+                error=TOOL_ERROR if True in flags else None,
                 children=[child for result in results for child in subagents(result)],
-                attributes={"atif": {"call": call, "results": results}},
+                attributes=attributes,
             )
         )
     for index, result in enumerate(matched[None]):
@@ -253,10 +332,14 @@ def _trajectory_span(source: _Trajectory, prefix: str = "trajectory") -> Span:
             children.append(_trajectory_span(child, f"{prefix}/subagent/{index}"))
         return children
 
+    definitions = source["agent"].get("tool_definitions")
     root = Span(
         id=prefix,
         kind=SpanKind.AGENT,
         attributes={"atif": _metadata(source, "steps", "subagent_trajectories")},
+        tool_definitions=tool_definitions_from_atif(definitions)
+        if isinstance(definitions, list)
+        else UNSET,
     )
     prior_user_text = None
     for index, step in enumerate(source["steps"], start=1):

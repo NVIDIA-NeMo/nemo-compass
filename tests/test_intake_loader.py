@@ -24,6 +24,8 @@ from compass.trace_loaders.intake import (
     IntakeTraceQuery,
 )
 from compass.traces import UNSET, SpanKind, Trace
+from trace_ingest.catalog import tool_catalog
+from trace_ingest.models import ToolResult
 
 BASE_URL = "https://platform.example.test"
 WORKSPACE = "example-workspace"
@@ -272,7 +274,8 @@ def test_intake_loader_returns_canonical_snapshot_without_writing_files(tmp_path
     assert trace.root_spans[0].start_time.tzinfo == timezone.utc
     assert trace.attributes["task_text"] == {"messages": [{"role": "user", "content": "find it"}]}
     assert trace.attributes["logical_case_id"] == "case-a"
-    assert trace.attributes["tool_catalog"] == {
+    assert "tool_catalog" not in trace.attributes
+    assert tool_catalog(trace) == {
         "search": {
             "type": "object",
             "properties": {"query": {"type": "string"}},
@@ -293,6 +296,9 @@ def test_intake_loader_returns_canonical_snapshot_without_writing_files(tmp_path
     assert tool.tool_call.result_id == "call-1"
     assert tool.tool_call.index == 0
     assert tool.attributes["explicit_error"] is False
+    assert tool.tool_call.results == [
+        ToolResult(content='{"documents":["report"]}', is_error=False)
+    ]
 
     assert Trace.model_validate_json(trace.model_dump_json()) == trace
     assert trace.model_dump(exclude_unset=True)["root_spans"][0]["children"][0]["id"] == "tool"
@@ -565,6 +571,109 @@ def test_intake_preserves_span_model_and_cost():
     span = next(iter(loader.load())).root_spans[0]
     assert span.model == "example-model"
     assert span.cost_usd == 0.125
+
+
+def _agent_attributes(*names: str) -> str:
+    definitions = [{"name": name, "parameters": {"type": "object"}} for name in names]
+    return json.dumps({"agent": {"tool_definitions": definitions}})
+
+
+def test_intake_atif_definitions_stay_on_the_span_that_declared_them():
+    trace = next(
+        iter(
+            _loader_for_records(
+                [
+                    _span_record("root", raw_attributes=_agent_attributes("search")),
+                    _span_record(
+                        "sub",
+                        parent_span_id="root",
+                        raw_attributes=_agent_attributes("lookup"),
+                    ),
+                    _span_record(
+                        "step",
+                        kind="CHAIN",
+                        parent_span_id="sub",
+                        raw_attributes=_agent_attributes("lookup", "write"),
+                    ),
+                ]
+            ).load()
+        )
+    )
+
+    root = trace.root_spans[0]
+    sub = root.children[0]
+    assert [definition.name for definition in root.tool_definitions] == ["search"]
+    assert [definition.name for definition in sub.tool_definitions] == ["lookup", "write"]
+    assert sub.children[0].tool_definitions is UNSET
+    assert "intake_loader_gaps" not in trace.attributes
+
+
+def test_intake_atif_definitions_without_owner_are_a_gap():
+    trace = next(
+        iter(
+            _loader_for_records(
+                [_span_record("root", kind="CHAIN", raw_attributes=_agent_attributes("search"))]
+            ).load()
+        )
+    )
+
+    assert tool_catalog(trace) is None
+    assert trace.attributes["intake_loader_gaps"] == [
+        {"code": "tool_definitions_without_owner_span", "span_id": "root"}
+    ]
+
+
+@pytest.mark.parametrize(
+    "status, payload, is_error, result_attributes, explicit_error, error",
+    [
+        ("success", {}, False, {}, False, None),
+        (
+            "success",
+            {"is_error": True},
+            None,
+            {"is_error_status": "conflicting"},
+            True,
+            "ATIF tool result reported is_error",
+        ),
+        ("error", {"is_error": False}, None, {"is_error_status": "conflicting"}, True, "boom"),
+        ("error", {"is_error": True}, True, {}, True, "boom"),
+        (
+            "unknown",
+            {"extra": {"is_error": True}},
+            True,
+            {},
+            True,
+            "ATIF tool result reported is_error",
+        ),
+    ],
+)
+def test_intake_atif_tool_result_combines_status_and_payload_flag(
+    status, payload, is_error, result_attributes, explicit_error, error
+):
+    trace = next(
+        iter(
+            _loader_for_records(
+                [
+                    _span_record("root"),
+                    _span_record(
+                        "tool",
+                        parent_span_id="root",
+                        kind="TOOL",
+                        status=status,
+                        error_message="boom" if status == "error" else None,
+                        output=json.dumps({"source_call_id": "call-1", "content": "x", **payload}),
+                    ),
+                ]
+            ).load()
+        )
+    )
+
+    tool = trace.root_spans[0].children[0]
+    assert tool.tool_call.results == [
+        ToolResult(content="x", is_error=is_error, attributes=result_attributes)
+    ]
+    assert tool.attributes["explicit_error"] is explicit_error
+    assert tool.error == error
 
 
 @pytest.mark.parametrize("query_limit", [None, 5])

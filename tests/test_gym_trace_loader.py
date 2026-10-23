@@ -17,6 +17,7 @@ from pydantic import ValidationError
 import compass.cli.main as cli
 from compass.compass_signals.tool_issues.signal import to_tool_issue_trace
 from compass.config import RunConfig, TraceConfig
+from trace_ingest.catalog import tool_catalog
 from trace_ingest.loaders import GymTraceConfig, GymTraceLoader, GymTraceLoadError
 from trace_ingest.models import UNSET, SpanKind, TokenCounts
 
@@ -405,3 +406,45 @@ def test_upstream_opencode_producer_and_collector_fixtures(producer, case):
 def test_missing_attachment_points_to_supported_paths(tmp_path):
     with pytest.raises(GymTraceLoadError, match="trajectory-capabilities"):
         loader_for(tmp_path, {"response": {"output": []}}).load()
+
+
+def assert_result_counts(trace):
+    pending = list(trace.root_spans)
+    while pending:
+        span = pending.pop()
+        pending.extend(span.children)
+        if span.kind is SpanKind.TOOL:
+            assert span.tool_call is not None
+            assert len(span.tool_call.results) == span.tool_call.result_count
+
+
+@pytest.mark.parametrize(
+    "path", sorted((Path(__file__).parent / "fixtures/gym_native").glob("*.json")), ids=str
+)
+def test_every_tool_span_records_one_result_per_count(path):
+    trace = next(iter(GymTraceLoader(GymTraceConfig(path=path, format="json")).load()))
+    assert_result_counts(trace)
+    for span in trace.root_spans[0].children:
+        if span.kind is SpanKind.TOOL and span.tool_call is not None:
+            assert span.tool_call.results is not UNSET
+            if not span.tool_call.results:
+                continue
+            assert span.tool_call.results[0].content == span.output
+            assert span.tool_call.results[0].is_error is (True if span.error else None)
+
+
+def test_responses_create_params_tools_become_root_definitions(tmp_path):
+    record = rollout()
+    tools = [
+        {"type": "function", "name": "search", "parameters": {"type": "object"}},
+        {"type": "function", "function": {"name": "open", "parameters": {"type": "string"}}},
+        {"type": "function"},
+        "not-a-tool",
+    ]
+    record["responses_create_params"] = {"tools": tools}
+    trace = next(iter(loader_for(tmp_path, record).load()))
+    root = trace.root_spans[0]
+    assert root.kind is SpanKind.AGENT
+    assert root.tool_definitions is not UNSET
+    assert [definition.raw for definition in root.tool_definitions] == tools[:2]
+    assert tool_catalog(trace) == {"search": {"type": "object"}, "open": {"type": "string"}}

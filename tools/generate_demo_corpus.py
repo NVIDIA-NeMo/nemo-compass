@@ -8,7 +8,7 @@ The corpus has to do a specific job: make every one of the tool-issue signal's
 nineteen finding types fire, give the anomaly-and-pattern signal enough recurrence to populate all of its grouping
 sections — all while staying small enough to read. Hand-writing fourteen traces of inline JSON
 to hit those targets is where mistakes hide, so it is generated here instead
-and the output is committed. ``tests/test_sample_data.py`` regenerates into a
+and the output is committed. ``tests/test_shipped_corpora.py`` regenerates into a
 tmpdir and asserts byte equality, so the data can never drift from this file.
 
 Fully deterministic: no RNG, no clock. Run it with::
@@ -29,6 +29,7 @@ from typing import Any, TypedDict, Unpack
 from pydantic import JsonValue
 
 from compass.traces import UNSET, Span, SpanKind, ToolCall, Trace, TraceAggregate
+from trace_ingest.models import ToolDefinition, ToolResult
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = REPO_ROOT / "src" / "compass" / "data"
@@ -70,6 +71,14 @@ TOOL_CATALOG: dict[str, Any] = {
     # unknown_tool detection while abstaining from argument checks.
     "SessionTool": None,
 }
+TOOL_DEFINITIONS = [
+    ToolDefinition(
+        name=name,
+        input_schema=schema,
+        raw={"name": name, "parameters": schema},
+    )
+    for name, schema in TOOL_CATALOG.items()
+]
 
 VERDICT_DEAD_END = "dead_end: no artifact produced"
 VERDICT_COMPLETED = "completed"
@@ -161,6 +170,11 @@ class TraceBuilder:
                 instrumentation_alias_of=fields.get("instrumentation_alias_of"),
                 prior_user_text=fields.get("prior_user_text") or self.task_text,
                 returned_data=fields.get("returned_data", UNSET),
+                # Each matched result carries the recorded output; a duplicate
+                # delivery repeats it. is_error mirrors the recorded flag, if any.
+                results=[
+                    ToolResult(content=result, is_error=explicit_error) for _ in range(result_count)
+                ],
             ),
         }
         if not result_is_missing:
@@ -206,7 +220,6 @@ class TraceBuilder:
         cost: float,
         metrics: dict[str, float] | None = None,
         complete_provenance_context: bool = False,
-        include_catalog: bool = True,
     ) -> Trace:
         attributes: dict[str, Any] = {
             "complete_provenance_context": complete_provenance_context,
@@ -218,11 +231,17 @@ class TraceBuilder:
             "logical_case_id": self.logical_case_id,
             "observed_verdict": verdict,
         }
-        if include_catalog:
-            attributes["tool_catalog"] = TOOL_CATALOG
+        # The agent root declares the catalogued tools; every step runs under it.
+        agent = Span(
+            id=self._span_id(f"{self.trace_id}#agent"),
+            kind=SpanKind.AGENT,
+            attributes={"name": "docops-agent", "source_pointer": {}},
+            tool_definitions=TOOL_DEFINITIONS,
+            children=self.spans,
+        )
         return Trace(
             id=self.trace_id,
-            root_spans=self.spans,
+            root_spans=[agent],
             aggregate=TraceAggregate(cost_usd=cost, latency_ms=self.duration_ms or None),
             evaluator_results={"observed_verdict": verdict},
             attributes=attributes,
@@ -603,7 +622,7 @@ def main() -> int:
     print(f"traces           : {len(corpus)}")
     print(
         "calls            : "
-        f"{sum(span.kind is SpanKind.TOOL for trace in corpus for span in trace.root_spans)}"
+        f"{sum(span.kind is SpanKind.TOOL for trace in corpus for span in trace.root_spans[0].children)}"
     )
     print(f"logical cases    : {len({t.attributes['logical_case_id'] for t in corpus})}")
     for name, path in written.items():
