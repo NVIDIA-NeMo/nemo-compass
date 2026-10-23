@@ -119,6 +119,8 @@ def sdk_counts(usage: dict | None) -> dict | None:
             {"input_tokens": 2, "output_tokens": 81, "cache_writes_by_ttl": {300: 14000}},
         ),
         ({"output": 52, "output_reasoning_tokens": -1}, None),
+        # An unsupported input bucket leaves input unknown and keeps the other counts.
+        ({"input": 8, "input_audio_tokens": 2, "output": 5}, {"output_tokens": 5}),
         ({"output": 4}, {"output_tokens": 4}),
         (None, None),
     ],

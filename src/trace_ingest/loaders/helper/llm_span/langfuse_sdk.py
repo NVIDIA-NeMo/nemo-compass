@@ -35,17 +35,21 @@ if TYPE_CHECKING:
 
 # Anthropic: Langfuse's split of Anthropic's cache writes by TTL.
 _WRITE_BY_TTL = {"input_cache_creation_5m": 300, "input_cache_creation_1h": 3600}
+# Both: input; OpenAI: input_cached_tokens; Anthropic: the TTL splits.
+_INPUT_KEYS = frozenset({"input", "input_cached_tokens", *_WRITE_BY_TTL})
 # Both: output; OpenAI: output_reasoning_tokens, which Langfuse splits out of output.
 _OUTPUT_KEYS = frozenset({"output", "output_reasoning_tokens"})
 
 
 def token_counts(span: SpanData) -> TokenCounts | None:
     usage = span.usage_details
+    # With an input bucket not listed, input alone is not the uncached input.
+    input_known = {key for key in usage if key.startswith("input")} <= _INPUT_KEYS
     # Anthropic sends its own cache read key; OpenAI's is split out as input_cached_tokens.
     cached = usage.get("cache_read_input_tokens")
     return _token_counts(
         # Both: input is uncached input, with cache split out.
-        input_tokens=usage.get("input"),
+        input_tokens=usage.get("input") if input_known else None,
         cached_input_tokens=cached if cached is not None else usage.get("input_cached_tokens"),
         # Both: output, plus OpenAI's reasoning bucket.
         output_tokens=_output_tokens(usage),

@@ -4,11 +4,11 @@
 """Read canonical token counts from a provider's own usage object.
 
 Each provider module copies the counts of its API's usage object into the
-fields with the same meaning: ``anthropic`` (Messages) and ``openai``
-(Responses, Chat Completions). Loaders find the usage object wherever their
-source keeps it and pick the provider; a source that renames the provider's
-keys maps them back first. To support another provider, add a module with
-``token_counts``.
+fields with the same meaning: ``anthropic.token_counts`` (Messages) and
+``openai.token_counts`` (Responses). Loaders find the usage object wherever their
+source keeps it and pick the reader by the API route, never by guessing from
+the keys; a source that renames the provider's keys maps them back first. To
+support another API, add a function for its usage object.
 """
 
 from trace_ingest.loaders.helper.llm_span.token_usage import anthropic, openai
