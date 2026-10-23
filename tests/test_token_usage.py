@@ -37,21 +37,20 @@ def test_core_copies_valid_counts(kwargs, expected):
     assert counts(token_counts(**kwargs)) == expected
 
 
-def test_openai_chat_completions_usage():
-    usage = {
-        "prompt_tokens": 1200,
-        "prompt_tokens_details": {"cached_tokens": 1024},
-        "completion_tokens": 30,
-    }
-    assert counts(openai.token_counts(usage)) == {
-        "input_total": 1200,
-        "cached_input_tokens": 1024,
-        "output_tokens": 30,
-    }
-
-
-def test_openai_unknown_usage_shape():
-    assert openai.token_counts({"input": 10, "output": 4}) is None
+@pytest.mark.parametrize(
+    ("usage", "expected"),
+    [
+        # Each count is read on its own: a missing input leaves only itself unknown.
+        ({"output_tokens": 7}, {"output_tokens": 7}),
+        (
+            {"input_tokens": 1200, "input_tokens_details": {"cached_tokens": 1024}},
+            {"input_total": 1200, "cached_input_tokens": 1024},
+        ),
+        ({"input": 10, "output": 4}, None),
+    ],
+)
+def test_openai_reads_each_count(usage, expected):
+    assert counts(openai.token_counts(usage)) == expected
 
 
 USAGE = {"input_tokens": 3, "output_tokens": 50, "cache_creation_input_tokens": 1000}
