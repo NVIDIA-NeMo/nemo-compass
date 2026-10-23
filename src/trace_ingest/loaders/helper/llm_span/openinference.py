@@ -63,11 +63,13 @@ _NON_PARAM_KEYS = frozenset({"model", "messages", "input", "system", "instructio
 
 
 def request_params(request: Mapping[str, Any] | None) -> dict[str, JsonValue] | None:
-    """Top-level request parameters, without the model, tools and prompt content."""
+    """Top-level request parameters, without the model, tools and prompt content;
+    None when the request records none."""
 
     if request is None:
         return None
-    return {key: to_json(value) for key, value in request.items() if key not in _NON_PARAM_KEYS}
+    params = {key: to_json(value) for key, value in request.items() if key not in _NON_PARAM_KEYS}
+    return params or None
 
 
 def otel_int(value: object) -> int | None:
