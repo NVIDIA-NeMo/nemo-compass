@@ -27,6 +27,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from trace_ingest.loaders.helper.tool_definitions import tool_definitions
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
     UNSET,
@@ -34,7 +35,6 @@ from trace_ingest.models import (
     SpanKind,
     TokenCounts,
     ToolCall,
-    ToolDefinition,
     ToolResult,
     Trace,
     TraceAggregate,
@@ -154,32 +154,6 @@ def _error(row: dict[str, Any], key: str = "status") -> str | None:
         return f"HTTP {code}"
     status = row.get(key)
     return status if status in ("failed", "timeout", "cancelled") else None
-
-
-def _tool_definitions(raw: object) -> list[ToolDefinition]:
-    """Map ``responses_create_params.tools`` items; skip nameless or non-object items."""
-
-    definitions: list[ToolDefinition] = []
-    for item in raw if isinstance(raw, list) else []:
-        if not isinstance(item, dict):
-            continue
-        function = item.get("function")
-        function = function if isinstance(function, dict) else {}
-        name = item.get("name") or function.get("name")
-        if not isinstance(name, str) or not name:
-            continue
-        description = item.get("description") or function.get("description")
-        definitions.append(
-            ToolDefinition(
-                name=name,
-                description=description if isinstance(description, str) else None,
-                input_schema=item["parameters"]
-                if "parameters" in item
-                else function.get("parameters"),
-                raw=item,
-            )
-        )
-    return definitions
 
 
 def _finalize_tool_results(spans: list[Span]) -> None:
@@ -473,8 +447,8 @@ def _normalize(record: dict[str, Any]) -> Trace:
     sort_children(roots)
     _finalize_tool_results(roots)
     params = record.get("responses_create_params")
-    definitions = _tool_definitions(params.get("tools") if isinstance(params, dict) else None)
-    if definitions:
+    definitions = tool_definitions(params.get("tools") if isinstance(params, dict) else None)
+    if definitions is not None:
         depth_first: list[Span] = []
         pending = list(roots)
         while pending:

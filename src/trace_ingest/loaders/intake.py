@@ -829,9 +829,10 @@ def _attach_atif_tool_definitions(
         agent = _raw_attributes(raw_span).get("agent")
         if not isinstance(agent, Mapping):
             continue
-        definitions = tool_definitions_from_atif(agent.get("tool_definitions"))
-        if not definitions:
+        recorded = agent.get("tool_definitions")
+        if not isinstance(recorded, list):
             continue
+        definitions = tool_definitions_from_atif(recorded)
         owner_id: str | None = raw_span.span_id
         while owner_id is not None and normalized_by_id[owner_id].kind not in declaring:
             owner_id = parents[owner_id]
@@ -840,5 +841,5 @@ def _attach_atif_tool_definitions(
             continue
         owner = normalized_by_id[owner_id]
         current = [] if owner.tool_definitions is UNSET else owner.tool_definitions
-        owner.tool_definitions = current + [item for item in definitions if item not in current]
+        owner.tool_definitions = current + definitions
     return unowned
