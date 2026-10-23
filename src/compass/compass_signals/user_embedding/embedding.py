@@ -5,28 +5,20 @@
 from __future__ import annotations
 
 import json
-import logging
-import math
 import os
-import random
-import time
 from collections.abc import Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from email.utils import parsedate_to_datetime
 from functools import cached_property
 from importlib.resources import files
 from importlib.util import find_spec
 from itertools import islice
 from typing import TYPE_CHECKING
 
-import httpx
 import numpy as np
-from litellm import APIConnectionError, EmbeddingResponse
+from litellm import EmbeddingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from tokenizers import Tokenizer
-
-logger = logging.getLogger(__name__)
 
 
 class _NoRetries(int):
@@ -42,7 +34,13 @@ class _NoRetries(int):
 
 
 def _request_embeddings(
-    *, model: str, api_base: str | None, api_key: str | None, input: list[str], timeout: float
+    *,
+    model: str,
+    api_base: str | None,
+    api_key: str | None,
+    input: list[str],
+    timeout: float,
+    max_retries: int,
 ) -> EmbeddingResponse:
     import litellm
 
@@ -53,55 +51,10 @@ def _request_embeddings(
         input=input,
         encoding_format="float",
         timeout=timeout,
-        max_retries=_NoRetries(),
+        max_retries=max_retries if max_retries else _NoRetries(),
+        # Use the adapter/SDK retry count without a second LiteLLM retry loop.
         num_retries=0,
     )
-
-
-def _retry_delay(error: Exception, attempt: int, max_wait: float) -> float | None:
-    """Return a bounded cooldown, or None when this failure must propagate."""
-    if not isinstance(error, APIConnectionError) and getattr(error, "status_code", None) not in {
-        408,
-        429,
-        500,
-        502,
-        503,
-        504,
-    }:
-        return None
-    response = getattr(error, "response", None)
-    headers = httpx.Headers(getattr(error, "headers", None))
-    if response is not None:
-        headers.update(response.headers)
-    server_delay = _server_retry_delay(headers)
-    # Never retry earlier than a valid server instruction to fit our budget.
-    if server_delay > max_wait:
-        logger.warning(
-            "Embedding server retry delay exceeds the %.2fs wait limit; stopping", max_wait
-        )
-        return None
-    ceiling = min(max_wait, 2.0 ** min(attempt - 1, 30))
-    return max(0.0, server_delay, random.uniform(ceiling / 2, ceiling))
-
-
-def _server_retry_delay(headers: httpx.Headers) -> float:
-    """Prefer millisecond precision, as the OpenAI SDK does, then standard Retry-After."""
-    for name, divisor in (("retry-after-ms", 1000), ("retry-after", 1)):
-        value = headers.get(name)
-        if value is None:
-            continue
-        try:
-            delay = float(value) / divisor
-        except ValueError:
-            if name == "retry-after-ms":
-                continue
-            try:
-                delay = parsedate_to_datetime(value).timestamp() - time.time()
-            except (TypeError, ValueError, OverflowError):
-                continue
-        if math.isfinite(delay) and delay >= 0:
-            return delay
-    return 0.0
 
 
 @dataclass
@@ -188,22 +141,10 @@ class LiteLLMEmbeddingConfig(BaseModel):
         default=8, ge=1, le=32, description="Maximum concurrent embedding requests"
     )
     max_retries: int = Field(
-        default=3, ge=0, le=10, description="Retries per failed embedding batch"
+        default=3, ge=0, le=10, description="Provider-managed retries per failed embedding batch"
     )
     request_timeout: float = Field(
         default=60, gt=0, allow_inf_nan=False, description="Per-request SDK timeout in seconds"
-    )
-    retry_timeout: float = Field(
-        default=300,
-        gt=0,
-        allow_inf_nan=False,
-        description="Time budget in seconds for scheduling retries after the first failure",
-    )
-    max_retry_wait: float = Field(
-        default=60,
-        gt=0,
-        allow_inf_nan=False,
-        description="Maximum retry delay in seconds; longer Retry-After fails the run",
     )
 
 
@@ -312,7 +253,7 @@ class UserEmbeddingGenerator:
             yield _RemoteBatch(start, inputs, counts)
 
     def generate_remote(self, texts: list[str]) -> list[UserEmbedding]:
-        """Encode with a fixed worker pool and bounded, independently retried batches."""
+        """Encode with a fixed worker pool and provider-managed retries."""
         config = self.litellm
         if config is None:
             raise ValueError("Remote embeddings require LiteLLM configuration")
@@ -326,9 +267,7 @@ class UserEmbeddingGenerator:
             while True:
                 # Keep only one batch per worker in flight; refill as each finishes.
                 for batch in islice(batches, config.max_concurrency - len(active)):
-                    future = executor.submit(
-                        self._remote_batch_with_retries, batch, config, api_key
-                    )
+                    future = executor.submit(self._remote_batch, batch, config, api_key)
                     active[future] = batch.index
                 if not active:
                     break
@@ -336,36 +275,6 @@ class UserEmbeddingGenerator:
                 for future in done:
                     completed[active.pop(future)] = future.result()
         return [item for index in sorted(completed) for item in completed[index]]
-
-    def _remote_batch_with_retries(
-        self, batch: _RemoteBatch, config: LiteLLMEmbeddingConfig, api_key: str | None
-    ) -> list[UserEmbedding]:
-        attempt = 0
-        deadline = None
-        while True:
-            attempt += 1
-            try:
-                return self._remote_batch(batch, config, api_key)
-            except Exception as error:
-                if attempt > config.max_retries:
-                    raise
-                delay = _retry_delay(error, attempt, config.max_retry_wait)
-                now = time.monotonic()
-                if deadline is None:
-                    deadline = now + config.retry_timeout
-                if delay is None or now + delay >= deadline:
-                    raise
-                logger.warning(
-                    "Embedding batch %d retry %d/%d: %s; waiting %.2fs",
-                    batch.index // config.batch_size,
-                    attempt,
-                    config.max_retries,
-                    type(error).__name__,
-                    delay,
-                )
-                time.sleep(delay)
-                if time.monotonic() >= deadline:
-                    raise
 
     def _remote_batch(
         self, batch: _RemoteBatch, config: LiteLLMEmbeddingConfig, api_key: str | None
@@ -376,6 +285,7 @@ class UserEmbeddingGenerator:
             api_key=api_key,
             input=batch.inputs,
             timeout=config.request_timeout,
+            max_retries=config.max_retries,
         )
         rows = sorted(response.data, key=lambda row: row["index"])
         if [row["index"] for row in rows] != list(range(len(batch.inputs))):
