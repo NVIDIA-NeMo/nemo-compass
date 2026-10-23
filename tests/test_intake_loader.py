@@ -968,6 +968,23 @@ def test_intake_file_loader_requires_the_root_span(tmp_path):
         _file_loader(tmp_path, _trace_record(), _merged_page([])).load()
 
 
+def test_intake_file_loader_errors_do_not_echo_payloads(tmp_path):
+    trace = _trace_record()
+    trace["input"] = "SECRET-TRACE-INPUT"
+    del trace["status"]
+    with pytest.raises(IntakeLoadError) as missing_status:
+        _file_loader(tmp_path, trace, _cli_spans()).load()
+    assert "status" in str(missing_status.value)
+    assert "SECRET-TRACE-INPUT" not in str(missing_status.value)
+
+    spans = _cli_spans()
+    spans["data"][0]["input"] = {"messages": ["SECRET-SPAN-INPUT"]}
+    with pytest.raises(IntakeLoadError) as object_input:
+        _file_loader(tmp_path, _trace_record(), spans).load()
+    assert "input" in str(object_input.value)
+    assert "SECRET-SPAN-INPUT" not in str(object_input.value)
+
+
 def test_intake_file_loader_reads_recorded_cli_exports():
     """`trace.json` and `spans.json` are verbatim `nemo intake traces get` and
     `nemo intake spans list --all-pages` output (nemo 0.4.0) for the first record of

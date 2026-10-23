@@ -65,7 +65,8 @@ class _StrictModel(BaseModel):
 
 
 class _WireModel(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    # Validation errors name the field and problem but never echo record content.
+    model_config = ConfigDict(extra="ignore", hide_input_in_errors=True)
 
 
 class _Pagination(_WireModel):
