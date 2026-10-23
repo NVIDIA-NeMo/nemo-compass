@@ -52,8 +52,6 @@ def _request_embeddings(
         encoding_format="float",
         timeout=timeout,
         max_retries=max_retries if max_retries else _NoRetries(),
-        # Use the adapter/SDK retry count without a second LiteLLM retry loop.
-        num_retries=0,
     )
 
 
