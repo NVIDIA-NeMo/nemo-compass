@@ -118,7 +118,7 @@ def test_report_shows_optional_severity_and_reason():
     assert "Severity: HIGH — The agent is blocked from completing the task." in stream.getvalue()
 
 
-def test_ethos_rejections_report_passage_and_reason():
+def test_report_summarizes_excluded_candidate_problems():
     from compass.insights_generation.validation import (
         CandidateProblemDecision,
         CandidateProblemRejection,
@@ -145,6 +145,4 @@ def test_ethos_rejections_report_passage_and_reason():
     RunOutput(Console(file=stream, width=120)).report(result, Path("insights.yml"))
     rendered = stream.getvalue()
     assert "Candidate problem validation excluded 1 candidate problem." in rendered
-    assert "Require [explicit] approval." in rendered
-    assert "The reported friction is required." in rendered
     assert "none were retained after candidate problem validation" in rendered

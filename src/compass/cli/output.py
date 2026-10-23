@@ -131,11 +131,6 @@ class RunOutput:
             self.console.print(
                 f"Candidate problem validation excluded {count(len(result.validation_rejections), 'candidate problem')}."
             )
-            for rejection in result.validation_rejections:
-                self.console.print(Text(f"  {rejection.problem.description}"))
-                self.console.print(Text(f"  {rejection.decision.explanation}"))
-                if rejection.decision.ethos_passage:
-                    self.console.print(Text(f"  ETHOS.md: {rejection.decision.ethos_passage}"))
         retained = len(result.insights) - new_count
         if retained:
             self.console.print(f"{count(retained, 'existing insight')} retained.")

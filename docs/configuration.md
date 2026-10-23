@@ -41,8 +41,8 @@ Behavior intentionally defined in source code does not excuse a violation of ETH
 Concrete evidence against a candidate problem removes it; ambiguous or inconclusive
 problems are retained for compilation. Decisions include code and ETHOS assessments
 when available, an explanation, and the basis for rejection. ETHOS-based rejections
-require an exact document passage. Rejection reasons appear in the terminal report
-and telemetry.
+require an exact document passage. The terminal report summarizes the number of excluded
+candidate problems; telemetry includes the rejection reasons and supporting passages.
 
 Each candidate problem adds one model investigation, limited to 25 iterations and
 up to 100,000 characters of supporting traces. Candidate problems are reviewed concurrently.
