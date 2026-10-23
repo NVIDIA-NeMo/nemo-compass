@@ -695,7 +695,7 @@ def test_eval_author_responses_fixtures_load(tmp_path):
         (row,) = GymTraceLoader(GymTraceConfig(path=path, format="json")).load()
         (tool,) = [span for span in row.root_spans[0].children if span.kind is SpanKind.TOOL]
         assert tool.tool_name == "lookup_item" and tool.input == {"sku": "BOLT-17"}
-        assert tool.tool_call is not None
+        assert tool.tool_call is not None and tool.tool_call.results is not UNSET
         assert tool.tool_call.result_count == len(tool.tool_call.results) == 1
     # Byte-identical rows share a content identity, so one JSONL corpus is a duplicate.
     with pytest.raises(GymTraceLoadError):
