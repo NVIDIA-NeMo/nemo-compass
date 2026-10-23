@@ -17,18 +17,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from trace_ingest.models import TokenCounts
-from trace_ingest.token_usage import anthropic
 from trace_ingest.token_usage import token_counts as _token_counts
-from trace_ingest.token_usage._core import count
 
-_ANTHROPIC_READ = "cache_read_input_tokens"
-_ANTHROPIC_WRITE = "cache_creation_input_tokens"
-# Langfuse's split of Anthropic's cache writes, keyed to Anthropic's cache_creation breakdown.
-_WRITE_BY_TTL = {
-    "input_cache_creation_5m": "ephemeral_5m_input_tokens",
-    "input_cache_creation_1h": "ephemeral_1h_input_tokens",
-}
-_ANTHROPIC_KEYS = frozenset({_ANTHROPIC_READ, _ANTHROPIC_WRITE, *_WRITE_BY_TTL})
+# Langfuse's split of Anthropic's cache writes by TTL.
+_WRITE_BY_TTL = {"input_cache_creation_5m": 300, "input_cache_creation_1h": 3600}
+_INPUT_KEYS = frozenset({"input", "input_cached_tokens", *_WRITE_BY_TTL})
 
 
 def is_langfuse_sdk(metadata: object) -> bool:
@@ -45,37 +38,19 @@ def token_counts(
 
     if not is_langfuse_sdk(metadata):
         return None
-    usage = {
-        key: tokens
-        for key, value in (usage_details or {}).items()
-        if (tokens := count(value)) is not None
-    }
-    if "input" not in usage or "output" not in usage:
-        return None
-    output = usage["output"] + usage.get("output_reasoning_tokens", 0)
-    if _ANTHROPIC_KEYS.isdisjoint(usage):
-        # Langfuse already took OpenAI's cached tokens out of input.
-        return _token_counts(
-            input_tokens=usage["input"],
-            output_tokens=output,
-            cache_read=usage.get("input_cached_tokens"),
-            input_includes_cache=False,
-        )
-    # A key Langfuse leaves out stays unknown, also where the integration omits zeros.
-    creation = {
-        key: usage[langfuse_key]
-        for langfuse_key, key in _WRITE_BY_TTL.items()
-        if langfuse_key in usage
-    }
-    write = usage.get(_ANTHROPIC_WRITE, sum(creation.values()) if creation else None)
-    return anthropic.token_counts(
-        {
-            "input_tokens": usage["input"],
-            "output_tokens": output,
-            _ANTHROPIC_READ: usage.get(_ANTHROPIC_READ),
-            _ANTHROPIC_WRITE: write,
-            "cache_creation": creation,
-        }
+    usage = usage_details or {}
+    # Langfuse keeps each usage bucket apart; with a bucket not listed here,
+    # ``input`` or ``output`` alone is not the whole count, so it stays unknown.
+    input_complete = {key for key in usage if key.startswith("input")} <= _INPUT_KEYS
+    output_complete = {key for key in usage if key.startswith("output")} <= {"output"}
+    cached = usage.get("cache_read_input_tokens")
+    return _token_counts(
+        input_tokens=usage.get("input") if input_complete else None,
+        cached_input_tokens=cached if cached is not None else usage.get("input_cached_tokens"),
+        output_tokens=usage.get("output") if output_complete else None,
+        cache_write_tokens=usage.get("cache_creation_input_tokens"),
+        cache_writes_by_ttl={ttl: usage.get(key) for key, ttl in _WRITE_BY_TTL.items()},
+        source="langfuse_sdk",
     )
 
 

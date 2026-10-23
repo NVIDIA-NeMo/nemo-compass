@@ -136,29 +136,53 @@ class ToolDefinition(_TraceModel):
 
 
 class TokenCounts(_TraceModel):
-    """Non-negative token counts using the source's authoritative accounting."""
+    """Non-negative token counts as the source records them.
 
-    input_tokens: int = Field(
-        ge=0, description="Uncached input tokens; excludes cache reads and cache writes."
+    Each count is copied from a source count with the same meaning, never derived
+    from other counts; a count the source does not record is None.
+    """
+
+    input_total: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+        description="All input tokens as the source totals them: uncached input plus cache "
+        "reads and cache writes.",
+    )
+    input_tokens: int | None = Field(
+        default=None,
+        ge=0,
+        description="Uncached input tokens; excludes cache reads and cache writes.",
     )
     cached_input_tokens: int | None = Field(
-        ge=0,
-        description="Input tokens read from the cache; None when the source does not record "
-        "cache reads.",
+        default=None, ge=0, description="Input tokens read from the cache."
     )
-    output_tokens: int = Field(ge=0, description="Generated output tokens.")
+    output_tokens: int | None = Field(
+        default=None, ge=0, description="Generated output tokens, reasoning tokens included."
+    )
     cache_write_tokens: int | None = Field(
         default=None,
         ge=0,
         exclude_if=lambda value: value is None,
-        description="Input tokens written to the cache; None when the source does not record it.",
+        description="Input tokens written to the cache, across all TTLs.",
     )
-    cache_write_ttl_seconds: int | None = Field(
+    cache_writes_by_ttl: dict[int, int] | None = Field(
         default=None,
-        ge=0,
         exclude_if=lambda value: value is None,
-        description="TTL of the prompt cache entries this request writes; None when the source "
-        "does not record it.",
+        description="Input tokens written to the cache per TTL in seconds, as the response "
+        "reports them; may cover only some of cache_write_tokens.",
+    )
+    source: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Where the counts were read, such as nemo_relay (the provider's usage), "
+        "openinference or langfuse_sdk.",
+    )
+    fallback_reason: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Why a preferred source was passed over for this one; None when no "
+        "preferred source recorded counts.",
     )
 
 

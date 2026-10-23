@@ -38,11 +38,11 @@ def token_counts(metadata: object) -> TokenCounts | None:
     attributes = span_attributes(metadata)
     # The spec counts cache reads and writes inside llm.token_count.prompt.
     return _token_counts(
-        input_tokens=otel_int(attributes.get("llm.token_count.prompt")),
+        input_total=otel_int(attributes.get("llm.token_count.prompt")),
+        cached_input_tokens=otel_int(attributes.get("llm.token_count.prompt_details.cache_read")),
         output_tokens=otel_int(attributes.get("llm.token_count.completion")),
-        cache_read=otel_int(attributes.get("llm.token_count.prompt_details.cache_read")),
-        cache_write=otel_int(attributes.get("llm.token_count.prompt_details.cache_write")),
-        input_includes_cache=True,
+        cache_write_tokens=otel_int(attributes.get("llm.token_count.prompt_details.cache_write")),
+        source="openinference",
     )
 
 

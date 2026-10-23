@@ -10,29 +10,31 @@ from trace_ingest.otel.openinference import otel_int
 from trace_ingest.token_usage import anthropic, openai, token_counts
 
 
-def counts(value) -> tuple[int, int | None, int, int | None] | None:
-    if value is None:
-        return None
-    return (
-        value.input_tokens,
-        value.cached_input_tokens,
-        value.output_tokens,
-        value.cache_write_tokens,
-    )
+def counts(value) -> dict | None:
+    return None if value is None else value.model_dump(exclude_none=True, exclude={"source"})
 
 
 @pytest.mark.parametrize(
     ("kwargs", "expected"),
     [
-        ({"input_tokens": 100, "output_tokens": 5, "cache_read": 60}, (40, 60, 5, None)),
-        ({"input_tokens": 10, "output_tokens": 5, "cache_read": 60}, None),
-        ({"input_tokens": -1, "output_tokens": 5}, None),
-        ({"input_tokens": True, "output_tokens": 5}, None),
-        ({"input_tokens": 10, "output_tokens": None}, None),
+        # Counts are copied, never derived from one another.
+        (
+            {"input_total": 100, "cached_input_tokens": 60, "output_tokens": 5},
+            {"input_total": 100, "cached_input_tokens": 60, "output_tokens": 5},
+        ),
+        # A cache count larger than the total is kept as the source records it.
+        (
+            {"input_total": 10, "cached_input_tokens": 60},
+            {"input_total": 10, "cached_input_tokens": 60},
+        ),
+        # An invalid count is unknown; the others stay.
+        ({"input_tokens": -1, "output_tokens": 5}, {"output_tokens": 5}),
+        ({"input_tokens": True, "output_tokens": None}, None),
+        ({"cache_writes_by_ttl": {300: 0, 3600: -1}}, {"cache_writes_by_ttl": {300: 0}}),
     ],
 )
-def test_core_subtracts_cache_from_inclusive_input(kwargs, expected):
-    assert counts(token_counts(**kwargs, input_includes_cache=True)) == expected
+def test_core_copies_valid_counts(kwargs, expected):
+    assert counts(token_counts(**kwargs)) == expected
 
 
 def test_openai_chat_completions_usage():
@@ -41,38 +43,47 @@ def test_openai_chat_completions_usage():
         "prompt_tokens_details": {"cached_tokens": 1024},
         "completion_tokens": 30,
     }
-    assert counts(openai.token_counts(usage)) == (176, 1024, 30, None)
+    assert counts(openai.token_counts(usage)) == {
+        "input_total": 1200,
+        "cached_input_tokens": 1024,
+        "output_tokens": 30,
+    }
 
 
 def test_openai_unknown_usage_shape():
     assert openai.token_counts({"input": 10, "output": 4}) is None
 
 
-USAGE = {"input_tokens": 3, "output_tokens": 50, "cache_read_input_tokens": 40000}
+USAGE = {"input_tokens": 3, "output_tokens": 50, "cache_creation_input_tokens": 1000}
+
+
+def creation(five_minutes: int, one_hour: int) -> dict:
+    return {"ephemeral_5m_input_tokens": five_minutes, "ephemeral_1h_input_tokens": one_hour}
 
 
 @pytest.mark.parametrize(
-    ("request_body", "expected"),
+    ("usage", "expected"),
     [
-        # A breakpoint without an explicit ttl leaves the TTL unknown.
-        ({"system": [{"type": "text", "cache_control": {"type": "ephemeral"}}]}, None),
+        # Writes to both TTLs stay apart.
+        ({**USAGE, "cache_creation": creation(100, 900)}, {300: 100, 3600: 900}),
+        # Gateways that keep the breakdown only per iteration.
+        ({**USAGE, "iterations": [{"cache_creation": creation(0, 1000)}]}, {300: 0, 3600: 1000}),
+        # Several iterations would need summing, so the split stays unknown.
         (
-            {
-                "tools": [{"name": "a", "cache_control": {"type": "ephemeral", "ttl": "1h"}}],
-                "system": [{"type": "text", "cache_control": {"type": "ephemeral"}}],
-            },
+            {**USAGE, "iterations": [{"cache_creation": creation(0, 400)}] * 2},
             None,
         ),
-        ({"system": [{"type": "text", "cache_control": {"type": "ephemeral", "ttl": "1h"}}]}, 3600),
-        ({"system": [{"type": "text", "cache_control": {"ttl": "2d"}}]}, None),
-        ({"system": "no breakpoints"}, None),
-        (None, None),
+        (USAGE, None),
     ],
 )
-def test_anthropic_request_ttl(request_body, expected):
-    result = anthropic.token_counts(USAGE, request=request_body)
+def test_anthropic_cache_writes_by_ttl(usage, expected):
+    result = anthropic.token_counts(usage)
     assert result is not None
-    assert result.cache_write_ttl_seconds == expected
+    assert result.cache_write_tokens == 1000
+    assert result.cache_writes_by_ttl == expected
+
+
+SDK_METADATA = {"scope": {"name": "langfuse-sdk"}}
 
 
 def test_langfuse_sdk_reads_anthropic_cache_creation_key():
@@ -83,16 +94,26 @@ def test_langfuse_sdk_reads_anthropic_cache_creation_key():
         "cache_read_input_tokens": 40000,
         "cache_creation_input_tokens": 21621,
     }
-    result = langfuse_sdk.token_counts({"scope": {"name": "langfuse-sdk"}}, usage)
-    assert result is not None
-    assert counts(result) == (3, 40000, 50, 21621)
-    assert result.cache_write_ttl_seconds is None
+    assert counts(langfuse_sdk.token_counts(SDK_METADATA, usage)) == {
+        "input_tokens": 3,
+        "cached_input_tokens": 40000,
+        "output_tokens": 50,
+        "cache_write_tokens": 21621,
+    }
 
 
 def test_langfuse_sdk_leaves_invalid_counts_unknown():
     usage = {"input": 2, "output": 5, "cache_read_input_tokens": -7, "input_cache_creation_5m": 100}
-    result = langfuse_sdk.token_counts({"scope": {"name": "langfuse-sdk"}}, usage)
-    assert counts(result) == (2, None, 5, 100)
+    assert counts(langfuse_sdk.token_counts(SDK_METADATA, usage)) == {
+        "input_tokens": 2,
+        "output_tokens": 5,
+        "cache_writes_by_ttl": {300: 100},
+    }
+
+
+def test_langfuse_sdk_unknown_bucket_leaves_its_count_unknown():
+    usage = {"input": 2, "input_audio_tokens": 7, "output": 10, "output_audio_tokens": 3}
+    assert langfuse_sdk.token_counts(SDK_METADATA, usage) is None
 
 
 @pytest.mark.parametrize(
