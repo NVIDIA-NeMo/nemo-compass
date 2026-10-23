@@ -33,6 +33,7 @@ from trace_ingest.models import ToolResult
 BASE_URL = "https://platform.example.test"
 WORKSPACE = "example-workspace"
 TRACE_ID = "trace-1"
+CLI_FIXTURES = Path(__file__).parent / "fixtures" / "intake_cli"
 
 
 def _empty_evaluator_page() -> httpx.Response:
@@ -907,16 +908,17 @@ def _server_span_pages() -> list[dict]:
 
 
 def _merged_page(records: list[dict]) -> dict:
-    """The single page `--all-pages` writes (nemo_platform/cli/core/pagination.py)."""
+    """The single page `nemo intake spans list --all-pages` writes."""
     return {
         "data": records,
-        "sort": None,
         "pagination": {
             "page": 1,
-            "total_pages": 1,
+            "page_size": len(records),
             "current_page_size": len(records),
+            "total_pages": 1,
             "total_results": len(records),
         },
+        "sort": "started_at",
     }
 
 
@@ -934,26 +936,8 @@ def _trace_shapes() -> dict[str, object]:
     }
 
 
-def _evaluator_result(result_id: str, span_id: str, value: float) -> dict:
-    return {
-        "evaluator_result_id": result_id,
-        "span_id": span_id,
-        "session_id": "session-1",
-        "workspace": WORKSPACE,
-        "name": "accuracy",
-        "value": value,
-        "data_type": "NUMERIC",
-        "created_at": "2026-08-28T18:41:00",
-        "ingested_at": "2026-08-28T18:41:01",
-    }
-
-
 def _file_loader(
-    tmp_path,
-    trace_payload: object,
-    spans_payload: object,
-    evaluator_payload: object | None = None,
-    **overrides: object,
+    tmp_path, trace_payload: object, spans_payload: object, **overrides: object
 ) -> IntakeFileTraceLoader:
     trace_path = tmp_path / "intake-trace.json"
     spans_path = tmp_path / "intake-spans.json"
@@ -964,10 +948,6 @@ def _file_loader(
         "spans_path": spans_path,
         "workspace": WORKSPACE,
     }
-    if evaluator_payload is not None:
-        results_path = tmp_path / "intake-evaluator-results.json"
-        results_path.write_text(json.dumps(evaluator_payload, indent=2))
-        values["evaluator_results_path"] = results_path
     values.update(overrides)
     return IntakeFileTraceLoader(config=IntakeFileTraceConfig.model_validate(values))
 
@@ -1034,64 +1014,6 @@ def test_intake_file_loader_matches_online_loader(tmp_path, trace_shape):
     assert description["distinct_logical_cases"] == 1
     assert description["workspace"] == WORKSPACE
     assert description["query"]["trace_id"] == TRACE_ID
-    assert "evaluator_results_path" not in description["query"]
-
-
-def test_intake_file_loader_matches_online_evaluator_results(tmp_path):
-    results = [
-        _evaluator_result("result-1", "root", 1.0),
-        _evaluator_result("result-2", "tool", 0.5),
-        _evaluator_result("result-3", "span-of-another-trace", 0.0),
-    ]
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/evaluator-results"):
-            assert request.url.params["filter[session_id]"] == "session-1"
-            size = len(results)
-            return httpx.Response(
-                200,
-                json={
-                    "data": results,
-                    "pagination": _pagination(page=1, total_pages=1, total_results=size, size=size),
-                },
-            )
-        return _handler(request)
-
-    online = IntakeTraceLoader(config=_config(page_size=1), transport=httpx.MockTransport(handler))
-    expected = online.load().get_trace_by_id(TRACE_ID)
-    assert expected.evaluator_results
-
-    loader = _file_loader(
-        tmp_path, _trace_record(), _cli_spans(), _merged_page(results), base_url=BASE_URL
-    )
-    trace = loader.load().get_trace_by_id(TRACE_ID)
-    assert trace.model_dump() == expected.model_dump()
-    assert loader.describe()["query"]["evaluator_results_path"] == str(
-        (tmp_path / "intake-evaluator-results.json").resolve()
-    )
-
-
-def test_intake_file_loader_rejects_a_single_server_page(tmp_path):
-    for page in _server_span_pages():
-        with pytest.raises(
-            IntakeLoadError, match="spans file is incomplete; export with --all-pages"
-        ):
-            _file_loader(tmp_path, _trace_record(), page).load()
-
-    truncated = _merged_page([_evaluator_result("result-1", "root", 1.0)])
-    truncated["pagination"]["total_results"] = 2
-    with pytest.raises(
-        IntakeLoadError, match="evaluator results file is incomplete; export with --all-pages"
-    ):
-        _file_loader(tmp_path, _trace_record(), _cli_spans(), truncated).load()
-
-
-def test_intake_file_loader_rejects_span_from_another_trace(tmp_path):
-    spans = _cli_spans()
-    spans["data"][0]["trace_id"] = "trace-2"
-
-    with pytest.raises(IntakeLoadError, match="belongs to trace 'trace-2', not 'trace-1'"):
-        _file_loader(tmp_path, _trace_record(), spans).load()
 
 
 def test_intake_file_loader_requires_the_root_span(tmp_path):
@@ -1099,32 +1021,23 @@ def test_intake_file_loader_requires_the_root_span(tmp_path):
         _file_loader(tmp_path, _trace_record(), _merged_page([])).load()
 
 
-@pytest.mark.parametrize("record", ["trace", "span", "evaluator_result"])
-def test_intake_file_loader_rejects_another_workspace(tmp_path, record):
-    trace, spans = _trace_record(), _cli_spans()
-    results = _merged_page([_evaluator_result("result-1", "root", 1.0)])
-    changed = {"trace": trace, "span": spans["data"][1], "evaluator_result": results["data"][0]}
-    changed[record]["workspace"] = "other-workspace"
-
-    with pytest.raises(IntakeLoadError, match="do not match the configured workspace"):
-        _file_loader(tmp_path, trace, spans, results).load()
-
-
-def test_intake_file_loader_errors_do_not_echo_payloads(tmp_path):
-    trace = _trace_record()
-    trace["input"] = "SECRET-TRACE-INPUT"
-    del trace["status"]
-    with pytest.raises(IntakeLoadError) as missing_status:
-        _file_loader(tmp_path, trace, _cli_spans()).load()
-    assert "status" in str(missing_status.value)
-    assert "SECRET-TRACE-INPUT" not in str(missing_status.value)
-
-    spans = _cli_spans()
-    spans["data"][0]["input"] = {"messages": ["SECRET-SPAN-INPUT"]}
-    with pytest.raises(IntakeLoadError) as object_input:
-        _file_loader(tmp_path, _trace_record(), spans).load()
-    assert "input" in str(object_input.value)
-    assert "SECRET-SPAN-INPUT" not in str(object_input.value)
+def test_intake_file_loader_reads_recorded_cli_exports():
+    """`trace.json` and `spans.json` are verbatim `nemo intake traces get` and
+    `nemo intake spans list --all-pages` output (nemo 0.4.0) for the first record of
+    tests/data/atif_trajectories.jsonl, ingested as ATIF with an evaluation context."""
+    loader = IntakeFileTraceLoader(
+        config=IntakeFileTraceConfig(
+            trace_path=CLI_FIXTURES / "trace.json",
+            spans_path=CLI_FIXTURES / "spans.json",
+            workspace="default",
+        )
+    )
+    trace = loader.load().get_trace_by_id("probe-session-1")
+    raw_trace = json.loads((CLI_FIXTURES / "trace.json").read_text())
+    assert [span.id for span in trace.root_spans] == [raw_trace["root_span_id"]]
+    assert trace.attributes["task_text"] == "Find the report."
+    assert trace.attributes["logical_case_id"] == "probe-case-1"
+    assert loader.describe()["span_count"] == raw_trace["span_count"]
 
 
 @pytest.mark.parametrize(
@@ -1135,7 +1048,6 @@ def test_intake_file_loader_errors_do_not_echo_payloads(tmp_path):
         ({"data": [_trace_record(), _trace_record("trace-2")]}, _cli_spans()),
         (_trace_record(), []),
         (_trace_record(), _server_span_pages()),
-        (_trace_record(), {"data": _cli_spans()["data"]}),
         (_trace_record(), {"spans": []}),
         (_trace_record(), "spans"),
         (_trace_record(), {"data": "spans", "pagination": {}}),
