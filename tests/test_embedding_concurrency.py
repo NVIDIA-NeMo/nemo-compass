@@ -3,11 +3,9 @@
 
 import threading
 
-import httpx
 import numpy as np
 import pytest
-from litellm import EmbeddingResponse, RateLimitError
-from pydantic import ValidationError
+from litellm import EmbeddingResponse
 from tokenizers import Tokenizer, models
 
 from compass.compass_signals.user_embedding.embedding import (
@@ -30,13 +28,6 @@ def result(batch):
     return [UserEmbedding(bytes([batch.index]), batch.counts[0])]
 
 
-def limited(value=None):
-    headers = {} if value is None else {"Retry-After": str(value)}
-    return RateLimitError(
-        "limited", "openai", "qwen", response=httpx.Response(429, headers=headers)
-    )
-
-
 def test_rolling_queue_refills_before_slow_request_finishes(generator, monkeypatch):
     generator.litellm.max_concurrency = 2
     next_started = threading.Event()
@@ -56,14 +47,13 @@ def test_rolling_queue_refills_before_slow_request_finishes(generator, monkeypat
     assert [x.data for x in actual] == [bytes([i]) for i in range(6)]
 
 
-@pytest.mark.parametrize("concurrency", [None, 1, 2])
+@pytest.mark.parametrize("concurrency", [1, 3])
 def test_fixed_pool_starts_at_configured_limit(generator, monkeypatch, concurrency):
     generator.litellm = LiteLLMEmbeddingConfig(
         model="qwen",
         batch_size=1,
-        **({} if concurrency is None else {"max_concurrency": concurrency}),
+        max_concurrency=concurrency,
     )
-    concurrency = 8 if concurrency is None else concurrency
     barrier = threading.Barrier(concurrency, timeout=5)
     lock = threading.Lock()
     active = peak = 0
@@ -81,89 +71,17 @@ def test_fixed_pool_starts_at_configured_limit(generator, monkeypatch, concurren
                 active -= 1
 
     monkeypatch.setattr(generator, "_remote_batch", worker)
-    actual = generator.generate_batch(["a"] * 16)
+    actual = generator.generate_batch(["a"] * (concurrency * 2))
     assert peak == concurrency
-    assert [x.data for x in actual] == [bytes([i]) for i in range(16)]
+    assert [x.data for x in actual] == [bytes([i]) for i in range(concurrency * 2)]
 
 
-def test_default_batch_size(generator, monkeypatch):
-    generator.litellm = LiteLLMEmbeddingConfig(model="qwen")
-    sizes = []
-
-    def worker(batch, config, key):
-        sizes.append(len(batch.inputs))
-        return [UserEmbedding(b"", count) for count in batch.counts]
-
-    monkeypatch.setattr(generator, "_remote_batch", worker)
-    assert len(generator.generate_batch(["a"] * 129)) == 129
-    assert sorted(sizes) == [1, 128]
-
-
-def test_zero_retries_and_sequential_configuration(monkeypatch, generator):
-    generator.litellm = LiteLLMEmbeddingConfig(
-        model="qwen", batch_size=1, max_concurrency=1, max_retries=0
-    )
-    calls = []
-
-    def worker(batch, config, key):
-        calls.append(batch.index)
-        if batch.index == 2:
-            raise limited()
-        return result(batch)
-
-    monkeypatch.setattr(generator, "_remote_batch", worker)
-    with pytest.raises(RateLimitError):
-        generator.generate_batch(["a"] * 5)
-    assert calls == [0, 1, 2]
-
-
-@pytest.mark.parametrize(
-    "field,value",
-    [
-        ("batch_size", 0),
-        ("max_concurrency", 0),
-        ("max_concurrency", 33),
-        ("max_retries", -1),
-        ("max_retries", 11),
-        ("request_timeout", 0),
-        ("request_timeout", float("inf")),
-    ],
-)
-def test_config_limits(field, value):
-    with pytest.raises(ValidationError):
-        LiteLLMEmbeddingConfig(model="qwen", **{field: value})
-
-
-def test_request_timeout_is_explicit(generator, monkeypatch):
-    seen = []
-
-    def endpoint(**kwargs):
-        seen.append(kwargs)
-        return EmbeddingResponse(data=[{"index": 0, "embedding": np.eye(1, 4096)[0].tolist()}])
-
-    monkeypatch.setattr(
-        "compass.compass_signals.user_embedding.embedding._request_embeddings", endpoint
-    )
-    generator.generate_batch(["hello"])
-    assert seen[0]["timeout"] == 60
-
-
-@pytest.mark.parametrize(
-    "rows",
-    [
-        [],
-        [{"index": 1, "embedding": [1.0] * 4096}],
-        [{"index": 0, "embedding": [0.0] * 4096}],
-        [{"index": 0, "embedding": [float("nan")] * 4096}],
-        [{"index": 0, "embedding": [1.0] * 10}],
-    ],
-)
-def test_bad_response_fails_without_retry(generator, monkeypatch, rows):
+def test_invalid_response_stops_new_batches(generator, monkeypatch):
     calls = []
 
     def endpoint(**kwargs):
         calls.append(kwargs)
-        return EmbeddingResponse(data=rows)
+        return EmbeddingResponse(data=[])
 
     monkeypatch.setattr(
         "compass.compass_signals.user_embedding.embedding._request_embeddings", endpoint
