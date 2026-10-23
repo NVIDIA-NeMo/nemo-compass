@@ -1,12 +1,518 @@
 {
   "$defs": {
+    "AgentInfo": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Identity of the agent that an AGENT span ran.",
+      "properties": {
+        "extra": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "description": "Source extension fields of the agent, verbatim.",
+          "title": "Extra",
+          "type": "object"
+        },
+        "model_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Default model of the agent.",
+          "title": "Model Name"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Version"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "AgentInfo",
+      "type": "object"
+    },
+    "AudioPart": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "An audio part of a multimodal message, referenced by location.",
+      "properties": {
+        "duration_sec": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Duration, when recorded.",
+          "title": "Duration Sec"
+        },
+        "media_type": {
+          "description": "Audio MIME type, such as audio/wav.",
+          "title": "Media Type",
+          "type": "string"
+        },
+        "path": {
+          "description": "Relative or absolute file path, or a URL, verbatim.",
+          "title": "Path",
+          "type": "string"
+        },
+        "type": {
+          "const": "audio",
+          "default": "audio",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "media_type",
+        "path"
+      ],
+      "title": "AudioPart",
+      "type": "object"
+    },
+    "Authorship": {
+      "description": "Who actually wrote a turn's content, when the source says so.",
+      "enum": [
+        "human",
+        "harness",
+        "copied_context",
+        "model",
+        "unknown"
+      ],
+      "title": "Authorship",
+      "type": "string"
+    },
+    "ImagePart": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "An image part of a multimodal message, referenced by location.",
+      "properties": {
+        "media_type": {
+          "description": "Image MIME type, such as image/png.",
+          "title": "Media Type",
+          "type": "string"
+        },
+        "path": {
+          "description": "Relative or absolute file path, or a URL, verbatim.",
+          "title": "Path",
+          "type": "string"
+        },
+        "type": {
+          "const": "image",
+          "default": "image",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "media_type",
+        "path"
+      ],
+      "title": "ImagePart",
+      "type": "object"
+    },
+    "Initiator": {
+      "description": "What issued a tool call.",
+      "enum": [
+        "model",
+        "harness",
+        "user",
+        "environment"
+      ],
+      "title": "Initiator",
+      "type": "string"
+    },
     "JsonValue": {},
+    "LLMCallInfo": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Per-call model detail beyond the Span's model, token_counts, and cost_usd.",
+      "properties": {
+        "cached_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Recorded only when token_counts cannot be formed.",
+          "title": "Cached Tokens"
+        },
+        "call_count": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Model calls the source recorded for this span; >1 means calls were merged, 0 a dispatch without a model call; null when unrecorded.",
+          "title": "Call Count"
+        },
+        "completion_token_ids": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completion Token Ids"
+        },
+        "completion_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Recorded only when token_counts cannot be formed.",
+          "title": "Completion Tokens"
+        },
+        "logprobs": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Logprobs"
+        },
+        "metrics_extra": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "description": "Source extension fields of the call metrics.",
+          "title": "Metrics Extra",
+          "type": "object"
+        },
+        "prompt_token_ids": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt Token Ids"
+        },
+        "prompt_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Recorded only when token_counts cannot be formed.",
+          "title": "Prompt Tokens"
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoning Effort"
+        }
+      },
+      "title": "LLMCallInfo",
+      "type": "object"
+    },
+    "Loss": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Information the source lacked or the loader could not represent.",
+      "properties": {
+        "code": {
+          "minLength": 1,
+          "title": "Code",
+          "type": "string"
+        },
+        "detail": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "description": "Structured loss data, never an encoded string. Keys by code: unresolved_subagent_ref has ref (the reference as written); continued_trajectory_not_followed has continued_trajectory_ref; duplicate_tool_call_id has tool_call_id; tool_definition_skipped has definition (the raw item); llm_calls_aggregated has llm_call_count.",
+          "title": "Detail",
+          "type": "object"
+        },
+        "span_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Span the loss concerns.",
+          "title": "Span Id"
+        },
+        "turn_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Turn the loss concerns.",
+          "title": "Turn Id"
+        }
+      },
+      "required": [
+        "code"
+      ],
+      "title": "Loss",
+      "type": "object"
+    },
+    "RunInfo": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Source run metadata recorded for one AGENT span.",
+      "properties": {
+        "continued_trajectory_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Reference to the run's continuation, verbatim; not followed.",
+          "title": "Continued Trajectory Ref"
+        },
+        "extra": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "description": "Source extension fields of the run, verbatim.",
+          "title": "Extra",
+          "type": "object"
+        },
+        "final_metrics": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunTotals"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notes"
+        },
+        "schema_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Source format version, such as ATIF-v1.7.",
+          "title": "Schema Version"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Source session identifier of the run.",
+          "title": "Session Id"
+        },
+        "trajectory_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Source identifier of the run's trajectory.",
+          "title": "Trajectory Id"
+        }
+      },
+      "title": "RunInfo",
+      "type": "object"
+    },
+    "RunTotals": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "Source-reported totals for one agent run, as recorded (any may be missing).",
+      "properties": {
+        "cached_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cached Tokens"
+        },
+        "completion_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completion Tokens"
+        },
+        "cost_usd": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cost Usd"
+        },
+        "extra": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Extra",
+          "type": "object"
+        },
+        "prompt_tokens": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt Tokens"
+        },
+        "steps": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Steps"
+        }
+      },
+      "title": "RunTotals",
+      "type": "object"
+    },
     "Span": {
       "additionalProperties": {
         "$ref": "#/$defs/JsonValue"
       },
       "description": "One canonical, recursively nested unit of work in an agent trace.",
       "properties": {
+        "agent": {
+          "$ref": "#/$defs/AgentInfo",
+          "description": "Agent identity; valid only for an AGENT span.",
+          "title": "Agent"
+        },
         "attributes": {
           "additionalProperties": {
             "$ref": "#/$defs/JsonValue"
@@ -79,6 +585,11 @@
           "$ref": "#/$defs/SpanKind",
           "description": "Normalized span category represented by this source span."
         },
+        "llm_call": {
+          "$ref": "#/$defs/LLMCallInfo",
+          "description": "Per-call model detail; valid for an LLM span, or a CHAIN span whose call_count is 0.",
+          "title": "Llm Call"
+        },
         "model": {
           "anyOf": [
             {
@@ -97,6 +608,11 @@
           "description": "Raw recorded output. Omit when absent; explicit JSON null remains null.",
           "title": "Output"
         },
+        "run": {
+          "$ref": "#/$defs/RunInfo",
+          "description": "Source run metadata; valid only for an AGENT span.",
+          "title": "Run"
+        },
         "source_url": {
           "anyOf": [
             {
@@ -107,6 +623,7 @@
             }
           ],
           "default": null,
+          "description": "Link to this span in its source, when the loader can resolve one.",
           "title": "Source Url"
         },
         "start_time": {
@@ -167,6 +684,14 @@
           "default": null,
           "description": "Observed tool name for a TOOL span; preserve the source value.",
           "title": "Tool Name"
+        },
+        "turns": {
+          "description": "The agent's conversation in order; valid only for an AGENT span. Omitted when the source did not record one. The order is within this agent only, not relative to turns of other AGENT spans.",
+          "items": {
+            "$ref": "#/$defs/Turn"
+          },
+          "title": "Turns",
+          "type": "array"
         }
       },
       "required": [
@@ -191,6 +716,99 @@
       ],
       "title": "SpanKind",
       "type": "string"
+    },
+    "SubagentRef": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "A tool result's reference to a delegated subagent run.",
+      "properties": {
+        "extra": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "description": "Source extension fields of the reference.",
+          "title": "Extra",
+          "type": "object"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Informational session identifier.",
+          "title": "Session Id"
+        },
+        "span_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The AGENT span holding the subagent run; null when it could not be resolved.",
+          "title": "Span Id"
+        },
+        "trajectory_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Referenced run identifier.",
+          "title": "Trajectory Id"
+        },
+        "trajectory_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Referenced external file or URL, verbatim.",
+          "title": "Trajectory Path"
+        }
+      },
+      "title": "SubagentRef",
+      "type": "object"
+    },
+    "TextPart": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "A text part of a multimodal message.",
+      "properties": {
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "type": {
+          "const": "text",
+          "default": "text",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "TextPart",
+      "type": "object"
     },
     "TokenCounts": {
       "additionalProperties": {
@@ -244,6 +862,14 @@
           "description": "The source's tool-call identifier. Preserve repeated IDs so duplicate instrumentation remains observable.",
           "title": "Call Id"
         },
+        "extra": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "description": "Source extension fields of the call, minus values moved into typed fields.",
+          "title": "Extra",
+          "type": "object"
+        },
         "index": {
           "anyOf": [
             {
@@ -257,6 +883,18 @@
           "default": null,
           "description": "Zero-based tool-call execution order when the source records it.",
           "title": "Index"
+        },
+        "initiator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Initiator"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "What issued this call; null when the source does not say."
         },
         "instrumentation_alias_of": {
           "anyOf": [
@@ -316,6 +954,19 @@
           "description": "Whether the result returned usable data; omit when the source cannot say.",
           "title": "Returned Data",
           "type": "boolean"
+        },
+        "server": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Explicit tool scope such as an MCP server; never inferred from the name.",
+          "title": "Server"
         }
       },
       "title": "ToolCall",
@@ -402,6 +1053,14 @@
           "description": "Raw recorded result content. Omit when absent; explicit JSON null remains null.",
           "title": "Content"
         },
+        "extra": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "description": "Source extension fields of the result, minus flags that were interpreted.",
+          "title": "Extra",
+          "type": "object"
+        },
         "is_error": {
           "anyOf": [
             {
@@ -414,6 +1073,14 @@
           "default": null,
           "description": "Source-recorded error flag; null when the source did not record a usable flag.",
           "title": "Is Error"
+        },
+        "subagent_refs": {
+          "description": "Subagent runs this result delegated to, in source order.",
+          "items": {
+            "$ref": "#/$defs/SubagentRef"
+          },
+          "title": "Subagent Refs",
+          "type": "array"
         }
       },
       "title": "ToolResult",
@@ -468,6 +1135,138 @@
       },
       "title": "TraceAggregate",
       "type": "object"
+    },
+    "Turn": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "description": "One message of an agent's conversation, as recorded by the source.\n\nTurns are a view over spans: per-call detail such as model, tokens, and cost\nstays on the LLM spans the turn references. Turn order is defined only within\none AGENT span, not across agents.",
+      "properties": {
+        "authorship": {
+          "$ref": "#/$defs/Authorship",
+          "default": "unknown"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "discriminator": {
+                  "mapping": {
+                    "audio": "#/$defs/AudioPart",
+                    "image": "#/$defs/ImagePart",
+                    "text": "#/$defs/TextPart"
+                  },
+                  "propertyName": "type"
+                },
+                "oneOf": [
+                  {
+                    "$ref": "#/$defs/TextPart"
+                  },
+                  {
+                    "$ref": "#/$defs/ImagePart"
+                  },
+                  {
+                    "$ref": "#/$defs/AudioPart"
+                  }
+                ]
+              },
+              "type": "array"
+            }
+          ],
+          "description": "Message as recorded: a string or ordered parts.",
+          "title": "Content"
+        },
+        "dispatch_span_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "CHAIN span of an agent step that made no model call, if any.",
+          "title": "Dispatch Span Id"
+        },
+        "extra": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "description": "Source extension fields of the turn, verbatim.",
+          "title": "Extra",
+          "type": "object"
+        },
+        "id": {
+          "description": "Stable identifier, \"<agent span id>/turn/<index>\" for source loaders.",
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "index": {
+          "description": "Position within the agent span, contiguous.",
+          "minimum": 1,
+          "title": "Index",
+          "type": "integer"
+        },
+        "llm_span_ids": {
+          "description": "LLM spans that produced this turn, in order.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Llm Span Ids",
+          "type": "array"
+        },
+        "reasoning": {
+          "description": "Recorded reasoning text.",
+          "title": "Reasoning",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/TurnRole"
+        },
+        "timestamp": {
+          "description": "ISO 8601 timestamp exactly as recorded; it may lack a timezone.",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "tool_call_span_ids": {
+          "description": "TOOL spans issued in this turn, in call order.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Tool Call Span Ids",
+          "type": "array"
+        },
+        "unlinked_results": {
+          "description": "Results observed in this turn that name no tool call, in source order.",
+          "items": {
+            "$ref": "#/$defs/ToolResult"
+          },
+          "title": "Unlinked Results",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "index",
+        "role"
+      ],
+      "title": "Turn",
+      "type": "object"
+    },
+    "TurnRole": {
+      "description": "Who a conversation turn is attributed to in the source.",
+      "enum": [
+        "user",
+        "system",
+        "agent"
+      ],
+      "title": "TurnRole",
+      "type": "string"
     }
   },
   "additionalProperties": {
@@ -500,6 +1299,14 @@
       "minLength": 1,
       "title": "Id",
       "type": "string"
+    },
+    "losses": {
+      "description": "Information the source lacked or the loader could not represent.",
+      "items": {
+        "$ref": "#/$defs/Loss"
+      },
+      "title": "Losses",
+      "type": "array"
     },
     "root_spans": {
       "description": "Complete root span trees in deterministic source execution order.",
