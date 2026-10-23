@@ -12,8 +12,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from trace_ingest.loaders.helper.llm_span.token_usage._core import token_counts as _token_counts
 from trace_ingest.models import TokenCounts
-from trace_ingest.token_usage._core import token_counts as _token_counts
 
 _TTL_KEYS = {"ephemeral_5m_input_tokens": 300, "ephemeral_1h_input_tokens": 3600}
 

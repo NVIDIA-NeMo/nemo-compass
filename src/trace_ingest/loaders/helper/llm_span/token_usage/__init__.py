@@ -11,7 +11,7 @@ keys maps them back first. To support another provider, add a module with
 ``token_counts``.
 """
 
-from trace_ingest.token_usage import anthropic, openai
-from trace_ingest.token_usage._core import token_counts
+from trace_ingest.loaders.helper.llm_span.token_usage import anthropic, openai
+from trace_ingest.loaders.helper.llm_span.token_usage._core import token_counts
 
 __all__ = ["anthropic", "openai", "token_counts"]
