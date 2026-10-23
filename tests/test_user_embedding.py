@@ -37,7 +37,7 @@ def test_remote_batches_preserve_trace_order_and_skip_empty_messages(monkeypatch
     generator.remote_tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0}, unk_token="[UNK]"))
     calls = []
 
-    def embed(**kwargs):
+    async def embed(**kwargs):
         calls.append(kwargs["input"])
         # Reversed response order and non-unit vectors exercise both requirements.
         return EmbeddingResponse(
@@ -72,7 +72,7 @@ def test_remote_rejects_oversized_input_before_request_and_propagates_failures(m
     generator.remote_tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0}, unk_token="[UNK]"))
     generator.remote_tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
 
-    def fail(**kwargs):
+    async def fail(**kwargs):
         raise RuntimeError("Provider unavailable")
 
     monkeypatch.setattr(

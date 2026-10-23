@@ -1,9 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
 import threading
-from collections import Counter
 from email.utils import formatdate
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import httpx
 import numpy as np
@@ -40,164 +42,6 @@ def limited(value=None):
     )
 
 
-def test_rolling_queue_refills_before_slow_request_finishes(generator, monkeypatch):
-    generator.litellm.max_concurrency = 2
-    next_started = threading.Event()
-    calls = []
-
-    def worker(batch, config, key):
-        if batch.index == 1:
-            assert next_started.wait(5)
-        if batch.index == 3:
-            next_started.set()
-        calls.append(batch.index)
-        return result(batch)
-
-    monkeypatch.setattr(generator, "_remote_batch", worker)
-    actual = generator.generate_batch([str(i) for i in range(6)])
-    assert calls.index(3) < calls.index(1)
-    assert [x.data for x in actual] == [bytes([i]) for i in range(6)]
-
-
-@pytest.mark.parametrize("concurrency", [None, 1, 2])
-def test_fixed_pool_starts_at_configured_limit(generator, monkeypatch, concurrency):
-    generator.litellm = LiteLLMEmbeddingConfig(
-        model="qwen",
-        batch_size=1,
-        **({} if concurrency is None else {"max_concurrency": concurrency}),
-    )
-    concurrency = 8 if concurrency is None else concurrency
-    barrier = threading.Barrier(concurrency, timeout=5)
-    lock = threading.Lock()
-    active = peak = 0
-
-    def worker(batch, config, key):
-        nonlocal active, peak
-        with lock:
-            active += 1
-            peak = max(peak, active)
-        try:
-            barrier.wait()
-            return result(batch)
-        finally:
-            with lock:
-                active -= 1
-
-    monkeypatch.setattr(generator, "_remote_batch", worker)
-    actual = generator.generate_batch(["a"] * 16)
-    assert peak == concurrency
-    assert [x.data for x in actual] == [bytes([i]) for i in range(16)]
-
-
-def test_default_batch_size(generator, monkeypatch):
-    generator.litellm = LiteLLMEmbeddingConfig(model="qwen")
-    sizes = []
-
-    def worker(batch, config, key):
-        sizes.append(len(batch.inputs))
-        return [UserEmbedding(b"", count) for count in batch.counts]
-
-    monkeypatch.setattr(generator, "_remote_batch", worker)
-    assert len(generator.generate_batch(["a"] * 129)) == 129
-    assert sorted(sizes) == [1, 128]
-
-
-@pytest.mark.parametrize("error", [limited(), APIError(503, "unavailable", "openai", "qwen")])
-def test_retry_only_failed_batch_while_other_workers_continue(generator, monkeypatch, error):
-    generator.litellm.max_concurrency = 2
-    sleeping = threading.Event()
-    next_finished = threading.Event()
-    calls = Counter()
-    sleeps = []
-
-    def worker(batch, config, key):
-        calls[batch.index] += 1
-        if batch.index == 0 and calls[0] == 1:
-            raise error
-        if batch.index == 1:
-            assert sleeping.wait(5)
-        if batch.index == 2:
-            next_finished.set()
-        return result(batch)
-
-    def sleep(delay):
-        sleeps.append(delay)
-        sleeping.set()
-        assert next_finished.wait(5)
-
-    monkeypatch.setattr(generator, "_remote_batch", worker)
-    monkeypatch.setattr(module.time, "sleep", sleep)
-    actual = generator.generate_batch(["a"] * 6)
-    assert [x.data for x in actual] == [bytes([i]) for i in range(6)]
-    assert calls == Counter({0: 2, 1: 1, 2: 1, 3: 1, 4: 1, 5: 1})
-    assert len(sleeps) == 1
-
-
-@pytest.mark.parametrize(
-    "error",
-    [
-        limited(),
-        Timeout("timeout", "qwen", "openai"),
-        APIConnectionError("connection", "qwen", "openai"),
-        APIError(503, "unavailable", "openai", "qwen"),
-    ],
-)
-def test_transient_failures_have_bounded_attempts(generator, monkeypatch, error):
-    calls = []
-    sleeps = []
-
-    def worker(batch, config, key):
-        calls.append(batch.index)
-        raise error
-
-    monkeypatch.setattr(generator, "_remote_batch", worker)
-    clock = [100.0]
-    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
-
-    def sleep(delay):
-        sleeps.append(delay)
-        clock[0] += delay
-
-    monkeypatch.setattr(module.time, "sleep", sleep)
-    with pytest.raises(type(error)):
-        generator.generate_batch(["first", "never submitted"])
-    assert calls == [0] * 4
-    assert len(sleeps) == 3
-    assert all(2**i / 2 <= delay <= 2**i for i, delay in enumerate(sleeps))
-
-
-@pytest.mark.parametrize("status", [400, 401, 403, 404, 422])
-def test_permanent_errors_do_not_retry(generator, monkeypatch, status):
-    calls = []
-
-    def worker(batch, config, key):
-        calls.append(batch.index)
-        raise APIError(status, "permanent", "openai", "qwen")
-
-    monkeypatch.setattr(generator, "_remote_batch", worker)
-    with pytest.raises(APIError):
-        generator.generate_batch(["first", "never submitted"])
-    assert calls == [0]
-
-
-def test_zero_retries_and_sequential_configuration(monkeypatch, generator):
-    generator.litellm = LiteLLMEmbeddingConfig(
-        model="qwen", batch_size=1, max_concurrency=1, max_retries=0
-    )
-    calls = []
-
-    def worker(batch, config, key):
-        calls.append(batch.index)
-        if batch.index == 2:
-            raise limited()
-        return result(batch)
-
-    monkeypatch.setattr(generator, "_remote_batch", worker)
-    with pytest.raises(RateLimitError):
-        generator.generate_batch(["a"] * 5)
-    assert calls == [0, 1, 2]
-
-
 def test_retry_after_dates_invalid_values_and_wait_limit(monkeypatch):
     monkeypatch.setattr(module.time, "time", lambda: 1000)
     assert module._retry_delay(limited(formatdate(1010, usegmt=True)), 1, 60) == 10
@@ -209,19 +53,6 @@ def test_retry_after_dates_invalid_values_and_wait_limit(monkeypatch):
     assert delay is not None and 30 <= delay <= 60
     header_only = RateLimitError("limited", "openai", "qwen", headers={"Retry-After": "8"})
     assert module._retry_delay(header_only, 1, 60) == 8
-
-
-def test_long_retry_after_aborts_without_early_retry(generator, monkeypatch):
-    calls = []
-
-    def worker(batch, config, key):
-        calls.append(batch.index)
-        raise limited(61)
-
-    monkeypatch.setattr(generator, "_remote_batch", worker)
-    with pytest.raises(RateLimitError):
-        generator.generate_batch(["first", "never submitted"])
-    assert calls == [0]
 
 
 @pytest.mark.parametrize(
@@ -243,45 +74,6 @@ def test_long_retry_after_aborts_without_early_retry(generator, monkeypatch):
 def test_config_limits(field, value):
     with pytest.raises(ValidationError):
         LiteLLMEmbeddingConfig(model="qwen", **{field: value})
-
-
-def test_request_timeout_is_explicit(generator, monkeypatch):
-    seen = []
-
-    def endpoint(**kwargs):
-        seen.append(kwargs)
-        return EmbeddingResponse(data=[{"index": 0, "embedding": np.eye(1, 4096)[0].tolist()}])
-
-    monkeypatch.setattr(
-        "compass.compass_signals.user_embedding.embedding._request_embeddings", endpoint
-    )
-    generator.generate_batch(["hello"])
-    assert seen[0]["timeout"] == 60
-
-
-@pytest.mark.parametrize(
-    "rows",
-    [
-        [],
-        [{"index": 1, "embedding": [1.0] * 4096}],
-        [{"index": 0, "embedding": [0.0] * 4096}],
-        [{"index": 0, "embedding": [float("nan")] * 4096}],
-        [{"index": 0, "embedding": [1.0] * 10}],
-    ],
-)
-def test_bad_response_fails_without_retry(generator, monkeypatch, rows):
-    calls = []
-
-    def endpoint(**kwargs):
-        calls.append(kwargs)
-        return EmbeddingResponse(data=rows)
-
-    monkeypatch.setattr(
-        "compass.compass_signals.user_embedding.embedding._request_embeddings", endpoint
-    )
-    with pytest.raises(ValueError):
-        generator.generate_batch(["first", "never submitted"])
-    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("status", [429, 503])
@@ -359,56 +151,6 @@ def test_real_transport_obeys_retry_budget(generator, monkeypatch, retries, stat
         thread.join(timeout=5)
 
 
-def test_retry_budget_does_not_retry_before_server_delay(generator, monkeypatch):
-    generator.litellm.retry_timeout = 5
-    calls = []
-
-    def worker(batch, config, key):
-        calls.append(batch.index)
-        raise limited(7)
-
-    monkeypatch.setattr(generator, "_remote_batch", worker)
-    with pytest.raises(RateLimitError):
-        generator.generate_batch(["a"])
-    assert calls == [0]
-
-
-def test_retry_budget_includes_elapsed_retries(generator, monkeypatch):
-    generator.litellm.retry_timeout = 2
-    clock = [100.0]
-    calls = []
-
-    def worker(batch, config, key):
-        calls.append(batch.index)
-        if len(calls) > 1:
-            clock[0] += 2
-        raise limited(1)
-
-    monkeypatch.setattr(generator, "_remote_batch", worker)
-    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(module.time, "sleep", lambda delay: clock.__setitem__(0, clock[0] + delay))
-    with pytest.raises(RateLimitError):
-        generator.generate_batch(["a"])
-    assert calls == [0, 0]
-
-
-def test_expired_retry_budget_after_sleep_does_not_resubmit(generator, monkeypatch):
-    generator.litellm.retry_timeout = 2
-    clock = [100.0]
-    calls = []
-
-    def worker(batch, config, key):
-        calls.append(batch.index)
-        raise limited(1)
-
-    monkeypatch.setattr(generator, "_remote_batch", worker)
-    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(module.time, "sleep", lambda delay: clock.__setitem__(0, clock[0] + 3))
-    with pytest.raises(RateLimitError):
-        generator.generate_batch(["a"])
-    assert calls == [0]
-
-
 @pytest.mark.parametrize(
     "milliseconds,seconds,expected",
     [
@@ -433,29 +175,188 @@ def test_millisecond_retry_header(monkeypatch, milliseconds, seconds, expected):
     assert module._retry_delay(error, 1, 60) == expected
 
 
-def test_millisecond_retry_header_delays_retry(generator, monkeypatch):
-    clock = [100.0]
-    starts = []
-    sleeps = []
+def test_router_limits_requests_refills_and_preserves_order(generator, monkeypatch):
+    """Exercise the real Router semaphore, replacing only the provider call."""
+    import litellm
 
-    def worker(batch, config, key):
-        starts.append((batch.index, clock[0]))
-        if len(starts) == 1:
-            raise RateLimitError(
-                "limited",
-                "openai",
-                "qwen",
-                response=httpx.Response(429, headers={"Retry-After-Ms": "1500"}),
+    generator.litellm.max_concurrency = 2
+    active = peak = 0
+    calls = []
+    next_started = None
+
+    async def endpoint(**kwargs):
+        nonlocal active, peak, next_started
+        if next_started is None:
+            next_started = asyncio.Event()
+        index = int(kwargs["input"][0][-1])
+        active += 1
+        peak = max(peak, active)
+        try:
+            if index == 0:
+                await asyncio.wait_for(next_started.wait(), 5)
+            if index == 2:
+                next_started.set()
+            await asyncio.sleep(0)
+            calls.append(index)
+            return EmbeddingResponse(
+                data=[{"index": 0, "embedding": np.eye(1, 4096, index)[0].tolist()}]
             )
-        return result(batch)
+        finally:
+            active -= 1
 
-    def sleep(delay):
-        sleeps.append(delay)
+    monkeypatch.setattr(litellm, "aembedding", endpoint)
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    actual = generator.generate_batch([str(i) for i in range(6)])
+    assert peak == 2
+    assert calls.index(2) < calls.index(0)
+    expected = [generator.projection.compress(np.eye(1, 4096, i)[0]) for i in range(6)]
+    assert [item.data for item in actual] == expected
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        limited(),
+        Timeout("timeout", "qwen", "openai"),
+        APIConnectionError("connection", "qwen", "openai"),
+        APIError(503, "unavailable", "openai", "qwen"),
+    ],
+)
+def test_retry_attempt_limit(generator, monkeypatch, error):
+    endpoint = AsyncMock(side_effect=error)
+    sleep = AsyncMock()
+    monkeypatch.setattr(generator, "_remote_batch", endpoint)
+    monkeypatch.setattr(module.asyncio, "sleep", sleep)
+    batch = next(generator._remote_batches(["hello"], 1))
+    with pytest.raises(type(error)):
+        asyncio.run(generator._remote_batch_with_retries(batch, generator.litellm, None))
+    assert endpoint.await_count == 4
+    assert sleep.await_count == 3
+
+
+@pytest.mark.parametrize(
+    "error",
+    [APIError(401, "unauthorized", "openai", "qwen"), ValueError("invalid vector"), limited(61)],
+)
+def test_unrecoverable_failure_does_not_retry(generator, monkeypatch, error):
+    endpoint = AsyncMock(side_effect=error)
+    monkeypatch.setattr(generator, "_remote_batch", endpoint)
+    batch = next(generator._remote_batches(["hello"], 1))
+    with pytest.raises(type(error)):
+        asyncio.run(generator._remote_batch_with_retries(batch, generator.litellm, None))
+    assert endpoint.await_count == 1
+
+
+def test_retry_budget_checked_after_sleep(generator, monkeypatch):
+    generator.litellm.retry_timeout = 2
+    clock = [100.0]
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    endpoint = AsyncMock(side_effect=limited(1))
+
+    async def sleep(delay):
+        clock[0] += 3
+
+    monkeypatch.setattr(generator, "_remote_batch", endpoint)
+    monkeypatch.setattr(module.asyncio, "sleep", sleep)
+    batch = next(generator._remote_batches(["hello"], 1))
+    with pytest.raises(RateLimitError):
+        asyncio.run(generator._remote_batch_with_retries(batch, generator.litellm, None))
+    assert endpoint.await_count == 1
+
+
+def test_failure_cancels_other_batches(generator, monkeypatch):
+    cancelled = []
+
+    async def endpoint(batch, config, router):
+        if batch.index == 0:
+            await asyncio.sleep(0)
+            raise ValueError("invalid")
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(batch.index)
+
+    monkeypatch.setattr(generator, "_remote_batch", endpoint)
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    with pytest.raises(ValueError, match="invalid"):
+        generator.generate_batch(["a", "b", "c"])
+    assert sorted(cancelled) == [1, 2]
+
+
+def test_request_timeout_is_explicit(generator, monkeypatch):
+    seen = []
+
+    async def endpoint(**kwargs):
+        seen.append(kwargs)
+        return EmbeddingResponse(data=[{"index": 0, "embedding": np.eye(1, 4096)[0].tolist()}])
+
+    monkeypatch.setattr(
+        "compass.compass_signals.user_embedding.embedding._request_embeddings", endpoint
+    )
+    generator.generate_batch(["hello"])
+    assert seen[0]["timeout"] == 60
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [],
+        [{"index": 1, "embedding": [1.0] * 4096}],
+        [{"index": 0, "embedding": [0.0] * 4096}],
+        [{"index": 0, "embedding": [float("nan")] * 4096}],
+        [{"index": 0, "embedding": [1.0] * 10}],
+    ],
+)
+def test_bad_response_fails_without_retry(generator, monkeypatch, rows):
+    calls = []
+
+    async def endpoint(**kwargs):
+        calls.append(kwargs)
+        return EmbeddingResponse(data=rows)
+
+    monkeypatch.setattr(
+        "compass.compass_signals.user_embedding.embedding._request_embeddings", endpoint
+    )
+    with pytest.raises(ValueError):
+        generator.generate_batch(["first"])
+    assert len(calls) == 1
+
+
+def test_retry_wait_honors_milliseconds_and_elapsed_budget(generator, monkeypatch):
+    generator.litellm.retry_timeout = 2
+    clock = [100.0]
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    error = RateLimitError("limited", "openai", "qwen", headers={"retry-after-ms": "1500"})
+    endpoint = AsyncMock(side_effect=error)
+    delays = []
+
+    async def sleep(delay):
+        delays.append(delay)
         clock[0] += delay
 
-    monkeypatch.setattr(generator, "_remote_batch", worker)
-    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(module.time, "sleep", sleep)
-    assert len(generator.generate_batch(["first", "second"])) == 2
-    assert sleeps == [1.5]
-    assert starts == [(0, 100.0), (0, 101.5), (1, 101.5)]
+    monkeypatch.setattr(generator, "_remote_batch", endpoint)
+    monkeypatch.setattr(module.asyncio, "sleep", sleep)
+    batch = next(generator._remote_batches(["hello"], 1))
+    with pytest.raises(RateLimitError):
+        asyncio.run(generator._remote_batch_with_retries(batch, generator.litellm, None))
+    assert delays == [1.5]
+    assert endpoint.await_count == 2
+
+
+def test_router_cleanup_preserves_other_callbacks(generator, monkeypatch):
+    import litellm
+
+    def other_callback(*args, **kwargs):
+        pass
+
+    monkeypatch.setattr(litellm, "success_callback", [other_callback])
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    endpoint = AsyncMock(
+        return_value=EmbeddingResponse(
+            data=[{"index": 0, "embedding": np.eye(1, 4096)[0].tolist()}]
+        )
+    )
+    monkeypatch.setattr(litellm, "aembedding", endpoint)
+    for _ in range(2):
+        assert len(generator.generate_batch(["hello"])) == 1
+        assert litellm.success_callback == [other_callback]

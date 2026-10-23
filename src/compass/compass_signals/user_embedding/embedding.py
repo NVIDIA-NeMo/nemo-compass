@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -11,18 +12,16 @@ import os
 import random
 import time
 from collections.abc import Iterator
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from functools import cached_property
 from importlib.resources import files
 from importlib.util import find_spec
-from itertools import islice
 from typing import TYPE_CHECKING
 
 import httpx
 import numpy as np
-from litellm import APIConnectionError, EmbeddingResponse
+from litellm import APIConnectionError, EmbeddingResponse, Router
 from pydantic import BaseModel, ConfigDict, Field
 from tokenizers import Tokenizer
 
@@ -32,7 +31,7 @@ logger = logging.getLogger(__name__)
 class _NoRetries(int):
     """Zero retries, including in LiteLLM adapters that use ``value or default``."""
 
-    def __new__(cls) -> _NoRetries:
+    def __new__(cls, value: int = 0) -> _NoRetries:
         return super().__new__(cls, 0)
 
     def __bool__(self) -> bool:
@@ -41,15 +40,11 @@ class _NoRetries(int):
         return True
 
 
-def _request_embeddings(
-    *, model: str, api_base: str | None, api_key: str | None, input: list[str], timeout: float
+async def _request_embeddings(
+    *, router: Router, input: list[str], timeout: float
 ) -> EmbeddingResponse:
-    import litellm
-
-    return litellm.embedding(
-        model=model,
-        api_base=api_base,
-        api_key=api_key,
+    return await router.aembedding(
+        model="user-sentiment",
         input=input,
         encoding_format="float",
         timeout=timeout,
@@ -312,40 +307,61 @@ class UserEmbeddingGenerator:
             yield _RemoteBatch(start, inputs, counts)
 
     def generate_remote(self, texts: list[str]) -> list[UserEmbedding]:
-        """Encode with a fixed worker pool and bounded, independently retried batches."""
+        """Encode with Router concurrency limits and independently retried batches."""
         config = self.litellm
         if config is None:
             raise ValueError("Remote embeddings require LiteLLM configuration")
         if not texts:
             return []
-        api_key = os.environ[config.api_key_env] if config.api_key_env else None
-        batches = self._remote_batches(texts, config.batch_size)
-        active: dict[Future[list[UserEmbedding]], int] = {}
-        completed: dict[int, list[UserEmbedding]] = {}
-        with ThreadPoolExecutor(max_workers=config.max_concurrency) as executor:
-            while True:
-                # Keep only one batch per worker in flight; refill as each finishes.
-                for batch in islice(batches, config.max_concurrency - len(active)):
-                    future = executor.submit(
-                        self._remote_batch_with_retries, batch, config, api_key
-                    )
-                    active[future] = batch.index
-                if not active:
-                    break
-                done, _ = wait(active, return_when=FIRST_COMPLETED)
-                for future in done:
-                    completed[active.pop(future)] = future.result()
-        return [item for index in sorted(completed) for item in completed[index]]
+        return asyncio.run(self._generate_remote_async(texts, config))
 
-    def _remote_batch_with_retries(
-        self, batch: _RemoteBatch, config: LiteLLMEmbeddingConfig, api_key: str | None
+    async def _generate_remote_async(
+        self, texts: list[str], config: LiteLLMEmbeddingConfig
+    ) -> list[UserEmbedding]:
+        import litellm
+
+        batches = list(self._remote_batches(texts, config.batch_size))
+        router = Router(
+            model_list=[
+                {
+                    "model_name": "user-sentiment",
+                    "litellm_params": {
+                        "model": config.model,
+                        "api_base": config.api_base,
+                        "api_key": os.environ[config.api_key_env] if config.api_key_env else None,
+                        "max_parallel_requests": config.max_concurrency,
+                        "max_retries": _NoRetries(),
+                    },
+                }
+            ],
+            num_retries=0,
+            disable_cooldowns=True,
+        )
+        tasks = [
+            asyncio.create_task(self._remote_batch_with_retries(batch, config, router))
+            for batch in batches
+        ]
+        try:
+            results = await asyncio.gather(*tasks)
+            return [item for batch in results for item in batch]
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            # Router.reset() clears unrelated applications' callbacks too.
+            litellm.logging_callback_manager.remove_callback_from_all_lists(
+                router, require_self=True
+            )
+
+    async def _remote_batch_with_retries(
+        self, batch: _RemoteBatch, config: LiteLLMEmbeddingConfig, router: Router
     ) -> list[UserEmbedding]:
         attempt = 0
         deadline = None
         while True:
             attempt += 1
             try:
-                return self._remote_batch(batch, config, api_key)
+                return await self._remote_batch(batch, config, router)
             except Exception as error:
                 if attempt > config.max_retries:
                     raise
@@ -363,17 +379,15 @@ class UserEmbeddingGenerator:
                     type(error).__name__,
                     delay,
                 )
-                time.sleep(delay)
+                await asyncio.sleep(delay)
                 if time.monotonic() >= deadline:
                     raise
 
-    def _remote_batch(
-        self, batch: _RemoteBatch, config: LiteLLMEmbeddingConfig, api_key: str | None
+    async def _remote_batch(
+        self, batch: _RemoteBatch, config: LiteLLMEmbeddingConfig, router: Router
     ) -> list[UserEmbedding]:
-        response = _request_embeddings(
-            model=config.model,
-            api_base=config.api_base,
-            api_key=api_key,
+        response = await _request_embeddings(
+            router=router,
             input=batch.inputs,
             timeout=config.request_timeout,
         )
