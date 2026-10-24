@@ -15,7 +15,7 @@ in the environment or `.env`.
 | --- | --- |
 | `trace` | Exactly one source; see the [source guides](../README.md#start-here). |
 | `trace.max_traces` | Limit complete traces from a provider or native export. Unsupported for canonical JSONL, ATIF, and Gym rollouts. |
-| `ethos_path` | Optional path to [ETHOS.md](https://github.com/NVIDIA/skills/tree/main/skills/ethos-orchestrate), which defines the agent’s purpose and behavioral requirements. Defaults to `ETHOS.md` in the current working directory. Used by the ethos divergence signal and candidate problem validation. |
+| `ethos_path` | Optional path to [ETHOS.md](https://github.com/NVIDIA/skills/tree/main/skills/ethos-orchestrate), which defines the agent’s purpose and behavioral requirements. Defaults to `ETHOS.md` in the current working directory. Used by the ethos divergence signal, candidate problem validation, and insight compilation. |
 | `output_path` | YAML output file; defaults to `insights.yml`. Use `-` for stdout. |
 | `model`, `api_base`, `max_tokens` | [Inference settings](model-access.md#choose-a-model). |
 | `compass_signals` | [Compass Signals and their prerequisites](compass-signals.md). All five are enabled by default. |
@@ -56,6 +56,17 @@ behavior, root cause, scope, and implied remediation, then assigns `confidence` 
 This adds up to 12 investigation rounds and a final response per insight, with up to
 100,000 characters of supporting traces plus tool results in context. Time and token
 usage depend on the model, trace size, and investigation length.
+
+## ETHOS-aware compilation
+
+Compilation uses the full ETHOS.md to select, merge, and prioritize insights from all
+signals, even when the ethos divergence signal is disabled. Its priorities help interpret
+task success and acceptable tradeoffs; severity still depends on observed consequences.
+A new insight normally requires multiple supporting traces. A single trace may qualify
+when it clearly demonstrates a meaningful violation of an explicit ETHOS constraint;
+the insight must quote that constraint and explain the consequence without claiming recurrence.
+Existing insights retain their ratings and descriptions. Without ETHOS.md, compilation
+uses the usual impact, fixability, and recurrence criteria.
 
 ## One-run overrides
 
