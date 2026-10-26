@@ -120,7 +120,9 @@ class ToolDefinition(_TraceModel):
     """One recorded tool-list entry, with understood fields normalized."""
 
     name: str | None = Field(
-        default=None, min_length=1, description="Declared function name, when understood."
+        default=None,
+        min_length=1,
+        description="The function name, or null if it could not be read from the source entry.",
     )
     server: str | None = Field(
         default=None,
@@ -208,9 +210,8 @@ class Span(_TraceModel):
     tool_definitions: list[ToolDefinition] | UNSET = Field(
         default=UNSET,
         description=(
-            "Tools declared to this agent, or offered to this model call; valid only for an "
-            "AGENT or LLM span. Preserve source order and every entry, including unknown "
-            "forms and duplicates. Omit when unavailable; an empty list is explicitly recorded."
+            "Tools listed for this agent or model call, in source order. "
+            "Omitted when unknown; an empty list means the source listed no tools."
         ),
     )
 

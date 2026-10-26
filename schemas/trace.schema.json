@@ -148,7 +148,7 @@
           "description": "Call/result join metadata; valid only for a TOOL span."
         },
         "tool_definitions": {
-          "description": "Tools declared to this agent, or offered to this model call; valid only for an AGENT or LLM span. Preserve source order and every entry, including unknown forms and duplicates. Omit when unavailable; an empty list is explicitly recorded.",
+          "description": "Tools listed for this agent or model call, in source order. Omitted when unknown; an empty list means the source listed no tools.",
           "items": {
             "$ref": "#/$defs/ToolDefinition"
           },
@@ -363,7 +363,7 @@
             }
           ],
           "default": null,
-          "description": "Declared function name, when understood.",
+          "description": "The function name, or null if it could not be read from the source entry.",
           "title": "Name"
         },
         "raw": {
