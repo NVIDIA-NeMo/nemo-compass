@@ -529,7 +529,7 @@ def test_responses_envelope_maps_root_llm_and_paired_tools(tmp_path):
     model, paired, unpaired = root.children
     assert model.kind is SpanKind.LLM and model.model == "test-model"
     assert model.token_counts == TokenCounts(
-        input_tokens=20, cached_input_tokens=10, output_tokens=7
+        input_total=30, cached_input_tokens=10, output_tokens=7
     )
     assert model.output == source["response"]["output"]
     assert model.start_time is None and model.end_time is None
@@ -559,13 +559,25 @@ def test_standalone_responses_object_and_null_attachment(tmp_path):
     (root,) = trace.root_spans
     assert trace.attributes["gym_source_shape"] == "responses_object"
     assert "logical_case_id" not in trace.attributes
-    assert root.input == [] and root.output == "14 bolts."
+    assert root.input is UNSET and root.output == "14 bolts."
     assert root.children[0].input is UNSET
     assert tool_catalog(trace) == {"lookup": {}}
     assert_result_counts(trace)
     record = envelope()
     record["ng_trajectory"] = None
     assert next(iter(loader_for(tmp_path, record).load())).root_spans[0].kind is SpanKind.AGENT
+
+
+def test_responses_keep_missing_and_explicitly_empty_values_apart(tmp_path):
+    source = envelope()
+    del source["responses_create_params"]["instructions"]
+    source["responses_create_params"]["input"] = []
+    source["response"]["usage"] = {"input_tokens": 900, "output_tokens": 5}
+    source["response"]["output"][-1]["content"] = [{"type": "output_text", "text": ""}]
+    (root,) = next(iter(loader_for(tmp_path, source).load())).root_spans
+    assert root.input == [] and root.output == ""
+    # Missing cache details leave only the cache counts unknown.
+    assert root.children[0].token_counts == TokenCounts(input_total=900, output_tokens=5)
 
 
 def test_results_pair_across_request_input_and_echoed_prefix(tmp_path):

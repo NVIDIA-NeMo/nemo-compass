@@ -19,17 +19,21 @@ Responses shape instead: a rollout envelope (``responses_create_params`` plus
 - One AGENT root. ``input`` is the request's message items as a list: string
   input becomes ``[{"role": "user", "content": input}]`` and ``instructions``
   a leading ``{"role": "system", ...}`` message; non-message items are omitted
-  there and stay in the raw record. ``output`` is the text of the last
-  assistant message in the generated output, else UNSET. Tool definitions come
-  from ``responses_create_params.tools``, else ``response.tools``.
+  there and stay in the raw record. With neither ``input`` nor
+  ``instructions`` recorded, ``input`` is UNSET; a recorded empty list stays
+  ``[]``. ``output`` is the text of the last assistant message in the
+  generated output (``""`` when that text is empty), else UNSET. Tool
+  definitions come from ``responses_create_params.tools``, else
+  ``response.tools``; an empty list is kept as an explicit declaration.
 - One LLM span for the recorded response: ``model`` from ``response.model``
   (else the request model), ``output`` the response output items, and token
-  counts mapped from ``usage`` exactly like ``token_stats`` (input, cached
-  input and output tokens must all be present). The response can aggregate
-  several model turns of an agent loop; per-call grouping and timing are not
-  inferred, and no span has timestamps. The TOOL spans follow the LLM span as
-  siblings, so the span tree does not show how messages, model turns and tool
-  calls interleaved; ``item_path`` and the LLM output keep the source order.
+  counts read from ``usage`` by the shared Responses usage reader; each count
+  is read on its own, so a missing one leaves only itself unknown. The
+  response can aggregate several model turns of an agent loop; per-call
+  grouping and timing are not inferred, and no span has timestamps. The TOOL
+  spans follow the LLM span as siblings, so the span tree does not show how
+  messages, model turns and tool calls interleaved; ``item_path`` and the LLM
+  output keep the source order.
   ``error`` is ``response.error.code`` or a failed/cancelled status.
 - One TOOL span per ``function_call``, paired with ``function_call_output`` by
   ``call_id`` over the request input followed by the generated output, in
@@ -68,6 +72,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from trace_ingest.loaders.helper.llm_span.token_usage import openai
 from trace_ingest.loaders.helper.tool_definitions import tool_definitions
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
@@ -432,20 +437,7 @@ def _normalize_responses(record: dict[str, Any], raw: bytes) -> Trace:
         None,
     )
     usage = response.get("usage")
-    token_counts = None
-    if usage is not None:
-        usage = _object(usage)
-        cached = usage.get("input_tokens_details")
-        token_counts = _tokens(
-            {
-                "prompt_tokens": usage.get("input_tokens"),
-                "cached_tokens": _object(cached).get("cached_tokens")
-                if cached is not None
-                else None,
-                "completion_tokens": usage.get("output_tokens"),
-                "total_tokens": usage.get("total_tokens"),
-            }
-        )
+    token_counts = openai.token_counts(_object(usage)) if usage is not None else None
     model = response.get("model") or request.get("model")
     # Responses failures carry ``error: {code, message}``; status covers the rest.
     error = response.get("error")
@@ -468,8 +460,8 @@ def _normalize_responses(record: dict[str, Any], raw: bytes) -> Trace:
     root = Span(
         id="gym/response",
         kind=SpanKind.AGENT,
-        input=root_input,
-        output=final if final else UNSET,
+        input=root_input if root_input or "input" in request else UNSET,
+        output=final if final is not None else UNSET,
         children=[llm, *tools.values()],
     )
     _finalize_tool_results([root])
