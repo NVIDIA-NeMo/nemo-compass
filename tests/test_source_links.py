@@ -258,6 +258,9 @@ def test_cli_emits_resolved_span_links(tmp_path, monkeypatch, capsys, select_sig
     from compass.cli import main as cli
     from compass.traces import Span, SpanKind
 
+    monkeypatch.setattr(cli.os, "environ", {})
+    monkeypatch.setattr(cli, "load_dotenv", lambda: {})
+
     a = trace("a", "https://provider.test/trace")
     a.root_spans = [Span(id="tool", kind=SpanKind.TOOL, source_url="https://provider.test/span")]
     snapshot = TraceSnapshot([a, trace("b")])
@@ -274,7 +277,9 @@ def test_cli_emits_resolved_span_links(tmp_path, monkeypatch, capsys, select_sig
     monkeypatch.setattr(cli, "_check_environment", lambda config: "fake")
     monkeypatch.setattr(cli, "_build_llm", lambda *args: FakeLLMClient())
     monkeypatch.setattr(
-        cli, "_configured_trace_loader", lambda config: SimpleNamespace(load=lambda: snapshot)
+        cli,
+        "_configured_trace_loader",
+        lambda config: SimpleNamespace(load=lambda: snapshot, describe=lambda: {"source": "test"}),
     )
     monkeypatch.setattr(
         cli,

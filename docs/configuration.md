@@ -15,30 +15,47 @@ in the environment or `.env`.
 | --- | --- |
 | `trace` | Exactly one source; see the [source guides](../README.md#start-here). |
 | `trace.max_traces` | Limit complete traces from a provider or native export. Unsupported for canonical JSONL, ATIF, and Gym rollouts. |
-| `ethos_path` | Optional path to [ETHOS.md](https://github.com/NVIDIA/skills/tree/main/skills/ethos-orchestrate), which defines the agent’s purpose and behavioral requirements. Defaults to `ETHOS.md` in the current working directory. Used by the ethos divergence signal. |
+| `ethos_path` | Optional path to [ETHOS.md](https://github.com/NVIDIA/skills/tree/main/skills/ethos-orchestrate), which defines the agent’s purpose and behavioral requirements. Defaults to `ETHOS.md` in the current working directory. Used by the ethos divergence signal and candidate problem validation. |
 | `output_path` | YAML output file; defaults to `insights.yml`. Use `-` for stdout. |
 | `model`, `api_base`, `max_tokens` | [Inference settings](model-access.md#choose-a-model). |
 | `compass_signals` | [Compass Signals and their prerequisites](compass-signals.md). All five are enabled by default. |
-| `code_base` | [Local agent source](#code-aware-review) to consult during candidate validation and confidence review. |
+| `code_base` | [Local agent source](#candidate-problem-validation) to consult during candidate problem validation and confidence review. |
 | `existing_insights` | Previous JSON or YAML insight collection to reconcile with this run. |
 
 Relative paths resolve from the directory where you run the command.
 
-## Code-aware review
+## Candidate problem validation
 
-Set `code_base` to consult your agent's local source using read-only search and file access.
-Before compilation, the validator removes candidate problems contradicted by the code and retains
-problems it cannot resolve from the repository. It cannot edit or execute your agent's code.
+Compass Signals identify candidate problems in traces. Before compilation turns them
+into insights, candidate problem validation reviews and filters these problems using
+ETHOS.md, source code, or both.
 
-When `code_base` is set, an additional review runs after compilation. This review investigates
-each final insight's behavior, root cause, scope, and implied remediation, then assigns
-`confidence` as `low`, `med`, or `high`. It does not change severity.
+Set `code_base` to provide your agent's local source and `ethos_path` to provide its
+ETHOS.md (or let Compass discover ETHOS.md in the current working directory).
+Each candidate problem receives its supporting traces and the configured context.
+Source-code access is read-only: the validator cannot edit or execute your agent's code.
+Validation runs even when the ethos divergence signal is disabled, and is skipped
+when neither source code nor ETHOS.md is available.
 
-Confidence review makes additional model calls per insight: up to 12
-investigation rounds and a final response. Each insight's context can include up to 100,000
-characters of supporting traces plus tool results. Time and token usage depend on the model,
-trace size, and investigation length. This is in addition to candidate validation when `code_base`
-is supplied.
+Behavior intentionally defined in source code does not excuse a violation of ETHOS.md.
+Concrete evidence against a candidate problem removes it; ambiguous or inconclusive
+problems are retained for compilation. Decisions include code and ETHOS assessments
+when available, an explanation, and the basis for rejection. ETHOS-based rejections
+require an exact document passage. The terminal report summarizes the number of excluded
+candidate problems; telemetry includes the rejection reasons and supporting passages.
+
+Each candidate problem adds one model investigation, limited to 25 iterations and
+up to 100,000 characters of supporting traces. Candidate problems are reviewed concurrently.
+
+### Confidence review after compilation
+
+When `code_base` is set, an additional review investigates each final insight's
+behavior, root cause, scope, and implied remediation, then assigns `confidence` as
+`low`, `med`, or `high`. It does not change severity.
+
+This adds up to 12 investigation rounds and a final response per insight, with up to
+100,000 characters of supporting traces plus tool results in context. Time and token
+usage depend on the model, trace size, and investigation length.
 
 ## One-run overrides
 
@@ -56,7 +73,7 @@ You can also run without YAML:
 compass --trace.filesystem.path traces.jsonl --max-tokens 16384
 ```
 
-To enable code-aware validation and confidence review, set `code_base` in YAML:
+To enable source-code access for candidate problem validation and confidence review, set `code_base` in YAML:
 
 ```yaml
 code_base: ../my-agent
