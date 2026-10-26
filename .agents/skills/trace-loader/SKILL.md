@@ -5,7 +5,7 @@ description: Build or update a deterministic Compass TraceLoader for a concrete 
 <!-- SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Build an Compass trace loader
+# Build a Compass trace loader
 
 A loader is the source boundary. It owns every source-specific decision needed
 to turn one concrete provider format into the canonical `Trace` representation.
