@@ -6,13 +6,11 @@
 Run the example customer-service traces to explore the insights NeMo Compass produces.
 You only need an inference API key; no trace-platform account is required.
 
-With [uv installed](../README.md#start-here), install the CLI from the repository source:
+With [uv installed](../README.md#start-here), install the CLI from PyPI:
 
 ```bash
-uv tool install git+https://github.com/NVIDIA-NeMo/labs-nemo-compass
+uv tool install nemo-compass
 ```
-
-The example traces declare tools on their spans, which the released `nemo-compass` 0.1.0 does not read.
 
 Download the [example traces](tau_bench_traces.jsonl) and
 [configuration](config.yaml) into one folder, keeping their filenames.
