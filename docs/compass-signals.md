@@ -31,17 +31,20 @@ classified through the [OpenAI Decisions API](https://developers.openai.com/api/
 as `complaint` or `no_complaint`. Any complaint sends its trace to contextual review
 by your main inference model. Messages without text are not sent for classification.
 
-Configure a Decisions-capable model and credentials to enable screening:
+The top-level LLM settings control trace investigation and insight generation.
+The `user_sentiment.decisions` settings control per-message classification through
+`/decisions`, which requires a Decisions-capable model and endpoint. Configure them separately:
 
 ```yaml
 compass_signals:
   user_sentiment:
-    model: gpt-6-luna
-    api_base: https://api.openai.com/v1
-    api_key_env: DECISIONS_API_KEY
-    concurrency: 8
-    timeout_seconds: 60
-    max_retries: 2
+    decisions:
+      model: gpt-6-luna
+      api_base: https://api.openai.com/v1
+      api_key_env: DECISIONS_API_KEY
+      concurrency: 8
+      timeout_seconds: 60
+      max_retries: 2
 ```
 
 Set `DECISIONS_API_KEY` in your [environment file](model-access.md#credentials).
@@ -49,7 +52,7 @@ For a compatible gateway, use its API base and exact model identifier. This clie
 `/decisions` directly, so do not add a LiteLLM provider prefix to the model identifier.
 Chat-completions support alone does not imply Decisions support.
 
-Without `api_key_env`, this signal is skipped. A configured but missing key is an error.
+Without `decisions.api_key_env`, this signal is skipped. A configured but missing key is an error.
 Requests run concurrently up to `concurrency`; transient failures are retried up to
 `max_retries` times. Persistent errors and invalid responses fail the signal instead of
 being counted as neutral feedback. Messages are sent in full, so provider input limits apply.

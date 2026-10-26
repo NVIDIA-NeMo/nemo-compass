@@ -133,7 +133,7 @@ def test_sentiment_requires_explicit_credentials(monkeypatch):
     signal = sentiment.UserSentimentCompassSignal(sentiment.UserSentimentConfig(), FakeLLMClient())
     snapshot = TraceSnapshot([])
     assert signal.check_prerequisites(snapshot) == "No Decisions API key configured"
-    signal.config.api_key_env = "DECISIONS_API_KEY"
+    signal.config.decisions.api_key_env = "DECISIONS_API_KEY"
     monkeypatch.setenv("DECISIONS_API_KEY", " ")
     with pytest.raises(ValueError, match="Missing Decisions API key: DECISIONS_API_KEY"):
         signal.check_prerequisites(snapshot)

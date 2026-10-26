@@ -32,8 +32,8 @@ def test_missing_environment_exits_before_loading_traces(
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
         "trace:\n  langsmith:\n    project: production\n"
-        "compass_signals:\n  user_sentiment:\n"
-        "    api_key_env: DECISIONS_API_KEY\n"
+        "compass_signals:\n  user_sentiment:\n    decisions:\n"
+        "      api_key_env: DECISIONS_API_KEY\n"
     )
     monkeypatch.setenv("LANGSMITH_API_KEY", "")
     monkeypatch.setenv("DECISIONS_API_KEY", " \t")
@@ -50,7 +50,7 @@ def test_missing_environment_exits_before_loading_traces(
         "Missing required environment settings:\n"
         "  COMPASS_API_KEY — API key for the configured model\n"
         "  LANGSMITH_API_KEY — API key for LangSmith\n"
-        "  DECISIONS_API_KEY — API key named by compass_signals.user_sentiment.api_key_env\n\n"
+        "  DECISIONS_API_KEY — API key named by compass_signals.user_sentiment.decisions.api_key_env\n\n"
         "Set these in .env in your working directory (NAME=value),\n"
         "or export them in your shell, then rerun the command.\n"
         "Setup: https://github.com/NVIDIA-NeMo/labs-nemo-compass/blob/main/docs/model-access.md\n"

@@ -143,15 +143,15 @@ class UserSentimentCompassSignal:
         self.llm = llm
 
     def check_prerequisites(self, snapshot: TraceSnapshot) -> str | None:
-        if self.config.api_key_env is None:
+        if self.config.decisions.api_key_env is None:
             return "No Decisions API key configured"
-        if not os.environ.get(self.config.api_key_env, "").strip():
-            raise ValueError(f"Missing Decisions API key: {self.config.api_key_env}")
+        if not os.environ.get(self.config.decisions.api_key_env, "").strip():
+            raise ValueError(f"Missing Decisions API key: {self.config.decisions.api_key_env}")
         return None
 
     @cached_property
     def classifier(self) -> ComplaintClassifier:
-        return ComplaintClassifier(self.config)
+        return ComplaintClassifier(self.config.decisions)
 
     async def analyze(self, snapshot: TraceSnapshot) -> CompassSignalResult:
         async with self.llm:

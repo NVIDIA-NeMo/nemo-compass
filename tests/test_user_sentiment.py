@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from compass.compass_signals.user_sentiment import signal
 from compass.compass_signals.user_sentiment.classifier import (
     ComplaintClassifier,
+    DecisionsConfig,
     UserSentimentConfig,
 )
 from compass.traces import Trace, TraceAggregate, TraceSnapshot
@@ -45,7 +46,7 @@ def configure_client(monkeypatch, handler):
         "AsyncClient",
         lambda **kwargs: real_client(**kwargs, transport=httpx.MockTransport(handler)),
     )
-    return UserSentimentConfig(
+    return DecisionsConfig(
         api_key_env="DECISIONS_API_KEY",
         api_base="https://gateway.example/v1",
         model="provider/model",
@@ -98,7 +99,9 @@ def test_signal_routes_complaints_and_preserves_messages(monkeypatch):
         signal, "IssueDetector", lambda **kwargs: SimpleNamespace(detect_issues=detector)
     )
     result = asyncio.run(
-        signal.UserSentimentCompassSignal(config, FakeLLMClient()).analyze(snapshot)
+        signal.UserSentimentCompassSignal(
+            UserSentimentConfig(decisions=config), FakeLLMClient()
+        ).analyze(snapshot)
     )
     assert peak == 2
     assert sorted(p["input"] for p in requests) == sorted(
