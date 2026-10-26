@@ -54,6 +54,15 @@ raw source values when the canonical model can represent them. In particular,
 preserve the canonical distinction between an omitted value and explicit JSON
 null rather than manufacturing a result.
 
+Record each matched tool result as a `ToolResult` in `ToolCall.results`, so
+`len(results) == result_count`; set `results=[]` when the source recorded no
+result, and leave it unset only when the source cannot say. Set `is_error` only
+from an authoritative source flag or status; leave it `None` otherwise, and never
+map a tracer's default success status to `False`. Attach declared tools as
+`ToolDefinition`s (with the verbatim source item in `raw`) to the AGENT span
+they belong to, or to the LLM span they were offered to. `trace_ingest.catalog`
+resolves them for Compass Signals.
+
 `describe()` should report the loaded corpus counts and enough source identity
 and selection configuration to reproduce the run. Provider-specific diagnostics
 belong in a typed report or extended description, as in the MLflow loader.

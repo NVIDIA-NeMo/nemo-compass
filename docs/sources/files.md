@@ -42,11 +42,22 @@ and recorded evaluation signals. Omit values that were not recorded; `null` mean
 explicitly recorded null. Output links back to this file and its physical line number;
 whether the viewer jumps to that line depends on its support for URL fragments. Repeated problems need supporting evidence across multiple traces.
 
+Put `tool_definitions` on the owning AGENT span or the LLM span offered those tools.
+Keep every entry in order, with its original value in `raw`. Add `name` and `input_schema`
+when understood to enable tool-schema checks. Omit an unavailable list; `[]` means the
+source explicitly recorded no tools.
+
+Record a tool's results in `tool_call.results`, one per result, with `is_error` only when the
+source recorded it. Files written before schema version 2 that carry `attributes.tool_catalog`
+still work when no span declares definitions.
+
 ## ATIF
 
 Each nonblank line must contain one complete ATIF trajectory. The loader accepts schema
 versions `ATIF-v1.0` through `ATIF-v1.8`. Keep tool calls, observations, and nested subagent
-trajectories in the exported record.
+trajectories in the exported record. `agent.tool_definitions` enable tool-schema checks, and an
+observation result with `is_error: true` (on the result or in its `extra`) marks the tool call
+as failed.
 
 ## A different trace system
 

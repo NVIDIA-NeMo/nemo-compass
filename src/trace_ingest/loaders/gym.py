@@ -27,6 +27,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from trace_ingest.loaders.helper.tool_definitions import tool_definitions
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
     UNSET,
@@ -34,6 +35,7 @@ from trace_ingest.models import (
     SpanKind,
     TokenCounts,
     ToolCall,
+    ToolResult,
     Trace,
     TraceAggregate,
     TraceSnapshot,
@@ -152,6 +154,19 @@ def _error(row: dict[str, Any], key: str = "status") -> str | None:
         return f"HTTP {code}"
     status = row.get(key)
     return status if status in ("failed", "timeout", "cancelled") else None
+
+
+def _finalize_tool_results(spans: list[Span]) -> None:
+    """Record one typed result per counted tool output once errors are known."""
+
+    for span in spans:
+        if span.tool_call is not None:
+            span.tool_call.results = (
+                [ToolResult(content=span.output, is_error=True if span.error else None)]
+                if span.tool_call.result_count
+                else []
+            )
+        _finalize_tool_results(span.children)
 
 
 def _conversation_tools(invocation: dict[str, Any], prefix: str) -> dict[str, Span]:
@@ -430,6 +445,30 @@ def _normalize(record: dict[str, Any]) -> Trace:
             sort_children(item.children)
 
     sort_children(roots)
+    _finalize_tool_results(roots)
+    params = record.get("responses_create_params")
+    definitions = tool_definitions(params.get("tools") if isinstance(params, dict) else None)
+    if definitions is not None:
+        depth_first: list[Span] = []
+        pending = list(roots)
+        while pending:
+            item = pending.pop(0)
+            depth_first.append(item)
+            pending[:0] = item.children
+        owner = next(
+            (
+                item
+                for kind in (SpanKind.AGENT, SpanKind.LLM)
+                for candidates in (roots, depth_first)
+                for item in candidates
+                if item.kind is kind
+            ),
+            None,
+        )
+        if owner is None:
+            extra_gaps.append({"code": "tool_definitions_without_owner_span"})
+        else:
+            owner.tool_definitions = definitions
     return Trace(
         id=rollout,
         root_spans=roots,

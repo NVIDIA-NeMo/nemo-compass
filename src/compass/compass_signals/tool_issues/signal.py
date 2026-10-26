@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from compass.compass_signals._trace import walk_spans
 from compass.compass_signals.compass_signals import CompassSignalResult, Problem
 from compass.traces import UNSET, SpanKind, Trace, TraceSnapshot
+from trace_ingest.catalog import tool_catalog as trace_tool_catalog
 
 DETECTOR_VERSION = "tid-v1"
 CARD_MINIMUM_CASES = 3
@@ -168,13 +169,13 @@ class TraceRecord:
     trace_id: str
     calls: Sequence[CallRecord]
     logical_case_id: str | None = None
-    tool_catalog: Mapping[str, Mapping[str, Any] | None] | None = None
+    tool_catalog: Mapping[str, Mapping[str, Any] | bool | None] | None = None
     orphan_results: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
     complete_provenance_context: bool = False
 
 
 def schema_errors(
-    catalog: Mapping[str, Mapping[str, Any] | None], tool_name: str, arguments: object
+    catalog: Mapping[str, Mapping[str, Any] | bool | None], tool_name: str, arguments: object
 ) -> list[dict[str, Any]]:
     """Apply the active catalog/JSON Schema without coercing evidence."""
 
@@ -759,7 +760,7 @@ def to_tool_issue_trace(trace: Trace) -> TraceRecord:
             )
         )
 
-    tool_catalog = trace.attributes.get("tool_catalog")
+    tool_catalog = trace_tool_catalog(trace)
     orphan_results = trace.attributes.get("orphan_results")
     return TraceRecord(
         trace_id=trace.id,
@@ -769,7 +770,16 @@ def to_tool_issue_trace(trace: Trace) -> TraceRecord:
             if trace.attributes.get("logical_case_id") is not None
             else None
         ),
-        tool_catalog=dict(tool_catalog) if isinstance(tool_catalog, Mapping) else None,
+        tool_catalog={
+            name: dict(schema)
+            if isinstance(schema, Mapping)
+            else schema
+            if isinstance(schema, bool)
+            else None
+            for name, schema in tool_catalog.items()
+        }
+        if tool_catalog is not None
+        else None,
         orphan_results=tuple(dict(item) for item in orphan_results if isinstance(item, Mapping))
         if isinstance(orphan_results, Sequence)
         else (),

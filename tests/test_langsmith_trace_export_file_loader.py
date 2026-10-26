@@ -15,6 +15,7 @@ from compass.trace_loaders.langsmith import (
     LangSmithTraceLoadError,
 )
 from compass.traces import SpanKind
+from trace_ingest.models import UNSET, ToolResult
 
 
 def trace_export_run_record(
@@ -348,3 +349,39 @@ def test_loader_normalizes_timestamps_to_utc(tmp_path):
     )
 
     assert root.root_spans[0].start_time == datetime(2026, 9, 1, 12, tzinfo=timezone.utc)
+
+
+def test_tool_results_mark_errors_and_match_result_counts(tmp_path):
+    root = trace_export_run_record("trace-1", inputs={"q": "x"}, outputs={"a": "y"})
+    failed = trace_export_run_record(
+        "tool-1",
+        parent_run_id="trace-1",
+        name="search",
+        run_type="tool",
+        start_time="2026-09-01T12:00:02Z",
+        end_time="2026-09-01T12:00:03Z",
+        outputs={"output": "boom"},
+        error="TimeoutError",
+        status="error",
+    )
+    ok = trace_export_run_record(
+        "tool-2",
+        parent_run_id="trace-1",
+        name="search",
+        run_type="tool",
+        start_time="2026-09-01T12:00:04Z",
+        end_time="2026-09-01T12:00:05Z",
+        outputs={"output": "fine"},
+    )
+    write_trace_export_file(tmp_path / "trace-1.jsonl", root, failed, ok)
+    trace = next(
+        iter(LangSmithTraceExportFileLoader(LangSmithTraceExportFileConfig(path=tmp_path)).load())
+    )
+    spans = {span.id: span for span in trace.root_spans[0].children}
+    calls = {key: span.tool_call for key, span in spans.items() if span.tool_call is not None}
+    assert calls.keys() == spans.keys()
+    assert calls["tool-1"].results == [ToolResult(content=spans["tool-1"].output, is_error=True)]
+    assert calls["tool-2"].results == [ToolResult(content=spans["tool-2"].output, is_error=None)]
+    for call in calls.values():
+        assert call.results is not UNSET
+        assert len(call.results) == call.result_count

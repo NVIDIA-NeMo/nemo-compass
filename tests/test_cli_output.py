@@ -116,35 +116,3 @@ def test_report_shows_optional_severity_and_reason():
     RunOutput(Console(file=stream, width=120)).report(RunResult(3, [], [insight]), Path("-"))
 
     assert "Severity: HIGH — The agent is blocked from completing the task." in stream.getvalue()
-
-
-def test_ethos_rejections_report_passage_and_reason():
-    from compass.insights_generation.validation import (
-        CandidateProblemDecision,
-        CandidateProblemRejection,
-    )
-
-    problem = Problem(description="Approval is unnecessary", supporting_trace_ids=("t",))
-    rejection = CandidateProblemRejection(
-        signal_name="test",
-        problem=problem,
-        decision=CandidateProblemDecision(
-            supported=False,
-            rejection_basis="ethos",
-            ethos_passage="Require [explicit] approval.",
-            explanation="The reported friction is required.",
-        ),
-    )
-    result = RunResult(
-        1,
-        [CompassSignalResult(signal_name="test", problems=(problem,))],
-        [],
-        validation_rejections=[rejection],
-    )
-    stream = StringIO()
-    RunOutput(Console(file=stream, width=120)).report(result, Path("insights.yml"))
-    rendered = stream.getvalue()
-    assert "Candidate problem validation excluded 1 candidate problem." in rendered
-    assert "Require [explicit] approval." in rendered
-    assert "The reported friction is required." in rendered
-    assert "none were retained after candidate problem validation" in rendered

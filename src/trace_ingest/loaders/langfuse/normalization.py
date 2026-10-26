@@ -14,12 +14,15 @@ from urllib.parse import quote
 
 from pydantic import JsonValue
 
+from trace_ingest.loaders.helper.tool_definitions import tool_definitions
 from trace_ingest.loaders.langfuse.config import LangfuseTraceLoadError
 from trace_ingest.models import (
     UNSET,
     Span,
     SpanKind,
     ToolCall,
+    ToolDefinition,
+    ToolResult,
     Trace,
     TraceAggregate,
 )
@@ -57,7 +60,7 @@ def _normalize_trace(
     require_complete_tree: bool = False,
 ) -> Trace:
     trace_id = _trace_id(provider_trace)
-    root_spans, ordered, effective_parents = _normalize_tree(
+    root_spans, ordered = _normalize_tree(
         trace_id, provider_trace.observations, source_pointer, require_complete_tree
     )
     attributes: dict[str, JsonValue] = {
@@ -79,9 +82,6 @@ def _normalize_trace(
             "scores": _json_value(provider_trace.scores),
         },
     }
-    tool_catalog = _tool_catalog(ordered, effective_parents)
-    if tool_catalog is not None:
-        attributes["tool_catalog"] = tool_catalog
     if provider_trace.session_id:
         attributes["logical_case_id"] = str(provider_trace.session_id)
 
@@ -107,7 +107,7 @@ def _normalize_tree(
     observations: Sequence[LangfuseObservation],
     source_pointer: dict[str, JsonValue],
     require_complete_tree: bool = False,
-) -> tuple[list[Span], list[LangfuseObservation], dict[str, str | None]]:
+) -> tuple[list[Span], list[LangfuseObservation]]:
     by_id: dict[str, LangfuseObservation] = {}
     for observation in observations:
         observation_id = str(observation.id)
@@ -142,10 +142,20 @@ def _normalize_tree(
             base_pointer=source_pointer,
         )
         if normalized.kind is SpanKind.TOOL:
+            results = (
+                []
+                if normalized.output is UNSET
+                else [
+                    ToolResult(
+                        content=normalized.output, is_error=True if normalized.error else None
+                    )
+                ]
+            )
             normalized.tool_call = ToolCall(
                 call_id=observation_id,
                 index=tool_call_index,
-                result_count=0 if normalized.output is UNSET else 1,
+                result_count=len(results),
+                results=results,
             )
             tool_call_index += 1
         normalized_by_id[observation_id] = normalized
@@ -155,7 +165,7 @@ def _normalize_tree(
         else:
             normalized_by_id[parent_id].children.append(normalized)
 
-    return root_spans, ordered, effective_parents
+    return root_spans, ordered
 
 
 def _v4_observation_context(observation: LangfuseObservation) -> dict[str, JsonValue]:
@@ -184,7 +194,7 @@ def _normalize_v4_trace(
         **({"base_url": base_url} if base_url else {}),
         "trace_id": trace_id,
     }
-    roots, ordered, parents = _normalize_tree(trace_id, observations, pointer)
+    roots, ordered = _normalize_tree(trace_id, observations, pointer)
     # No single trace-level I/O or session is authoritative when several physical
     # roots exist. Preserve per-observation values rather than choosing arbitrarily.
     physical_roots = [obs for obs in observations if obs.parent_observation_id is None]
@@ -207,9 +217,6 @@ def _normalize_v4_trace(
     sessions = {obs.session_id for obs in observations if obs.session_id}
     if len(sessions) == 1:
         attributes["logical_case_id"] = next(iter(sessions))
-    catalog = _tool_catalog(ordered, parents)
-    if catalog is not None:
-        attributes["tool_catalog"] = catalog
     results: dict[str, list[JsonValue]] = {}
     for score in sorted(scores, key=lambda item: (item.name, item.id)):
         results.setdefault(score.name, []).append(_json_value(score))
@@ -238,96 +245,15 @@ def _normalize_v4_trace(
     )
 
 
-def _tool_catalog(
-    observations: Sequence[LangfuseObservation],
-    effective_parents: Mapping[str, str | None],
-) -> dict[str, JsonValue] | None:
-    """Extract one safely trace-wide catalog from API-visible Langfuse inputs.
-
-    Langfuse normalizes tool definitions from supported instrumentation metadata,
-    including ``gen_ai.tool.definitions``, into an observation's top-level
-    ``input.tools`` array. GENERATION catalogs describe the tools actually
-    offered to the model and therefore take precedence; repeated catalogs must
-    agree because the canonical Trace contract cannot represent catalogs that
-    change per call. A root AGENT catalog is only a fallback for reduced traces
-    with no generation observations.
-    """
-
-    root_agent_catalogs: list[dict[str, JsonValue]] = []
-    generation_catalogs: list[dict[str, JsonValue] | None] = []
-    for observation in observations:
-        kind, _ = _map_observation_kind(observation.type)
-        if kind not in {SpanKind.AGENT, SpanKind.LLM}:
-            continue
-        catalog = _tool_catalog_from_input(observation.input)
-        observation_id = str(observation.id)
-        if kind is SpanKind.LLM:
-            generation_catalogs.append(catalog)
-        elif catalog is not None and effective_parents[observation_id] is None:
-            root_agent_catalogs.append(catalog)
-
-    if generation_catalogs:
-        first = generation_catalogs[0]
-        if first is None:
-            return None
-        return first if all(catalog == first for catalog in generation_catalogs[1:]) else None
-    if root_agent_catalogs:
-        first = root_agent_catalogs[0]
-        return first if all(catalog == first for catalog in root_agent_catalogs[1:]) else None
-    return None
-
-
-def _tool_catalog_from_input(value: object) -> dict[str, JsonValue] | None:
-    """Convert Langfuse ``input.tools`` definitions to canonical JSON Schemas."""
+def _tool_definitions_from_input(value: object) -> list[ToolDefinition] | None:
+    """Read the platform's recorded list, preserving each entry verbatim."""
 
     if isinstance(value, str):
         try:
             value = json.loads(value)
         except json.JSONDecodeError:
             return None
-    if not isinstance(value, Mapping):
-        return None
-    tools = value.get("tools")
-    if not isinstance(tools, list):
-        return None
-
-    catalog: dict[str, JsonValue] = {}
-    for tool in tools:
-        definition = _tool_definition(tool)
-        if definition is None:
-            continue
-        name, schema = definition
-        catalog.setdefault(name, schema)
-    return catalog if catalog or not tools else None
-
-
-def _tool_definition(value: object) -> tuple[str, JsonValue] | None:
-    """Flatten the tool-definition forms accepted by Langfuse v3 ingestion."""
-
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except json.JSONDecodeError:
-            return None
-    if not isinstance(value, Mapping):
-        return None
-    nested = value.get("function")
-    definition = nested if isinstance(nested, Mapping) else value
-    name = definition.get("name")
-    if not isinstance(name, str) or not name:
-        return None
-
-    schema = definition.get("parameters")
-    if schema is None:
-        schema = definition.get("parameters_json_schema")
-    if schema is None:
-        schema = definition.get("inputSchema")
-    if isinstance(schema, str):
-        try:
-            schema = json.loads(schema)
-        except json.JSONDecodeError:
-            schema = None
-    return name, _json_value(schema) if isinstance(schema, Mapping) else None
+    return tool_definitions(value.get("tools")) if isinstance(value, Mapping) else None
 
 
 def _canonical_observation_order(
@@ -368,6 +294,11 @@ def _normalize_observation(
 ) -> Span:
     observation_id = str(observation.id)
     kind, subtype = _map_observation_kind(observation.type)
+    definitions = (
+        _tool_definitions_from_input(observation.input)
+        if kind in (SpanKind.AGENT, SpanKind.LLM)
+        else None
+    )
     started_at = _started_at(observation)
     ended_at = _optional_datetime(observation.end_time)
     pointer: dict[str, JsonValue] = {**base_pointer, "observation_id": observation_id}
@@ -387,6 +318,7 @@ def _normalize_observation(
         output=_io_value(observation.output),
         cost_usd=_observation_cost(observation),
         model=str(observation.model) if observation.model else None,
+        tool_definitions=definitions if definitions is not None else UNSET,
         tool_name=name if kind is SpanKind.TOOL else None,
         error=error,
         attributes={

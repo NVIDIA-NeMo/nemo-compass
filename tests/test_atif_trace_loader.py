@@ -16,6 +16,9 @@ from compass.compass_signals.tool_issues.signal import to_tool_issue_trace
 from compass.config import RunConfig, TraceConfig
 from compass.trace_loaders import ATIFTraceConfig, ATIFTraceLoader, ATIFTraceLoadError
 from compass.traces import UNSET, Span, SpanKind, TokenCounts, Trace, TraceAggregate
+from trace_ingest.catalog import tool_catalog
+from trace_ingest.loaders.atif import tool_definitions_from_atif
+from trace_ingest.models import ToolDefinition
 
 FIXTURE = Path(__file__).parent / "data" / "atif_trajectories.jsonl"
 
@@ -339,3 +342,205 @@ def test_complete_cli_runs_real_compass_signal(tmp_path, monkeypatch, capsys, se
     assert any(finding["call_id"] == "missing" for finding in artifacts.findings)
     assert not output.exists()
     assert capsys.readouterr().out == "[]\n"
+
+
+def tool_spans(trace):
+    pending = list(trace.root_spans)
+    while pending:
+        span = pending.pop()
+        pending.extend(span.children)
+        if span.kind is SpanKind.TOOL:
+            yield span
+
+
+def mixed_results_record():
+    return {
+        "schema_version": "ATIF-v1.7",
+        "trajectory_id": "mixed-results",
+        "agent": {
+            "name": "agent",
+            "version": "1",
+            "tool_definitions": [{"name": "read", "parameters": {"type": "object"}}],
+        },
+        "steps": [
+            {"step_id": 1, "source": "user", "message": "Go.", "observation": None},
+            {
+                "step_id": 2,
+                "source": "agent",
+                "message": "Working in parallel.",
+                "tool_calls": [
+                    {"tool_call_id": "a", "function_name": "read", "arguments": {"path": "x"}},
+                    {"tool_call_id": "b", "function_name": "spawn", "arguments": {}},
+                    {"tool_call_id": "c", "function_name": "read"},
+                ],
+                "observation": {
+                    "note": "kept",
+                    "results": [
+                        {
+                            "source_call_id": "b",
+                            "content": "spawned",
+                            "subagent_trajectory_ref": [{"trajectory_id": "child"}],
+                        },
+                        {"content": "unlinked"},
+                        {"source_call_id": "a", "content": "x", "is_error": True},
+                        {"source_call_id": "a", "content": "retry", "extra": {"isError": False}},
+                    ],
+                },
+            },
+            {
+                "step_id": 3,
+                "source": "agent",
+                "llm_call_count": 0,
+                "message": "Done.",
+                "tool_calls": [],
+            },
+            {"step_id": 4, "source": "agent", "message": "Bye.", "tool_calls": None},
+        ],
+        "subagent_trajectories": [
+            {
+                "schema_version": "ATIF-v1.7",
+                "trajectory_id": "child",
+                "agent": {"name": "child", "version": "1"},
+                "steps": [{"step_id": 1, "source": "user", "message": "Sub."}],
+                "subagent_trajectories": [],
+            }
+        ],
+    }
+
+
+def test_mixed_results_record_tool_results_and_errors(tmp_path):
+    trace = next(iter(loader_for(tmp_path, mixed_results_record()).load()))
+    step = trace.root_spans[0].children[1]
+    read, spawn, unanswered, unlinked = step.children
+    assert [(r.content, r.is_error) for r in read.tool_call.results] == [
+        ("x", True),
+        ("retry", False),
+    ]
+    assert read.error == "ATIF tool result reported is_error"
+    assert read.attributes["explicit_error"] is True
+    assert spawn.tool_call.results[0].is_error is None
+    assert "explicit_error" not in spawn.attributes
+    assert spawn.children[0].id == "trajectory/subagent/0"
+    assert unanswered.tool_call.results == []
+    assert unlinked.attributes["atif"] == {"content": "unlinked"}
+
+
+def test_explicit_error_result_maps_to_tool_span_error(tmp_path):
+    source = minimal()
+    source["steps"].append(
+        {
+            "step_id": 2,
+            "source": "agent",
+            "message": "",
+            "tool_calls": [{"tool_call_id": "a", "function_name": "read", "arguments": {}}],
+            "observation": {"results": [{"source_call_id": "a", "content": "x", "is_error": True}]},
+        }
+    )
+    trace = next(iter(loader_for(tmp_path, source).load()))
+    tool = trace.root_spans[0].children[1].children[0]
+    assert tool.error == "ATIF tool result reported is_error"
+    assert tool.attributes["explicit_error"] is True
+    assert tool.tool_call.results[0].is_error is True
+
+
+@pytest.mark.parametrize(
+    "flags, is_error, status, explicit_error",
+    [
+        ({}, None, None, None),
+        ({"is_error": False}, False, None, False),
+        ({"extra": {"isError": True}}, True, None, True),
+        ({"isError": True, "is_error": True}, True, None, True),
+        ({"is_error": "yes"}, None, "invalid", None),
+        ({"is_error": None}, None, "invalid", None),
+        ({"is_error": True, "extra": {"is_error": False}}, None, "conflicting", None),
+    ],
+)
+def test_tool_result_error_flags(tmp_path, flags, is_error, status, explicit_error):
+    source = minimal()
+    source["steps"].append(
+        {
+            "step_id": 2,
+            "source": "agent",
+            "message": "",
+            "tool_calls": [{"tool_call_id": "a", "function_name": "read", "arguments": {}}],
+            "observation": {"results": [{"source_call_id": "a", "content": "x", **flags}]},
+        }
+    )
+    trace = next(iter(loader_for(tmp_path, source).load()))
+    tool = trace.root_spans[0].children[1].children[0]
+    result = tool.tool_call.results[0]
+    assert result.content == "x"
+    assert result.is_error is is_error
+    assert result.attributes == ({"is_error_status": status} if status else {})
+    assert tool.attributes.get("explicit_error") is explicit_error
+    assert (tool.error is not None) is (explicit_error is True)
+
+
+def test_tool_definitions_and_catalog(tmp_path):
+    read_schema = {"type": "object", "properties": {"path": {"type": "string"}}}
+    write_schema = {"type": "object"}
+    items = [
+        {
+            "name": "read",
+            "description": "Read a file.",
+            "inputSchema": read_schema,
+            "extra": {"tool_scope": {"server": "fs"}},
+        },
+        {
+            "type": "function",
+            "function": {"name": "write", "description": "Write.", "parameters": write_schema},
+        },
+        "not a definition",
+        {"description": "nameless"},
+    ]
+    assert tool_definitions_from_atif(items) == [
+        ToolDefinition(
+            name="read",
+            server="fs",
+            description="Read a file.",
+            input_schema=read_schema,
+            raw=items[0],
+        ),
+        ToolDefinition(name="write", description="Write.", input_schema=write_schema, raw=items[1]),
+        ToolDefinition(raw=items[2]),
+        ToolDefinition(description="nameless", raw=items[3]),
+    ]
+    assert tool_definitions_from_atif(None) == []
+    source = minimal()
+    source["agent"]["tool_definitions"] = items
+    trace = next(iter(loader_for(tmp_path, source).load()))
+    assert trace.root_spans[0].tool_definitions == tool_definitions_from_atif(items)
+    assert tool_catalog(trace) is None  # Unknown entries cannot be treated as absent tools.
+
+    source["agent"]["tool_definitions"] = [
+        {"name": "read", "parameters": read_schema},
+        {"name": "read", "parameters": write_schema},
+    ]
+    assert tool_catalog(next(iter(loader_for(tmp_path, source).load()))) is None
+
+    trace = next(iter(loader_for(tmp_path, minimal()).load()))
+    assert trace.root_spans[0].tool_definitions is UNSET
+    assert tool_catalog(trace) is None
+
+
+def test_subagent_tool_definitions_stay_on_subagent_span(tmp_path):
+    source = json.loads(FIXTURE.read_text())
+    definitions = [{"name": "lookup", "parameters": {"type": "object"}}]
+    source["subagent_trajectories"][0]["agent"]["tool_definitions"] = definitions
+    trace = next(iter(loader_for(tmp_path, source).load()))
+    root = trace.root_spans[0]
+    subagent = root.children[2].children[1].children[0]
+    assert subagent.id == "trajectory/subagent/0"
+    assert root.tool_definitions is UNSET
+    assert subagent.tool_definitions == tool_definitions_from_atif(definitions)
+    assert tool_catalog(trace) == {"lookup": {"type": "object"}}
+
+
+def test_every_tool_span_has_one_result_per_matched_source_result(tmp_path):
+    records = [json.loads(line) for line in FIXTURE.read_text().splitlines() if line.strip()]
+    records.append(mixed_results_record())
+    spans = [span for trace in loader_for(tmp_path, *records).load() for span in tool_spans(trace)]
+    assert spans
+    for span in spans:
+        assert len(span.tool_call.results) == span.tool_call.result_count
+        assert len(span.tool_call.results) == len(span.attributes["atif"]["results"])

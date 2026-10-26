@@ -12,7 +12,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 from pydantic.experimental.missing_sentinel import MISSING
@@ -23,6 +23,8 @@ from trace_ingest.source_links import SourceURL
 # an explicitly supplied ``None`` remains JSON null. Tool-result analysis depends
 # on this distinction.
 UNSET = MISSING
+
+TRACE_SCHEMA_VERSION = "2"
 
 
 class _TraceModel(BaseModel):
@@ -81,6 +83,56 @@ class ToolCall(_TraceModel):
         default=UNSET,
         description="Whether the result returned usable data; omit when the source cannot say.",
     )
+    results: list[ToolResult] | UNSET = Field(
+        default=UNSET,
+        description=(
+            "Source results matched to this call, in source order; its length equals "
+            "result_count. Omit when the results were not recorded, as in traces written "
+            "before schema version 2."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def results_match_count(self) -> ToolCall:
+        if self.results is not UNSET and len(self.results) != self.result_count:
+            raise ValueError("result_count must equal len(results)")
+        return self
+
+
+class ToolResult(_TraceModel):
+    """One source result returned for a tool invocation."""
+
+    content: JsonValue | UNSET = Field(
+        default=UNSET,
+        description="Raw recorded result content. Omit when absent; explicit JSON null remains null.",
+    )
+    is_error: bool | None = Field(
+        default=None,
+        description="Source-recorded error flag; null when the source did not record a usable flag.",
+    )
+    attributes: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        description="Additional lossless result metadata not represented by a typed field.",
+    )
+
+
+class ToolDefinition(_TraceModel):
+    """One recorded tool-list entry, with understood fields normalized."""
+
+    name: str | None = Field(
+        default=None,
+        min_length=1,
+        description="The function name, or null if it could not be read from the source entry.",
+    )
+    server: str | None = Field(
+        default=None,
+        description="Explicit source scope such as an MCP server; never inferred from the name.",
+    )
+    description: str | None = Field(default=None, description="Declared tool description.")
+    input_schema: JsonValue | None = Field(
+        default=None, description="Declared input JSON Schema, when recorded."
+    )
+    raw: JsonValue = Field(description="Verbatim source definition.")
 
 
 class TokenCounts(_TraceModel):
@@ -155,6 +207,13 @@ class Span(_TraceModel):
         default_factory=dict,
         description="Additional lossless source metadata not represented by a typed field.",
     )
+    tool_definitions: list[ToolDefinition] | UNSET = Field(
+        default=UNSET,
+        description=(
+            "Tools listed for this agent or model call, in source order. "
+            "Omitted when unknown; an empty list means the source listed no tools."
+        ),
+    )
 
     @field_validator("start_time", "end_time")
     @classmethod
@@ -173,7 +232,12 @@ class Span(_TraceModel):
             raise ValueError(f"span {self.id!r} ends before it starts")
         if self.tool_call is not None and self.kind is not SpanKind.TOOL:
             raise ValueError("tool_call metadata requires kind=TOOL")
+        if self.tool_definitions is not UNSET and self.kind not in _DECLARING_KINDS:
+            raise ValueError("tool_definitions require kind=AGENT or kind=LLM")
         return self
+
+
+_DECLARING_KINDS = frozenset({SpanKind.AGENT, SpanKind.LLM})
 
 
 class TraceAggregate(_TraceModel):
@@ -208,6 +272,10 @@ class Trace(_TraceModel):
     id: str = Field(
         min_length=1,
         description="Stable trace identifier, unique within the loaded corpus.",
+    )
+    schema_version: Literal["2"] = Field(
+        default=TRACE_SCHEMA_VERSION,
+        description="Canonical trace contract version.",
     )
     source_url: SourceURL | None = Field(
         default=None,
@@ -330,6 +398,9 @@ __all__ = [
     "SpanKind",
     "Span",
     "TokenCounts",
+    "TRACE_SCHEMA_VERSION",
+    "ToolDefinition",
+    "ToolResult",
     "TraceAggregate",
     "TraceSnapshot",
     "Trace",

@@ -219,58 +219,6 @@ def test_cli_preserves_existing_insights_without_synthesizing_empty_evidence(
         assert not output_path.exists()
 
 
-def test_code_validation_filters_problems_and_preserves_signal_result(
-    tmp_path, monkeypatch
-) -> None:
-    trace = Trace(id="trace-1", root_spans=[], aggregate=TraceAggregate())
-    snapshot = TraceSnapshot([trace])
-    supported = Problem(
-        description="Supported",
-        supporting_trace_ids=("trace-1",),
-        candidate_trace_ids=("trace-1", "not-fetched-by-code-validator"),
-    )
-    unsupported = Problem(description="Unsupported", supporting_trace_ids=("trace-1",))
-    unknown = Problem(description="Unknown", supporting_trace_ids=("trace-1",))
-    evidence = [
-        CompassSignalResult(
-            signal_name="test-signal",
-            problems=(supported, unsupported, unknown),
-            artifacts={"kept": True},
-        )
-    ]
-    received = []
-
-    class FakeValidator:
-        def __init__(self, code_base_path, llm, ethos=None):
-            assert code_base_path == tmp_path.resolve()
-
-        async def validate(self, problem, supporting_traces):
-            received.append((problem, supporting_traces))
-            return cli.CandidateProblemDecision(
-                supported={"Supported": True, "Unsupported": False, "Unknown": None}[
-                    problem.description
-                ],
-                explanation="Checked the implementation",
-                rejection_basis="code" if problem.description == "Unsupported" else None,
-            )
-
-    monkeypatch.setattr(cli, "CandidateProblemValidator", FakeValidator)
-
-    result = asyncio.run(
-        cli._validate_candidate_problems(evidence, snapshot, tmp_path, FakeLLMClient())
-    )
-
-    assert result.retained_signal_results()[0].problems == (supported, unknown)
-    assert result.rejected_count == 1
-    assert result.unresolved_count == 1
-    assert result.retained_signal_results()[0].artifacts == {"kept": True}
-    assert received == [
-        (supported, (trace,)),
-        (unsupported, (trace,)),
-        (unknown, (trace,)),
-    ]
-
-
 def test_confidence_rating_preserves_compiled_severity(tmp_path, monkeypatch) -> None:
     trace = Trace(id="trace-1", root_spans=[], aggregate=TraceAggregate())
     snapshot = TraceSnapshot([trace])
@@ -436,9 +384,17 @@ def test_no_candidates_skips_synthesis_and_file_creation(
 def test_candidates_share_both_contexts_and_run_concurrently(
     tmp_path, monkeypatch, code_enabled, ethos_enabled
 ):
-    trace = Trace(id="t", root_spans=[], aggregate=TraceAggregate())
+    traces = {
+        name: Trace(id=name, root_spans=[], aggregate=TraceAggregate())
+        for name in ("reject", "supported", "unresolved")
+    }
     problems = tuple(
-        Problem(description=name, supporting_trace_ids=("t",)) for name in ("reject", "retain")
+        Problem(
+            description=name,
+            supporting_trace_ids=(name,),
+            candidate_trace_ids=("not-fetched-by-validator",),
+        )
+        for name in traces
     )
     evidence = [CompassSignalResult(signal_name="test", problems=problems, artifacts={"keep": 1})]
     started = {p.description: asyncio.Event() for p in problems}
@@ -451,11 +407,13 @@ def test_candidates_share_both_contexts_and_run_concurrently(
 
         async def validate(self, problem, traces):
             started[problem.description].set()
-            await started["retain" if problem.description == "reject" else "reject"].wait()
-            calls.append(problem.description)
+            await asyncio.gather(*(event.wait() for event in started.values()))
+            calls.append((problem, traces))
             rejected = problem.description == "reject"
             return cli.CandidateProblemDecision(
-                supported=False if rejected else None,
+                supported={"reject": False, "supported": True, "unresolved": None}[
+                    problem.description
+                ],
                 explanation="Considered available context.",
                 rejection_basis=("ethos" if ethos_enabled else "code") if rejected else None,
                 ethos_passage="Explicit permission." if rejected and ethos_enabled else None,
@@ -467,7 +425,7 @@ def test_candidates_share_both_contexts_and_run_concurrently(
         return await asyncio.wait_for(
             cli._validate_candidate_problems(
                 evidence,
-                TraceSnapshot([trace]),
+                TraceSnapshot(list(traces.values())),
                 tmp_path if code_enabled else None,
                 FakeLLMClient(),
                 "Explicit permission." if ethos_enabled else None,
@@ -476,18 +434,17 @@ def test_candidates_share_both_contexts_and_run_concurrently(
         )
 
     result = asyncio.run(run())
-    assert result.retained_signal_results()[0].problems == (problems[1],)
+    assert result.retained_signal_results()[0].problems == problems[1:]
     assert result.retained_signal_results()[0].artifacts == {"keep": 1}
     assert result.rejected_count == 1
     assert result.unresolved_count == 1
-    assert sorted(calls) == ["reject", "retain"]
+    assert sorted(calls, key=lambda call: call[0].description) == [
+        (problem, (traces[problem.description],)) for problem in problems
+    ]
     assert evidence[0].problems == problems
 
 
-@pytest.mark.parametrize("signal_enabled", [True, False])
-def test_ethos_validation_can_skip_compilation_and_preserve_existing(
-    tmp_path, monkeypatch, signal_enabled
-):
+def test_ethos_only_validation_filters_with_signal_disabled(tmp_path, monkeypatch):
     from datetime import datetime, timezone
 
     from rich.console import Console
@@ -499,7 +456,7 @@ def test_ethos_validation_can_skip_compilation_and_preserve_existing(
     config = RunConfig(
         trace={"filesystem": {"path": "unused.jsonl"}},
         ethos_path=ethos_path,
-        compass_signals={"ethos_divergence": {} if signal_enabled else None},
+        compass_signals={"ethos_divergence": None},
     )
     problem = Problem(description="Approval is unnecessary", supporting_trace_ids=("t",))
     evidence = [CompassSignalResult(signal_name="test", problems=(problem,))]

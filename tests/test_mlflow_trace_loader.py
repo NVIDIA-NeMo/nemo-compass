@@ -580,3 +580,24 @@ def test_live_source_links_use_http_tracking_ui_only(uri):
         )
     else:
         assert normalized.source_url is None
+
+
+def test_tool_results_follow_mlflow_status():
+    loader = MLflowFileTraceLoader(MLflowFileTraceConfig(path=MLFLOW_TRACE_FIXTURE, max_traces=10))
+    tools = 0
+    for trace in loader.load():
+        pending = list(trace.root_spans)
+        while pending:
+            span = pending.pop()
+            pending.extend(span.children)
+            if span.kind is not SpanKind.TOOL:
+                continue
+            tools += 1
+            assert span.tool_call is not None
+            assert span.tool_call.results is not UNSET
+            assert len(span.tool_call.results) == span.tool_call.result_count
+            status = span.attributes["status"]
+            for result in span.tool_call.results:
+                assert result.content == span.output
+                assert result.is_error is (True if status == "ERROR" else None)
+    assert tools

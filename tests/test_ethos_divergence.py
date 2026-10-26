@@ -143,7 +143,9 @@ def test_invalid_ethos_path_has_actionable_cli_error(tmp_path, capsys, is_direct
     assert "Traceback" not in captured.err
 
 
-def test_no_ethos_path_skips_default_detector(monkeypatch):
+def test_no_ethos_path_skips_default_detector(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
     async def unexpected(*args, **kwargs):
         pytest.fail("Detector must not run without ETHOS.md")
 
@@ -167,6 +169,7 @@ def test_no_ethos_path_skips_default_detector(monkeypatch):
 def test_explicit_ethos_without_path_fails_before_loading(tmp_path, monkeypatch, capsys, selection):
     from unittest.mock import Mock
 
+    monkeypatch.chdir(tmp_path)
     config = tmp_path / "config.yaml"
     config.write_text(
         "trace:\n  filesystem:\n    path: unused.jsonl\ncompass_signals:\n  ethos_divergence: "
@@ -183,7 +186,8 @@ def test_explicit_ethos_without_path_fails_before_loading(tmp_path, monkeypatch,
     assert "Traceback" not in captured.err
 
 
-def test_explicit_ethos_cli_without_path_fails():
+def test_explicit_ethos_cli_without_path_fails(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     with pytest.raises(cli.SetupError, match="explicitly enabled"):
         cli.get_config(
             ["--trace.filesystem.path", "unused.jsonl", "--compass-signals.ethos-divergence", "{}"]
@@ -191,10 +195,11 @@ def test_explicit_ethos_cli_without_path_fails():
 
 
 @pytest.mark.parametrize("disabled", [False, True])
-def test_default_ethos_warning_only_when_skipped(monkeypatch, capsys, disabled):
+def test_default_ethos_warning_only_when_skipped(tmp_path, monkeypatch, capsys, disabled):
     from contextlib import nullcontext
     from unittest.mock import AsyncMock, Mock
 
+    monkeypatch.chdir(tmp_path)
     config = RunConfig(
         trace={"filesystem": {"path": "unused.jsonl"}},
         compass_signals={"ethos_divergence": False} if disabled else {},
