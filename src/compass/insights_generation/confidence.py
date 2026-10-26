@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 
 from nooa import Agent, no_trace, strategy
@@ -36,7 +35,7 @@ def _trace_context(supporting_traces: tuple[Trace, ...]) -> str:
     )
 
 
-class _Investigation(BaseModel):
+class _Confidence(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     confidence: Rating
@@ -69,8 +68,7 @@ class _ConfidenceAgent(Agent):
         self,
         insight: Insight,
         supporting_traces: str,
-        first_observed_at: datetime | None,
-    ) -> _Investigation:  # ty: ignore[empty-body] -- Nooa implements the ellipsis method.
+    ) -> _Confidence:  # ty: ignore[empty-body] -- Nooa implements the ellipsis method.
         """Score the provided insight on confidence. The insight is derived from the
         agent's runtime traces.
 
@@ -98,11 +96,11 @@ class _ConfidenceAgent(Agent):
         return_result when done.
 
         When self.repository_history is available, call git_history for the most relevant
-        source path after inspecting current code. Pass first_observed_at to bound the
-        search. Return one or two repository_evidence items, using a third only when it
-        adds materially distinct evidence. Each item must use a full SHA returned by the
-        tool and resolution=resolved, partial, or unresolved based on whether that commit
-        fixes the insight. Write evidence_reason in an ASD-STE100-inspired style:
+        source path after inspecting current code. Return one or two repository_evidence
+        items, using a third only when it adds materially distinct evidence. Each item must
+        use a full SHA returned by the tool and resolution=resolved, partial, or unresolved
+        based on whether that commit fixes the insight. Write evidence_reason in an
+        ASD-STE100-inspired style:
         - Use one to three concise sentences. Aim for about 300 characters when useful;
           clarity is more important than a fixed length.
         - Use active voice and connect related facts naturally.
@@ -114,19 +112,6 @@ class _ConfidenceAgent(Agent):
         verifies every commit; never invent a SHA.
         """
         ...
-
-
-def _earliest_observed_at(supporting_traces: tuple[Trace, ...]) -> datetime | None:
-    timestamps = []
-    pending = [span for trace in supporting_traces for span in trace.root_spans]
-    while pending:
-        span = pending.pop()
-        pending.extend(span.children)
-        if span.start_time is not None:
-            timestamps.append(span.start_time)
-        elif span.end_time is not None:
-            timestamps.append(span.end_time)
-    return min(timestamps, default=None)
 
 
 class InsightConfidence:
@@ -149,14 +134,9 @@ class InsightConfidence:
         self, insight: Insight, supporting_traces: tuple[Trace, ...]
     ) -> InsightReview:
         # One agent per call: concurrent ratings must not share a REPL session.
-        observed_at = _earliest_observed_at(supporting_traces)
         agent = _ConfidenceAgent(self._codebase, self._llm, self._repository)
         try:
-            result = await agent.rate(
-                insight,
-                _trace_context(supporting_traces),
-                observed_at,
-            )
+            result = await agent.rate(insight, _trace_context(supporting_traces))
         except GenerationAborted:
             raise
         except GenerationError:

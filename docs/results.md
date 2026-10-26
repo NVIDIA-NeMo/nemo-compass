@@ -122,12 +122,8 @@ confidence review updates confidence without changing severity.
 
 `repository_evidence` is included when
 [`repository_history`](configuration.md#repository-history) is enabled and Git inspection
-succeeds. It contains one or two related commits, or at most three when a third adds distinct
-evidence. Each item has a verified full commit SHA, a concise explanation of why it is related,
-in `evidence_reason`, and whether it resolves, partially resolves, or does not resolve the
-insight. The reason typically uses one to three direct, ASD-STE100-inspired sentences and aims
-for approximately 300 characters when that improves clarity. A commit message alone does not
-prove relevance or resolution.
+succeeds. It contains up to three verified commits, each with an `evidence_reason` and a
+`resolution` of `resolved`, `partial`, or `unresolved`.
 
 `updated_date` is a UTC timestamp set when an insight is created or gains a trace it
 didn't already have. It is omitted until that first happens, and an insight that gains

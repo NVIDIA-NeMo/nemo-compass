@@ -8,7 +8,6 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 from threading import Lock
 from typing import Annotated, Literal
@@ -20,7 +19,6 @@ from compass.insight import CommitEvidence
 
 _COMMAND_TIMEOUT = 2
 _FETCH_TIMEOUT = 5
-_LOOKBACK_DAYS = 730
 _MAX_OUTPUT_BYTES = 100_000
 _MAX_COMMITS = 20
 _SHA = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
@@ -155,10 +153,6 @@ class GitHistory(Skill):
             str,
             spec(description="Optional literal text whose additions or removals are relevant"),
         ] = "",
-        observed_at: Annotated[
-            datetime | None,
-            spec(description="Earliest supporting trace timestamp, when available"),
-        ] = None,
     ) -> str:
         """Inspect bounded commits and patches for one relevant source path."""
 
@@ -171,9 +165,6 @@ class GitHistory(Skill):
             "--patch",
             "--unified=3",
         ]
-        if observed_at is not None:
-            start = observed_at - timedelta(days=_LOOKBACK_DAYS)
-            args.append(f"--since={start.isoformat()}")
         if query:
             args.extend(["-S", query])
         args.extend(["--", self._path(path)])

@@ -96,7 +96,7 @@ def test_repository_investigation_shares_confidence_model_call(tmp_path) -> None
     captured = {}
 
     class FakeHistory:
-        def git_history(self, path, query="", observed_at=None):
+        def git_history(self, path, query=""):
             captured["path"] = path
             return f"commit {sha}"
 

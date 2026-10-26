@@ -3,7 +3,6 @@
 
 import os
 import subprocess
-from datetime import datetime, timezone
 from pathlib import Path
 
 from compass.insight import CommitEvidence
@@ -58,10 +57,7 @@ def test_refresh_finds_remote_commit_without_changing_checkout(tmp_path) -> None
     history = GitHistory(checkout)
 
     assert history.refresh_remote() is True
-    context = history.git_history(
-        "agent.py",
-        observed_at=datetime(2025, 1, 2, tzinfo=timezone.utc),
-    )
+    context = history.git_history("agent.py")
 
     assert fixed in context
     assert "upstream=behind" in context
