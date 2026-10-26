@@ -11,12 +11,25 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, TypeAdapter
+from pydantic import AliasChoices, BaseModel, Field, TypeAdapter
 
 from compass.traces import TraceSnapshot
 from trace_ingest.source_links import SourceURL
 
 Rating = Literal["low", "med", "high"]
+Resolution = Literal["resolved", "partial", "unresolved"]
+
+
+class CommitEvidence(BaseModel):
+    """One verified Git commit related to an insight."""
+
+    commit: str = Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+    evidence_reason: str = Field(
+        min_length=1,
+        validation_alias=AliasChoices("evidence_reason", "why"),
+        description="A concise explanation of how the commit relates to the insight.",
+    )
+    resolution: Resolution
 
 
 class SpanEvidence(BaseModel):
@@ -65,6 +78,12 @@ class Insight(BaseModel):
         min_length=1,
         exclude_if=lambda value: value is None,
         description="Observed consequence that supports the severity rating, in one short sentence.",
+    )
+    repository_evidence: list[CommitEvidence] = Field(
+        default_factory=list,
+        max_length=3,
+        exclude_if=lambda value: not value,
+        description="Up to three verified commits related to this insight.",
     )
 
 
@@ -122,4 +141,9 @@ def load_insights(path: Path) -> list[Insight]:
     return _INSIGHTS_ADAPTER.validate_python(payload)
 
 
-__all__ = ["Insight", "load_insights", "resolve_trace_links"]
+__all__ = [
+    "CommitEvidence",
+    "Insight",
+    "load_insights",
+    "resolve_trace_links",
+]

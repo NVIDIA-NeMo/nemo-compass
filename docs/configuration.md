@@ -20,6 +20,7 @@ in the environment or `.env`.
 | `model`, `api_base`, `max_tokens` | [Inference settings](model-access.md#choose-a-model). |
 | `compass_signals` | [Compass Signals and their prerequisites](compass-signals.md). All five are enabled by default. |
 | `code_base` | [Local agent source](#candidate-problem-validation) to consult during candidate problem validation and confidence review. |
+| `repository_history` | Optional [remote-first Git history context](#repository-history); requires `code_base`. |
 | `existing_insights` | Previous JSON or YAML insight collection to reconcile with this run. |
 
 Relative paths resolve from the directory where you run the command.
@@ -88,6 +89,29 @@ compass --config config.yaml --code-base ../my-agent
 Validation and confidence both add source investigation calls and run by default whenever
 `code_base` is set; there is no separate flag. Severity is assigned during final compilation
 with or without `code_base`.
+
+## Repository history
+
+Repository history is off by default. Enable it to let the confidence review inspect bounded
+Git history and attach verified commit context to each insight:
+
+```yaml
+code_base: ../my-agent
+repository_history: true
+```
+
+Compass performs one narrow, noninteractive `git fetch` for the current branch before review.
+It uses the checkout's existing HTTPS credential helper or SSH configuration; it does not read,
+store, or request a separate GitHub or GitLab token. The fetch updates only the branch's
+remote-tracking ref, never the working tree, index, or current branch. Authentication, network,
+and timeout failures fall back to available local Git objects and are recorded as limitations.
+
+Broad related-history searches default to the two years before the earliest timestamp in an
+insight's supporting spans and return at most 20 commits with capped patches.
+
+Freshness compares the checked-out commit with the freshly fetched upstream when fetch succeeds.
+If the checkout is behind, Compass reports that fact; it does not update or analyze a different
+working tree.
 
 Use `compass --help-all` for every option and its default.
 Explicit CLI and YAML model settings take priority over [environment defaults](model-access.md#credentials).

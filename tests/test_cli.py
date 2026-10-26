@@ -250,6 +250,45 @@ def test_confidence_rating_preserves_compiled_severity(tmp_path, monkeypatch) ->
     assert insight.confidence is None
 
 
+def test_repository_history_refreshes_once_and_enriches_confidence(tmp_path, monkeypatch) -> None:
+    trace = Trace(id="trace-1", root_spans=[], aggregate=TraceAggregate())
+    snapshot = TraceSnapshot([trace])
+    insight = Insight(
+        name="Timeouts",
+        description="Tools time out.",
+        evidence=[{"trace_id": "trace-1"}, {"trace_id": "missing"}],
+    )
+    calls = []
+    repository = SimpleNamespace(
+        refresh_remote=Mock(side_effect=lambda: calls.append("refresh")),
+    )
+
+    class FakeRater:
+        def __init__(self, code_base_path, llm, received_repository):
+            assert code_base_path == tmp_path.resolve()
+            assert received_repository is repository
+
+        async def investigate(self, received_insight, supporting_traces):
+            calls.append((received_insight, supporting_traces))
+            return SimpleNamespace(confidence="med", repository_evidence=[])
+
+    monkeypatch.setattr(cli, "GitHistory", lambda path: repository)
+    monkeypatch.setattr(cli, "InsightConfidence", FakeRater)
+
+    result = asyncio.run(
+        cli._rate_confidence_with_code(
+            [insight],
+            snapshot,
+            tmp_path,
+            FakeLLMClient(),
+            True,
+        )
+    )
+
+    assert calls == ["refresh", (insight, (trace,))]
+    assert result[0].confidence == "med"
+
+
 @pytest.mark.parametrize("with_code_base", [False, True])
 def test_final_compilation_severity_does_not_require_code_base(
     tmp_path, monkeypatch, with_code_base

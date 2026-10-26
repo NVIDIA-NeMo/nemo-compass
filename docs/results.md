@@ -103,7 +103,8 @@ for skipped analyses and limitations.
 ## Saved output
 
 The output is a YAML list with `name`, `description`, `evidence`, and optional
-`updated_date`, `severity`, `severity_reason`, and `confidence` for each insight.
+`updated_date`, `severity`, `severity_reason`, `confidence`, and `repository_evidence`
+for each insight.
 Each insight has at least two supporting traces. Empty spans and absent URLs are omitted.
 
 `severity` describes observed consequence after recovery: `low`, `med`, or `high`.
@@ -118,6 +119,15 @@ behavior, root cause, scope, and implied remediation. It is set when
 [`code_base`](configuration.md#confidence-review-after-compilation) is configured, is `low`, `med`, or `high`,
 and is omitted otherwise. Existing insights retain their saved ratings during compilation;
 confidence review updates confidence without changing severity.
+
+`repository_evidence` is included when
+[`repository_history`](configuration.md#repository-history) is enabled and Git inspection
+succeeds. It contains one or two related commits, or at most three when a third adds distinct
+evidence. Each item has a verified full commit SHA, a concise explanation of why it is related,
+in `evidence_reason`, and whether it resolves, partially resolves, or does not resolve the
+insight. The reason typically uses one to three direct, ASD-STE100-inspired sentences and aims
+for approximately 300 characters when that improves clarity. A commit message alone does not
+prove relevance or resolution.
 
 `updated_date` is a UTC timestamp set when an insight is created or gains a trace it
 didn't already have. It is omitted until that first happens, and an insight that gains

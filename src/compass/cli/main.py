@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import warnings
 from argparse import SUPPRESS, Action, ArgumentParser
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
@@ -51,6 +52,7 @@ from compass.insights_generation.config import (
 )
 from compass.insights_generation.defaults import DEFAULT_MAX_TOKENS, DEFAULT_MODEL
 from compass.insights_generation.insight_compilation import InsightCompilation
+from compass.insights_generation.repository_history import GitHistory
 from compass.insights_generation.validation import (
     CandidateProblemDecision,
     CandidateProblemValidationResult,
@@ -320,13 +322,30 @@ async def _rate_confidence_with_code(
     snapshot: TraceSnapshot,
     code_base_path: Path,
     llm: UnifiedLLM,
+    repository_history: bool = False,
 ) -> list[Insight]:
     """Rate each insight's confidence against the supplied codebase."""
 
     code_base_path = code_base_path.expanduser().resolve()
     if not code_base_path.is_dir():
         raise ValueError(f"code_base must be an existing directory: {code_base_path}")
-    rater = InsightConfidence(code_base_path, llm)
+    repository = None
+    if repository_history:
+        try:
+            repository = await asyncio.to_thread(GitHistory, code_base_path)
+            await asyncio.to_thread(repository.refresh_remote)
+        except ValueError as error:
+            warnings.warn(
+                f"Repository history is unavailable: {error}. "
+                "Confidence review will continue without commit evidence.",
+                stacklevel=2,
+            )
+    rater = (
+        InsightConfidence(code_base_path, llm, repository)
+        if repository_history
+        else InsightConfidence(code_base_path, llm)
+    )
+    investigation_slots = asyncio.Semaphore(4 if repository_history else max(1, len(insights)))
 
     def supporting_trace(ref: str) -> Trace | None:
         try:
@@ -340,10 +359,20 @@ async def _rate_confidence_with_code(
             for trace in (supporting_trace(item.trace_id) for item in insight.evidence)
             if trace is not None
         )
-        with telemetry.insight_confidence(insight, code_base_path) as record:
-            rating = await rater.rate(insight, supporting_traces)
-            telemetry.record_rating(record, insight, rating)
-            return insight.model_copy(update={"confidence": rating})
+        async with investigation_slots:
+            with telemetry.insight_confidence(insight, code_base_path) as record:
+                if not repository_history:
+                    rating = await rater.rate(insight, supporting_traces)
+                    telemetry.record_rating(record, insight, rating)
+                    return insight.model_copy(update={"confidence": rating})
+                review = await rater.investigate(insight, supporting_traces)
+                telemetry.record_rating(record, insight, review.confidence)
+                return insight.model_copy(
+                    update={
+                        "confidence": review.confidence,
+                        "repository_evidence": review.repository_evidence,
+                    }
+                )
 
     async with asyncio.TaskGroup() as group:
         tasks = [group.create_task(rate_insight(insight)) for insight in insights]
