@@ -136,7 +136,7 @@ class LiteLLMEmbeddingConfig(BaseModel):
     api_key_env: str | None = Field(default=None, description="API key environment variable")
     batch_size: int = Field(default=64, ge=1, description="Maximum messages per request")
     max_concurrency: int = Field(
-        default=8, ge=1, le=32, description="Maximum concurrent embedding requests"
+        default=4, ge=1, le=32, description="Maximum concurrent embedding requests"
     )
     max_retries: int = Field(
         default=3, ge=0, le=10, description="Provider-managed retries per failed embedding batch"
