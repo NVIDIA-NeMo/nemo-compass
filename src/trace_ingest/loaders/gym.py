@@ -22,9 +22,9 @@ Responses shape instead: a rollout envelope (``responses_create_params`` plus
   there and stay in the raw record. With neither ``input`` nor
   ``instructions`` recorded, ``input`` is UNSET; a recorded empty list stays
   ``[]``. ``output`` is the text of the last assistant message in the
-  generated output (``""`` when that text is empty), else UNSET. Tool
-  definitions come from ``responses_create_params.tools``, else
-  ``response.tools``; an empty list is kept as an explicit declaration.
+  generated output, refusal text included (``""`` when that text is empty),
+  else UNSET. Tool definitions come from ``responses_create_params.tools``,
+  else ``response.tools``; an empty list is kept as an explicit declaration.
 - One LLM span for the recorded response: ``model`` from ``response.model``
   (else the request model), ``output`` the response output items, and token
   counts read from ``usage`` by the shared Responses usage reader; each count
@@ -63,7 +63,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import cached_property
@@ -240,7 +240,7 @@ def _conversation_tools(
         ):
             raise GymTraceLoadError("unsupported Gym conversation item; add an explicit mapping")
         if item.get("role") == "user":
-            user = _text(item.get("content"), ("input_text", "text"))
+            user = _text(item.get("content"), _USER_TEXT)
         if item.get("type") == "function_call":
             if item.get("namespace") is not None:
                 raise GymTraceLoadError("namespaced Gym functions require an explicit name mapping")
@@ -283,16 +283,25 @@ def _conversation_tools(
     return calls
 
 
-def _text(content: object, part_types: tuple[str, ...]) -> str:
-    """Return string content unchanged, else join text parts of ``part_types``."""
+_USER_TEXT = {"input_text": "text", "text": "text"}
+_ASSISTANT_TEXT = {"output_text": "text", "text": "text", "refusal": "refusal"}
+
+
+def _text(content: object, fields: Mapping[str, str]) -> str:
+    """Return string content unchanged, else join the parts whose type ``fields`` lists.
+
+    ``fields`` maps a part type to the key holding its text.
+    """
 
     if isinstance(content, str):
         return content
-    return "\n".join(
-        part["text"]
-        for part in _rows(content)
-        if part.get("type") in part_types and isinstance(part.get("text"), str)
-    )
+    texts = []
+    for part in _rows(content):
+        kind = part.get("type")
+        text = part.get(fields[kind]) if isinstance(kind, str) and kind in fields else None
+        if isinstance(text, str):
+            texts.append(text)
+    return "\n".join(texts)
 
 
 def _model_owners(
@@ -419,9 +428,9 @@ def _normalize_responses(record: dict[str, Any], raw: bytes) -> Trace:
         for i, item in enumerate(incoming)
     ]
     offset = len(incoming) if echoed else 0
+    output_path = "$.response.output" if shape == "rollout_envelope" else "$.output"
     items += [
-        (item, {"item_path": f"$.response.output[{offset + i}]"})
-        for i, item in enumerate(generated)
+        (item, {"item_path": f"{output_path}[{offset + i}]"}) for i, item in enumerate(generated)
     ]
     tools = _conversation_tools(items, "gym/response", raw_unparsed_arguments=True)
 
@@ -430,7 +439,7 @@ def _normalize_responses(record: dict[str, Any], raw: bytes) -> Trace:
         root_input.insert(0, {"role": "system", "content": instructions})
     final = next(
         (
-            _text(item.get("content"), ("output_text", "text"))
+            _text(item.get("content"), _ASSISTANT_TEXT)
             for item in reversed(generated)
             if item.get("type", "message") == "message" and item.get("role") == "assistant"
         ),

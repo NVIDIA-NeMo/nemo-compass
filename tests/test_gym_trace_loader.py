@@ -561,6 +561,10 @@ def test_standalone_responses_object_and_null_attachment(tmp_path):
     assert "logical_case_id" not in trace.attributes
     assert root.input is UNSET and root.output == "14 bolts."
     assert root.children[0].input is UNSET
+    # A standalone response has no ``response`` wrapper; paths point into the record itself.
+    paired = root.children[1]
+    assert paired.attributes["gym"]["item_path"] == "$.output[1]"
+    assert paired.attributes["gym_result"]["item_path"] == "$.output[3]"
     assert tool_catalog(trace) == {"lookup": {}}
     assert_result_counts(trace)
     record = envelope()
@@ -578,6 +582,15 @@ def test_responses_keep_missing_and_explicitly_empty_values_apart(tmp_path):
     assert root.input == [] and root.output == ""
     # Missing cache details leave only the cache counts unknown.
     assert root.children[0].token_counts == TokenCounts(input_total=900, output_tokens=5)
+
+
+def test_responses_final_output_keeps_refusal_text(tmp_path):
+    source = envelope()
+    source["response"]["output"][-1]["content"] = [
+        {"type": "refusal", "refusal": "I cannot help with that."}
+    ]
+    (root,) = next(iter(loader_for(tmp_path, source).load())).root_spans
+    assert root.output == "I cannot help with that."
 
 
 def test_results_pair_across_request_input_and_echoed_prefix(tmp_path):
