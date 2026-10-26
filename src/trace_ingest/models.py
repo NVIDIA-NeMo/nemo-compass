@@ -136,11 +136,49 @@ class ToolDefinition(_TraceModel):
 
 
 class TokenCounts(_TraceModel):
-    """Non-negative token counts using the source's authoritative accounting."""
+    """Non-negative token counts as the source records them.
 
-    input_tokens: int = Field(ge=0, description="Uncached input tokens.")
-    cached_input_tokens: int = Field(ge=0, description="Cached input tokens.")
-    output_tokens: int = Field(ge=0, description="Generated output tokens.")
+    Each count is copied from a source count with the same meaning, or summed from
+    the source's buckets that together make it, never derived from other counts;
+    a count the source does not record is None.
+    """
+
+    input_total: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+        description="All input tokens as the source totals them: uncached input plus cache "
+        "reads and cache writes.",
+    )
+    input_tokens: int | None = Field(
+        default=None,
+        ge=0,
+        description="Uncached input tokens; excludes cache reads and cache writes.",
+    )
+    cached_input_tokens: int | None = Field(
+        default=None, ge=0, description="Input tokens read from the cache."
+    )
+    output_tokens: int | None = Field(
+        default=None, ge=0, description="Generated output tokens, reasoning tokens included."
+    )
+    cache_write_tokens: int | None = Field(
+        default=None,
+        ge=0,
+        exclude_if=lambda value: value is None,
+        description="Input tokens written to the cache, across all TTLs.",
+    )
+    cache_writes_by_ttl: dict[int, int] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Input tokens written to the cache per TTL in seconds, as the response "
+        "reports them; may cover only some of cache_write_tokens.",
+    )
+    source: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Where the counts were read, such as nemo_relay (the provider's usage), "
+        "openinference or langfuse_sdk.",
+    )
 
 
 class Span(_TraceModel):
@@ -189,6 +227,20 @@ class Span(_TraceModel):
         default=None,
         description="Source-reported model identifier, when applicable.",
     )
+    llm_params: dict[str, JsonValue] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Top-level request parameters the source records, without the model, tools "
+        "and prompt content; a parameter not listed was not recorded, not necessarily left at "
+        "its default. Valid only for an LLM span.",
+    )
+    agent_id: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description="Source-recorded agent ID, unique within the logical case: an AGENT span's "
+        "own agent, or the agent an LLM call belongs to. Never a name shared by parallel agents.",
+    )
 
     tool_name: str | None = Field(
         default=None,
@@ -234,6 +286,8 @@ class Span(_TraceModel):
             raise ValueError("tool_call metadata requires kind=TOOL")
         if self.tool_definitions is not UNSET and self.kind not in _DECLARING_KINDS:
             raise ValueError("tool_definitions require kind=AGENT or kind=LLM")
+        if self.llm_params is not None and self.kind is not SpanKind.LLM:
+            raise ValueError("llm_params requires kind=LLM")
         return self
 
 
