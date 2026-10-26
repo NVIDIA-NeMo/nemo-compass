@@ -134,7 +134,7 @@ class LiteLLMEmbeddingConfig(BaseModel):
     model: str = Field(min_length=1, description="LiteLLM model alias for Qwen/Qwen3-Embedding-8B")
     api_base: str | None = None
     api_key_env: str | None = Field(default=None, description="API key environment variable")
-    batch_size: int = Field(default=128, ge=1, description="Maximum messages per request")
+    batch_size: int = Field(default=64, ge=1, description="Maximum messages per request")
     max_concurrency: int = Field(
         default=8, ge=1, le=32, description="Maximum concurrent embedding requests"
     )
