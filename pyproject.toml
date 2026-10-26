@@ -34,7 +34,6 @@ dependencies = [
     "python-dotenv>=1.0,<2",
     "PyYAML>=6,<7",
     "litellm>=1.55,<2",
-    "tokenizers>=0.21,<1",
     "nooa[tracing]>=0.0.10,<0.1",
     "rich>=14,<16",
     "opentelemetry-exporter-otlp-proto-http>=1.20,<2",
@@ -48,7 +47,6 @@ Repository = "https://github.com/NVIDIA-NeMo/labs-nemo-compass"
 # Trace-source SDKs are optional; telemetry uses the standard OTLP exporter.
 langsmith = ["langsmith>=0.12,<0.13"]
 mlflow = ["mlflow-skinny>=3.6,<4"]
-local-embedding = ["torch==2.13.0", "transformers==5.17.0"]
 # Query-only adapter for the Langfuse v3 and v4 APIs. The SDK remains optional
 # for users loading canonical JSONL or MLflow traces.
 langfuse = ["langfuse>=4.17,<5"]
@@ -74,15 +72,6 @@ managed = true
 # mlflow-skinny currently reaches databricks-sdk, which caps protobuf below 7.
 # Protobuf 7.35 contains the complete ParseDict recursion-depth fix.
 override-dependencies = ["protobuf>=7.35,<8"]
-
-[tool.uv.sources]
-# macOS wheels include MPS; other platforms only need CPU inference for this extra.
-torch = [{ index = "pytorch-cpu", marker = "sys_platform != 'darwin'" }]
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/compass", "src/trace_ingest"]

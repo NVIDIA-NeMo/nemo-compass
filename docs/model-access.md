@@ -98,10 +98,8 @@ Return to your [source guide](../README.md#start-here) to finish setup.
 | Model-based analysis | Trace content, evaluation signals, and candidate findings may be sent to your configured inference provider. |
 | ETHOS.md | Its contents are included in model-based analysis. |
 | Code validation | Selected source excerpts are sent to the inference provider. The validator has read-only file tools. |
-| Remote sentiment embeddings | Extracted user messages are sent to the configured embedding endpoint. |
-| Local sentiment embeddings | The embedding model runs on your machine; model and tokenizer files may download on first use. |
+| Sentiment screening | Extracted user messages are sent to the configured Decisions endpoint. Flagged conversations are investigated by the main inference model. |
 
-Remote sentiment also loads a tokenizer, which may need an initial download.
 Using local trace files still requires inference access. There is no automatic redaction
 of trace content before analysis; choose inputs and endpoints appropriate for your data.
 

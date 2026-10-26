@@ -1,36 +1,33 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Extract user messages, classify Qwen embeddings, and group complaints with NeMo OO."""
+"""Extract user messages, classify with Decisions, and group complaints with NeMo OO."""
 
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Callable
 from functools import cached_property
 
 from nooa import Agent
 from nooa.unifiedllm import UnifiedLLM
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, computed_field
+from pydantic import BaseModel, Field, TypeAdapter, computed_field
 
 from compass.compass_signals.compass_signals import CompassSignalResult
 from compass.compass_signals.issue_detector import IssueDetector
-from compass.compass_signals.user_embedding.embedding import (
-    LiteLLMEmbeddingConfig,
-    UserEmbeddingGenerator,
-    validate_embedding_dependencies,
-)
 from compass.compass_signals.user_sentiment.classifier import (
     ComplaintClassifier,
     ScreeningResult,
+    UserSentimentConfig,
 )
 from compass.traces import TraceSnapshot
 
 USER_SENTIMENT = """
 Identify explicit user anger or criticism of the agent system, its responses,
 behavior, tools, or work in the supplied user messages. Each message is screened
-independently; any complaint flags its trace. Screening scores are candidates,
-not established facts or calibrated probabilities.
+independently; any complaint flags its trace. Screening selects candidates for
+contextual review; its scores alone do not establish a complaint.
 
 Inspect every candidate's messages and surrounding conversation. Explicit anger
 counts even when directed at an external product. Polite criticism of the agent
@@ -117,47 +114,25 @@ class TraceScreeningResult(BaseModel):
         return any(r.label == "complaint" for r in self.message_results)
 
 
-def screen_user_messages(
+async def screen_user_messages(
     user_messages: dict[str, list[str]],
-    embedding_generator: UserEmbeddingGenerator,
     classifier: ComplaintClassifier,
 ) -> dict[str, TraceScreeningResult]:
     """Classify every message separately; later turns cannot clear an earlier flag."""
-    embeddings = iter(
-        embedding_generator.generate_batch(
-            [
-                text
-                for messages in user_messages.values()
-                for text in messages
-                if text[:20000].strip()
-            ]
+    results = iter(
+        await classifier.classify_batch(
+            [text for messages in user_messages.values() for text in messages if text.strip()]
         )
     )
     return {
         trace_id: TraceScreeningResult(
             message_results=[
-                classifier.classify(next(embeddings))
-                if text[:20000].strip()
-                else ScreeningResult(label="no_user_messages")
+                next(results) if text.strip() else ScreeningResult(label="no_user_messages")
                 for text in messages
             ]
         )
         for trace_id, messages in user_messages.items()
     }
-
-
-class UserSentimentConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    local_embeddings: bool = Field(
-        default=False,
-        description="Run the embedding model on your machine. Downloads model weights on first use.",
-    )
-    device: str | None = Field(default=None, description="PyTorch device; auto-detected by default")
-    litellm: LiteLLMEmbeddingConfig | None = Field(
-        default=None,
-        description="Use remote Qwen3-Embedding-8B embeddings instead of local weights",
-    )
 
 
 class UserSentimentCompassSignal:
@@ -168,19 +143,15 @@ class UserSentimentCompassSignal:
         self.llm = llm
 
     def check_prerequisites(self, snapshot: TraceSnapshot) -> str | None:
-        if self.config.litellm is None:
-            if not self.config.local_embeddings:
-                return "No embedding backend configured"
-            validate_embedding_dependencies()
+        if self.config.api_key_env is None:
+            return "No Decisions API key configured"
+        if not os.environ.get(self.config.api_key_env, "").strip():
+            raise ValueError(f"Missing Decisions API key: {self.config.api_key_env}")
         return None
 
     @cached_property
-    def embedding_generator(self) -> UserEmbeddingGenerator:
-        return UserEmbeddingGenerator(self.config.device, self.config.litellm)
-
-    @cached_property
     def classifier(self) -> ComplaintClassifier:
-        return ComplaintClassifier(self.embedding_generator.projection)
+        return ComplaintClassifier(self.config)
 
     async def analyze(self, snapshot: TraceSnapshot) -> CompassSignalResult:
         async with self.llm:
@@ -195,9 +166,7 @@ class UserSentimentCompassSignal:
         if messages.keys() != snapshot.traces_by_id.keys():
             raise ValueError("User message extraction must cover exactly the supplied trace IDs")
         screening = (
-            await asyncio.to_thread(
-                lambda: screen_user_messages(messages, self.embedding_generator, self.classifier)
-            )
+            await screen_user_messages(messages, self.classifier)
             if any(messages.values())
             else {trace_id: TraceScreeningResult() for trace_id in messages}
         )
@@ -234,10 +203,7 @@ class UserSentimentCompassSignal:
                     "traces_with_user_messages": sum(bool(value) for value in messages.values()),
                     "candidate_traces": len(candidates),
                 },
-                "classifier": {
-                    **self.embedding_generator.projection.metadata,
-                    **self.classifier.metadata,
-                }
+                "classifier": self.classifier.metadata
                 if candidates or any(messages.values())
                 else None,
             },

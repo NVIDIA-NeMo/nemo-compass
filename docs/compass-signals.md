@@ -6,7 +6,7 @@
 All five Compass Signals are enabled by default. Each runs when its prerequisites are available.
 
 - [Ethos divergence](#ethos-divergence): supply your agent’s business rules.
-- [User sentiment](#user-sentiment): configure embeddings for complaint detection.
+- [User sentiment](#user-sentiment): configure Decisions API access for complaint detection.
 - [Grader failures](#grader-failures): include recorded scores or feedback.
 - [Tool issues](#tool-issues): preserve tool calls and results.
 - [Anomalies and patterns](#anomalies-and-patterns): analyze behavior across traces.
@@ -26,47 +26,42 @@ ethos_path: path/to/ETHOS.md
 
 ## User sentiment
 
-This Compass Signal looks for recurring user complaints. It needs recorded user messages and
-an embedding backend serving **Qwen/Qwen3-Embedding-8B with 4,096-dimensional output**.
-The bundled classifier was trained for this model; other embedding models are not supported.
-Local embeddings are off by default. Without a remote endpoint or local embeddings enabled,
-this Compass Signal is skipped.
+This Compass Signal looks for recurring user complaints. Each recorded human message is
+classified through the [OpenAI Decisions API](https://developers.openai.com/api/reference/resources/decisions/methods/create)
+as `complaint` or `no_complaint`. Any complaint sends its trace to contextual review
+by your main inference model. Messages without text are not sent for classification.
 
-For a remote endpoint, add:
-
-```yaml
-compass_signals:
-  user_sentiment:
-    litellm:
-      model: openai/your-qwen3-embedding-8b-alias
-      api_base: https://embeddings.example.com/v1
-      api_key_env: EMBEDDING_API_KEY
-```
-
-Set `EMBEDDING_API_KEY` in your [environment file](model-access.md#credentials).
-Replace the model alias and endpoint with your provider’s values.
-
-To run the 8B embedding model locally, add `local-embedding` to the extras in your
-install command. Keep your source extra too. For LangSmith:
-
-```bash
-uv tool install 'nemo-compass[langsmith,local-embedding]'
-compass --config config.yaml --compass-signals.user-sentiment.local-embeddings
-```
-
-Or enable local embeddings in your configuration:
+Configure a Decisions-capable model and credentials to enable screening:
 
 ```yaml
 compass_signals:
   user_sentiment:
-    local_embeddings: true
+    model: gpt-6-luna
+    api_base: https://api.openai.com/v1
+    api_key_env: DECISIONS_API_KEY
+    concurrency: 8
+    timeout_seconds: 60
+    max_retries: 2
 ```
 
-Local inference downloads model weights and needs enough memory to run them.
-Hardware is selected automatically by default. A configured `litellm` endpoint takes precedence.
+Set `DECISIONS_API_KEY` in your [environment file](model-access.md#credentials).
+For a compatible gateway, use its API base and exact model identifier. This client calls
+`/decisions` directly, so do not add a LiteLLM provider prefix to the model identifier.
+Chat-completions support alone does not imply Decisions support.
 
-Both local and remote embeddings still use your main inference model to investigate
-complaints. See [data access](model-access.md#where-data-goes).
+Without `api_key_env`, this signal is skipped. A configured but missing key is an error.
+Requests run concurrently up to `concurrency`; transient failures are retried up to
+`max_retries` times. Persistent errors and invalid responses fail the signal instead of
+being counted as neutral feedback. Messages are sent in full, so provider input limits apply.
+
+Screening preserves the categories used by the previous classifier. Explicit anger and
+criticism of the agent count as complaints; ordinary requests and pasted errors alone do not.
+The selected category determines routing. Provider probabilities are retained for inspection;
+evaluate their calibration and classification quality on your own data before relying on them.
+
+Migration: replace the previous `litellm`, `local_embeddings`, and `device` settings with
+the configuration above. Local embedding inference and the `local-embedding` extra have
+been removed. See [data access](model-access.md#where-data-goes).
 
 ## Grader failures
 

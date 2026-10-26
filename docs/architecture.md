@@ -84,32 +84,30 @@ preserve later messages, and account for accumulated conversation history. Gener
 evaluator inputs can also appear under a `user` role, so extraction must establish authorship from
 the source structure. Runtime checks require the result to cover exactly the supplied trace IDs.
 
-Each message is screened independently using Qwen3-Embedding-8B, PCA256, four-bit MSE TurboQuant
-compression, and logistic regression. The pipeline projects normalized 4,096-dimensional embeddings
-into 256 dimensions and stores each compressed vector in 132 bytes. The classifier reconstructs
-those features before scoring them. Any flagged message routes its trace to contextual review,
-including when later messages are neutral. Embeddings can run locally or through a remote endpoint;
-projection and classification run locally. The model, input convention, projection, and classifier
-must remain compatible, so a replacement embedding model requires an appropriately trained head and
-validation.
+Each message is screened independently through the OpenAI Decisions API, which selects
+`complaint` or `no_complaint` from a fixed rubric. Any complaint routes its trace to
+contextual review, including when later messages are neutral. Requests use bounded concurrency
+and retry transient failures; invalid responses fail analysis. No embedding model or local
+classifier weights are required. Provider probabilities are retained with the selected category.
 
-![User-sentiment design: actual human turns pass through embedding and compression, local complaint screening, and contextual review; recurring complaints retain exact trace IDs and user quotations.](assets/architecture/sentiment.png)
+```mermaid
+flowchart LR
+  U[Actual user messages] --> C[Decisions: classify each message]
+  C --> R[Review flagged conversations]
+  R --> P[Recurring problems with trace IDs and quotations]
+```
 
 An LLM then inspects the flagged conversations and groups complaints by their supported reasons.
 Review instructions require separate occurrences in at least two distinct traces and representative
 verbatim quotations. They also require identifying whether criticism concerns the agent or an
-external subject and distinguishing the user’s stated reason from an inferred cause. Classifier
-scores are uncalibrated and used to select conversations for this review.
+external subject and distinguishing the user’s stated reason from an inferred cause. The selected
+category determines routing; provider probabilities need validation against the target trace population.
 
-Screening reduces the set of conversations sent for detailed review. The separate representation and
-classification components also allow partners to train and evaluate additional heads for other
-tasks. Running the current signal requires preserved human messages and a compatible embedding
-backend; its results report coverage for traces lacking user text. The [signal
-implementation](../src/compass/compass_signals/user_sentiment/signal.py) handles extraction
-and review, with the [embedding
-pipeline](../src/compass/compass_signals/user_embedding/embedding.py) and
-[classifier](../src/compass/compass_signals/user_sentiment/classifier.py) implemented
-separately.
+Screening reduces the set of conversations sent for detailed review. Running the signal requires
+preserved human messages and a Decisions-capable endpoint; its results report coverage for traces
+lacking user text. The [signal implementation](../src/compass/compass_signals/user_sentiment/signal.py)
+handles extraction and review. The [classifier](../src/compass/compass_signals/user_sentiment/classifier.py)
+defines the rubric, request handling, and response validation.
 
 ## Grader failures
 

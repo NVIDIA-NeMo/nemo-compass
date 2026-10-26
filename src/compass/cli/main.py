@@ -120,9 +120,9 @@ def _check_environment(config: RunConfig) -> str:
                 os.environ.get("LANGFUSE_BASE_URL")
             )
     sentiment = config.compass_signals.user_sentiment
-    if sentiment is not None and sentiment.litellm is not None and sentiment.litellm.api_key_env:
-        name = sentiment.litellm.api_key_env
-        hint = "API key named by compass_signals.user_sentiment.litellm.api_key_env"
+    if sentiment is not None and sentiment.api_key_env:
+        name = sentiment.api_key_env
+        hint = "API key named by compass_signals.user_sentiment.api_key_env"
         required[f"{name} — {hint}"] = os.environ.get(name)
 
     missing = [f"  {label}" for label, value in required.items() if not (value or "").strip()]

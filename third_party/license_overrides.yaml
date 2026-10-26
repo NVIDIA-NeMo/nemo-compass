@@ -13,16 +13,11 @@ overrides:
   gitdb: BSD-3-Clause
   jinja2: BSD-3-Clause
   mlflow-skinny: Apache-2.0
-  mpmath: BSD-3-Clause
   numpy: BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0
   packaging: Apache-2.0 OR BSD-2-Clause
   orjson: MPL-2.0 AND (Apache-2.0 OR MIT)
   pyasn1-modules: BSD-3-Clause
   python-dateutil: Apache-2.0
-  safetensors: Apache-2.0
-  shellingham: ISC
-  sympy: BSD-3-Clause
-  torch: Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND BSD-2-Clause AND BSD-3-Clause AND BSL-1.0 AND MIT
   scipy: BSD-3-Clause
   sqlparse: BSD-3-Clause
   tiktoken: MIT
