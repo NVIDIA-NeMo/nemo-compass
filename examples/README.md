@@ -9,7 +9,7 @@ You only need an inference API key; no trace-platform account is required.
 With [uv installed](../README.md#start-here), install the CLI from PyPI:
 
 ```bash
-uv tool install 'nemo-compass>=0.2.0'
+uv tool install nemo-compass
 ```
 
 Download the [example traces](tau_bench_traces.jsonl) and
