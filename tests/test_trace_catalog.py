@@ -38,3 +38,38 @@ def test_legacy_attribute_catalog_applies_only_without_span_declarations():
         children=[tool("t")],
     )
     assert tool_catalog(trace(declared, tool_catalog=legacy)) == {"open": None}
+
+
+def test_unknown_entries_disable_catalog_instead_of_becoming_unknown_tools():
+    from compass.compass_signals.tool_issues.signal import detect_trace, to_tool_issue_trace
+
+    source = trace(
+        Span(
+            id="a",
+            kind=SpanKind.AGENT,
+            tool_definitions=[definition("search"), ToolDefinition(raw={"type": "unrecognized"})],
+            children=[Span(id="call", kind=SpanKind.TOOL, tool_name="other", input={})],
+        )
+    )
+    assert tool_catalog(source) is None
+    assert not any(
+        item["issue_type"] == "unknown_tool" for item in detect_trace(to_tool_issue_trace(source))
+    )
+
+
+def test_boolean_schemas_reach_tool_validation():
+    from compass.compass_signals.tool_issues.signal import schema_errors, to_tool_issue_trace
+
+    source = trace(
+        Span(
+            id="a",
+            kind=SpanKind.AGENT,
+            tool_definitions=[definition("allow", True), definition("deny", False)],
+        )
+    )
+    catalog = to_tool_issue_trace(source).tool_catalog
+    assert catalog == {"allow": True, "deny": False}
+    assert schema_errors(catalog, "allow", {}) == []
+    assert [error["type"] for error in schema_errors(catalog, "deny", {})] == [
+        "json_schema_violation"
+    ]

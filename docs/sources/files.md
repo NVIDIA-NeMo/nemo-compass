@@ -42,11 +42,14 @@ and recorded evaluation signals. Omit values that were not recorded; `null` mean
 explicitly recorded null. Output links back to this file and its physical line number;
 whether the viewer jumps to that line depends on its support for URL fragments. Repeated problems need supporting evidence across multiple traces.
 
-Declare available tools as `tool_definitions` on the AGENT span that owns them, or on the LLM
-span they were offered to; TOOL spans cannot carry them. Each definition needs a `name` and the
-verbatim source item in `raw`, plus `input_schema` to enable argument checks. Record a tool's
-results in `tool_call.results`, one per result, with `is_error` only when the source recorded
-it. Files written before schema version 2 that carry `attributes.tool_catalog` still work.
+Put `tool_definitions` on the owning AGENT span or the LLM span offered those tools.
+Keep every entry in order, with its original value in `raw`. Add `name` and `input_schema`
+when understood to enable tool-schema checks. Omit an unavailable list; `[]` means the
+source explicitly recorded no tools.
+
+Record a tool's results in `tool_call.results`, one per result, with `is_error` only when the
+source recorded it. Files written before schema version 2 that carry `attributes.tool_catalog`
+still work when no span declares definitions.
 
 ## ATIF
 

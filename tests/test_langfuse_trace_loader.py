@@ -651,8 +651,8 @@ def test_loader_extracts_tool_catalog_from_supported_langfuse_input(
         ),
         pytest.param(
             [{"messages": [{"role": "user", "content": "find it"}]}],
-            None,
-            id="missing-generation-catalog",
+            {"root_only": {"type": "object"}},
+            id="agent-declaration-without-call-lists",
         ),
         pytest.param(
             [
@@ -681,7 +681,9 @@ def test_loader_extracts_tool_catalog_from_supported_langfuse_input(
         pytest.param([{"tools": []}], {}, id="empty-generation-tools"),
     ],
 )
-def test_generation_catalogs_override_root_fallback(generation_inputs, expected) -> None:
+def test_catalog_prefers_calls_without_discarding_agent_definitions(
+    generation_inputs, expected
+) -> None:
     root = observation(
         "root",
         observation_type="AGENT",
@@ -711,6 +713,15 @@ def test_generation_catalogs_override_root_fallback(generation_inputs, expected)
 
     assert "tool_catalog" not in normalized.attributes
     assert tool_catalog(normalized) == expected
+    root_span = normalized.root_spans[0]
+    assert root_span.tool_definitions is not UNSET
+    assert [entry.name for entry in root_span.tool_definitions] == ["root_only"]
+    for span, recorded in zip(root_span.children, generation_inputs, strict=True):
+        if "tools" in recorded:
+            assert span.tool_definitions is not UNSET
+            assert [entry.raw for entry in span.tool_definitions] == recorded["tools"]
+        else:
+            assert span.tool_definitions is UNSET
 
 
 def test_each_generation_carries_its_own_offered_tools() -> None:

@@ -148,7 +148,7 @@
           "description": "Call/result join metadata; valid only for a TOOL span."
         },
         "tool_definitions": {
-          "description": "Tools declared to this agent, or offered to this model call; valid only for an AGENT or LLM span.",
+          "description": "Tools listed for this agent or model call, in source order. Omitted when unknown; an empty list means the source listed no tools.",
           "items": {
             "$ref": "#/$defs/ToolDefinition"
           },
@@ -325,7 +325,7 @@
       "additionalProperties": {
         "$ref": "#/$defs/JsonValue"
       },
-      "description": "One tool the source declared as available to an agent.",
+      "description": "One recorded tool-list entry, with understood fields normalized.",
       "properties": {
         "description": {
           "anyOf": [
@@ -353,10 +353,18 @@
           "description": "Declared input JSON Schema, when recorded."
         },
         "name": {
-          "description": "Declared tool name.",
-          "minLength": 1,
-          "title": "Name",
-          "type": "string"
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The function name, or null if it could not be read from the source entry.",
+          "title": "Name"
         },
         "raw": {
           "$ref": "#/$defs/JsonValue",
@@ -377,7 +385,6 @@
         }
       },
       "required": [
-        "name",
         "raw"
       ],
       "title": "ToolDefinition",

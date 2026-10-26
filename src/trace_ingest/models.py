@@ -117,9 +117,13 @@ class ToolResult(_TraceModel):
 
 
 class ToolDefinition(_TraceModel):
-    """One tool the source declared as available to an agent."""
+    """One recorded tool-list entry, with understood fields normalized."""
 
-    name: str = Field(min_length=1, description="Declared tool name.")
+    name: str | None = Field(
+        default=None,
+        min_length=1,
+        description="The function name, or null if it could not be read from the source entry.",
+    )
     server: str | None = Field(
         default=None,
         description="Explicit source scope such as an MCP server; never inferred from the name.",
@@ -206,8 +210,8 @@ class Span(_TraceModel):
     tool_definitions: list[ToolDefinition] | UNSET = Field(
         default=UNSET,
         description=(
-            "Tools declared to this agent, or offered to this model call; valid only for an "
-            "AGENT or LLM span."
+            "Tools listed for this agent or model call, in source order. "
+            "Omitted when unknown; an empty list means the source listed no tools."
         ),
     )
 

@@ -433,7 +433,8 @@ def test_every_tool_span_records_one_result_per_count(path):
             assert span.tool_call.results[0].is_error is (True if span.error else None)
 
 
-def test_responses_create_params_tools_become_root_definitions(tmp_path):
+@pytest.mark.parametrize("empty", [False, True])
+def test_responses_create_params_tools_become_root_definitions(tmp_path, empty):
     record = rollout()
     tools = [
         {"type": "function", "name": "search", "parameters": {"type": "object"}},
@@ -441,10 +442,12 @@ def test_responses_create_params_tools_become_root_definitions(tmp_path):
         {"type": "function"},
         "not-a-tool",
     ]
+    if empty:
+        tools = []
     record["responses_create_params"] = {"tools": tools}
     trace = next(iter(loader_for(tmp_path, record).load()))
     root = trace.root_spans[0]
     assert root.kind is SpanKind.AGENT
     assert root.tool_definitions is not UNSET
-    assert [definition.raw for definition in root.tool_definitions] == tools[:2]
-    assert tool_catalog(trace) == {"search": {"type": "object"}, "open": {"type": "string"}}
+    assert [definition.raw for definition in root.tool_definitions] == tools
+    assert tool_catalog(trace) == ({} if empty else None)
