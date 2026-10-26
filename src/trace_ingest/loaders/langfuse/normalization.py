@@ -301,11 +301,11 @@ def _normalize_observation(
     if llm is not None and kind is not SpanKind.LLM:
         # Relay's full export types its LLM calls as plain spans.
         kind, subtype = SpanKind.LLM, data.type
-    definitions = (
-        _tool_definitions_from_input(observation.input)
-        if kind in (SpanKind.AGENT, SpanKind.LLM)
-        else None
-    )
+    definitions = None
+    if kind in (SpanKind.AGENT, SpanKind.LLM):
+        definitions = llm.tool_definitions if llm else None
+        if definitions is None:
+            definitions = _tool_definitions_from_input(observation.input)
     started_at = _started_at(observation)
     ended_at = _optional_datetime(observation.end_time)
     pointer: dict[str, JsonValue] = {**base_pointer, "observation_id": observation_id}
@@ -329,10 +329,9 @@ def _normalize_observation(
         cost_usd=_observation_cost(observation),
         model=model,
         token_counts=llm.token_counts if llm else None,
-        llm_tools=llm.tools if llm else None,
+        tool_definitions=definitions if definitions is not None else UNSET,
         llm_params=llm.params if llm else None,
         agent_id=nemo_relay.agent_id(data),
-        tool_definitions=definitions if definitions is not None else UNSET,
         tool_name=name if kind is SpanKind.TOOL else None,
         error=error,
         attributes={

@@ -109,22 +109,6 @@
           "description": "Top-level request parameters the source records, without the model, tools and prompt content; a parameter not listed was not recorded, not necessarily left at its default. Valid only for an LLM span.",
           "title": "Llm Params"
         },
-        "llm_tools": {
-          "anyOf": [
-            {
-              "items": {
-                "$ref": "#/$defs/JsonValue"
-              },
-              "type": "array"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Top-level tool list sent to the model, in order; valid only for an LLM span.",
-          "title": "Llm Tools"
-        },
         "model": {
           "anyOf": [
             {

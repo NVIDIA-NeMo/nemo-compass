@@ -1284,7 +1284,8 @@ def test_openinference_spans_without_relay() -> None:
         "output_tokens": 81,
         "cache_write_tokens": 0,
     }
-    assert call.llm_tools == [{"name": "Read"}]
+    assert call.tool_definitions is not UNSET
+    assert [definition.raw for definition in call.tool_definitions] == [{"name": "Read"}]
     assert call.llm_params == {"temperature": 0}
 
 
@@ -1525,9 +1526,38 @@ def test_each_layout_reaches_the_span(layout: dict) -> None:
     counts = span.token_counts
     assert (counts.model_dump(exclude_none=True) if counts else None) == layout["token_counts"]
     assert span.model == layout["model"]
-    tools = span.llm_tools
-    assert (
-        [tool["name"] for tool in tools if isinstance(tool, dict)] if tools is not None else None
-    ) == layout["tools"]
+    tools = span.tool_definitions
+    assert ([tool.name for tool in tools] if tools is not UNSET else None) == layout["tools"]
     params = span.llm_params
     assert (sorted(params) if params is not None else None) == layout["params"]
+
+
+@pytest.mark.parametrize("request_tools", [None, [], [{"name": "search", "input_schema": False}]])
+def test_request_tools_take_precedence_over_platform_input(request_tools):
+    request = {} if request_tools is None else {"tools": request_tools}
+    platform_tools = [{"name": "platform", "parameters": {"type": "object"}}]
+    llm = observation(
+        "llm",
+        observation_type="SPAN",
+        name="anthropic.messages",
+        input_value={"tools": platform_tools},
+        metadata=relay_metadata(
+            **{
+                "nemo_relay.scope_type": "llm",
+                "nemo_relay.start.data.content": json.dumps(request),
+            }
+        ),
+    )
+    normalized = _normalize_trace(provider_trace(observations=[llm]), source_pointer={})
+    (span,) = normalized.root_spans
+    assert span.kind is SpanKind.LLM
+    expected = platform_tools if request_tools is None else request_tools
+    assert span.tool_definitions is not UNSET
+    assert [entry.raw for entry in span.tool_definitions] == expected
+    assert tool_catalog(normalized) == (
+        {"platform": {"type": "object"}}
+        if request_tools is None
+        else {"search": False}
+        if request_tools
+        else {}
+    )

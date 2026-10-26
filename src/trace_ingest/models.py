@@ -227,11 +227,6 @@ class Span(_TraceModel):
         default=None,
         description="Source-reported model identifier, when applicable.",
     )
-    llm_tools: list[JsonValue] | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-        description="Top-level tool list sent to the model, in order; valid only for an LLM span.",
-    )
     llm_params: dict[str, JsonValue] | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -291,8 +286,6 @@ class Span(_TraceModel):
             raise ValueError("tool_call metadata requires kind=TOOL")
         if self.tool_definitions is not UNSET and self.kind not in _DECLARING_KINDS:
             raise ValueError("tool_definitions require kind=AGENT or kind=LLM")
-        if self.llm_tools is not None and self.kind is not SpanKind.LLM:
-            raise ValueError("llm_tools requires kind=LLM")
         if self.llm_params is not None and self.kind is not SpanKind.LLM:
             raise ValueError("llm_params requires kind=LLM")
         return self

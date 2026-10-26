@@ -29,7 +29,8 @@ from typing import Any, NamedTuple
 from pydantic import JsonValue
 
 from trace_ingest.loaders.helper.llm_span import langfuse_sdk, nemo_relay, openinference
-from trace_ingest.models import TokenCounts
+from trace_ingest.loaders.helper.tool_definitions import tool_definitions
+from trace_ingest.models import TokenCounts, ToolDefinition
 
 
 class SpanData(NamedTuple):
@@ -51,7 +52,7 @@ class LlmFields(NamedTuple):
     token_counts: TokenCounts | None
     # The model the span records; a platform may record its own.
     model: str | None
-    tools: list[JsonValue] | None
+    tool_definitions: list[ToolDefinition] | None
     params: dict[str, JsonValue] | None
 
 
@@ -82,7 +83,10 @@ def normalize(span: SpanData) -> LlmFields | None:
     if reader is None:
         return None
     return LlmFields(
-        reader.token_counts(span), reader.model(span), reader.tools(span), reader.params(span)
+        reader.token_counts(span),
+        reader.model(span),
+        tool_definitions(reader.tools(span)),
+        reader.params(span),
     )
 
 
