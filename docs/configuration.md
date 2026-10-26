@@ -20,7 +20,7 @@ in the environment or `.env`.
 | `model`, `api_base`, `max_tokens` | [Inference settings](model-access.md#choose-a-model). |
 | `compass_signals` | [Compass Signals and their prerequisites](compass-signals.md). All five are enabled by default. |
 | `code_base` | [Local agent source](#candidate-problem-validation) to consult during candidate problem validation and confidence review. |
-| `repository_history` | Optional [remote-first Git history context](#repository-history); requires `code_base`. |
+| `repository_history` | Optional [Git commit evidence](#repository-history); requires `code_base`. |
 | `existing_insights` | Previous JSON or YAML insight collection to reconcile with this run. |
 
 Relative paths resolve from the directory where you run the command.

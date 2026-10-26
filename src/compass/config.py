@@ -324,7 +324,7 @@ class RunConfig(BaseSettings):
     )
     repository_history: bool = Field(
         default=False,
-        description="Optional remote-first Git history enrichment; requires code_base",
+        description="Optional Git commit evidence for insights; requires code_base",
     )
 
     model: str | None = Field(default=None, description="Inference model")
