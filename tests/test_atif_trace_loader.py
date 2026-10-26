@@ -280,12 +280,11 @@ def test_every_harbor_field_lands_in_a_typed_field():
             for result in turn.unlinked_results:
                 assert result.attributes == {}
 
-    # Every source value appears in the trace, except values a typed field interprets:
-    # prompt_tokens 500 becomes input_tokens 380 (500 - 120 cached), and
-    # is_copied_context becomes authorship.
+    # Every source value appears in the trace, except is_copied_context, which
+    # becomes authorship.
     source_leaves = set(_leaves(source))
     trace_leaves = set(_leaves(trace.model_dump(mode="json")))
-    assert source_leaves - trace_leaves == {("int", 500), ("bool", True)}
+    assert source_leaves - trace_leaves == {("bool", True)}
 
     root = spans["trajectory"]
     assert root.agent == AgentInfo(
@@ -303,9 +302,7 @@ def test_every_harbor_field_lands_in_a_typed_field():
         notes="max-notes",
         continued_trajectory_ref="max-continued.json",
         final_metrics=RunTotals(
-            prompt_tokens=900,
-            completion_tokens=140,
-            cached_tokens=240,
+            token_counts=TokenCounts(input_total=900, cached_input_tokens=240, output_tokens=140),
             cost_usd=1.25,
             steps=5,
             extra={"final_extra": "final-extra-value"},
@@ -315,7 +312,7 @@ def test_every_harbor_field_lands_in_a_typed_field():
     assert trace.id == "max-trajectory"
     assert trace.aggregate == TraceAggregate(
         cost_usd=1.25,
-        token_counts=TokenCounts(input_tokens=660, cached_input_tokens=240, output_tokens=140),
+        token_counts=TokenCounts(input_total=900, cached_input_tokens=240, output_tokens=140),
     )
 
     system, user, agent = root.turns
@@ -363,7 +360,7 @@ def test_every_harbor_field_lands_in_a_typed_field():
     assert step.model == "max-step-model"
     assert step.cost_usd == 0.75
     assert step.token_counts == TokenCounts(
-        input_tokens=380, cached_input_tokens=120, output_tokens=70
+        input_total=500, cached_input_tokens=120, output_tokens=70
     )
     assert step.llm_call == LLMCallInfo(
         call_count=3,
@@ -606,13 +603,13 @@ def test_llm_call_count_variants():
     assert unrecorded.model == "default-model"
     assert unrecorded.llm_call is UNSET
     assert unrecorded.token_counts == TokenCounts(
-        input_tokens=10, cached_input_tokens=0, output_tokens=2
+        input_total=10, cached_input_tokens=0, output_tokens=2
     )
     assert one.kind is SpanKind.LLM
     assert one.model == "step-model"
-    # Partial accounting is kept as recorded rather than zero-filled.
-    assert one.token_counts is None
-    assert one.llm_call == LLMCallInfo(call_count=1, prompt_tokens=12)
+    # A partial count is kept on its own; the unrecorded ones stay unknown.
+    assert one.token_counts == TokenCounts(input_total=12)
+    assert one.llm_call == LLMCallInfo(call_count=1)
     assert merged.kind is SpanKind.LLM
     assert merged.llm_call == LLMCallInfo(call_count=3)
     assert merged.cost_usd == 0.03
@@ -705,7 +702,7 @@ def test_realistic_nested_trajectory_and_signal_readers():
     assert delegate.children[0].id == "trajectory/subagent/0"
     assert root.children[1].kind is SpanKind.CHAIN
     assert trace.aggregate.token_counts == TokenCounts(
-        input_tokens=100, cached_input_tokens=20, output_tokens=15
+        input_total=120, cached_input_tokens=20, output_tokens=15
     )
 
     # Each tool call carries the nearest preceding user text of its own agent.

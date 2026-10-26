@@ -333,9 +333,9 @@ class AgentInfo(_TraceModel):
 class RunTotals(_TraceModel):
     """Source-reported totals for one agent run, as recorded (any may be missing)."""
 
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-    cached_tokens: int | None = None
+    token_counts: TokenCounts | None = Field(
+        default=None, description="Total token counts the source reported for the run."
+    )
     cost_usd: float | None = None
     steps: int | None = Field(default=None, ge=0)
     extra: dict[str, JsonValue] = Field(default_factory=dict)
@@ -381,15 +381,6 @@ class LLMCallInfo(_TraceModel):
     prompt_token_ids: list[int] | None = None
     completion_token_ids: list[int] | None = None
     logprobs: list[float] | None = None
-    prompt_tokens: int | None = Field(
-        default=None, description="Recorded only when token_counts cannot be formed."
-    )
-    cached_tokens: int | None = Field(
-        default=None, description="Recorded only when token_counts cannot be formed."
-    )
-    completion_tokens: int | None = Field(
-        default=None, description="Recorded only when token_counts cannot be formed."
-    )
     metrics_extra: dict[str, JsonValue] = Field(
         default_factory=dict, description="Source extension fields of the call metrics."
     )

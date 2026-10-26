@@ -19,8 +19,9 @@ field or an ``extra`` slot:
 * Each step is a ``Turn`` with id ``<agent>/turn/{step_id}``.
 * An agent step is a span ``<agent>/step/{step_id}``: LLM, or CHAIN when
   ``llm_call_count`` is 0 (the turn's ``dispatch_span_id``). Its output is the
-  message; it carries the model, cost, token counts, and ``llm_call``
-  (``LLMCallInfo``). User and system steps have no span.
+  message; it carries the model, cost, token counts (``prompt_tokens`` is the
+  ``input_total``, cached tokens included), and ``llm_call`` (``LLMCallInfo``).
+  User and system steps have no span.
 * Tool calls are TOOL spans ``<step span>/tool/{k}`` under the step span, with
   ``prior_user_text`` from the nearest preceding user step. Results with
   ``source_call_id`` go to that call's ``ToolCall.results`` and the span's
@@ -54,6 +55,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
+from trace_ingest.loaders.helper.llm_span.token_usage import token_counts as _token_counts
 from trace_ingest.loaders.helper.tool_definitions import tool_definitions
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
@@ -383,12 +385,9 @@ def _tokens(prompt: int | None, cached: int | None, completion: int | None) -> T
             raise ValueError("ATIF token counts must be non-negative integers")
     if prompt is not None and cached is not None and cached > prompt:
         raise ValueError("cached_tokens exceeds prompt_tokens")
-    # Partial accounting is kept as recorded; unknown counts are not zero.
-    if prompt is None or cached is None or completion is None:
-        return None
-    return TokenCounts(
-        input_tokens=prompt - cached, cached_input_tokens=cached, output_tokens=completion
-    )
+    # ATIF prompt_tokens include cached_tokens; each count is read on its own,
+    # so a missing one leaves only itself unknown.
+    return _token_counts(input_total=prompt, cached_input_tokens=cached, output_tokens=completion)
 
 
 def _aware(timestamp: str | None) -> datetime | None:
@@ -503,20 +502,12 @@ def _step(
         token_counts = _tokens(
             metrics.prompt_tokens, metrics.cached_tokens, metrics.completion_tokens
         )
-        partial = (
-            (metrics.prompt_tokens, metrics.cached_tokens, metrics.completion_tokens)
-            if token_counts is None
-            else (None, None, None)
-        )
         llm_call = LLMCallInfo(
             call_count=step.llm_call_count,
             reasoning_effort=step.reasoning_effort,
             prompt_token_ids=metrics.prompt_token_ids,
             completion_token_ids=metrics.completion_token_ids,
             logprobs=metrics.logprobs,
-            prompt_tokens=partial[0],
-            cached_tokens=partial[1],
-            completion_tokens=partial[2],
             metrics_extra=metrics.extra or {},
         )
         step_span = Span(
@@ -696,9 +687,11 @@ def _agent_span(source: _Trajectory, prefix: str, losses: list[Loss]) -> Span:
             final_metrics=None
             if metrics is None
             else RunTotals(
-                prompt_tokens=metrics.total_prompt_tokens,
-                completion_tokens=metrics.total_completion_tokens,
-                cached_tokens=metrics.total_cached_tokens,
+                token_counts=_tokens(
+                    metrics.total_prompt_tokens,
+                    metrics.total_cached_tokens,
+                    metrics.total_completion_tokens,
+                ),
                 cost_usd=metrics.total_cost_usd,
                 steps=metrics.total_steps,
                 extra=metrics.extra or {},

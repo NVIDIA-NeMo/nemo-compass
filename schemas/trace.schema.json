@@ -154,19 +154,6 @@
       },
       "description": "Per-call model detail beyond the Span's model, token_counts, and cost_usd.",
       "properties": {
-        "cached_tokens": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Recorded only when token_counts cannot be formed.",
-          "title": "Cached Tokens"
-        },
         "call_count": {
           "anyOf": [
             {
@@ -195,19 +182,6 @@
           ],
           "default": null,
           "title": "Completion Token Ids"
-        },
-        "completion_tokens": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Recorded only when token_counts cannot be formed.",
-          "title": "Completion Tokens"
         },
         "logprobs": {
           "anyOf": [
@@ -246,19 +220,6 @@
           ],
           "default": null,
           "title": "Prompt Token Ids"
-        },
-        "prompt_tokens": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Recorded only when token_counts cannot be formed.",
-          "title": "Prompt Tokens"
         },
         "reasoning_effort": {
           "anyOf": [
@@ -430,30 +391,6 @@
       },
       "description": "Source-reported totals for one agent run, as recorded (any may be missing).",
       "properties": {
-        "cached_tokens": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Cached Tokens"
-        },
-        "completion_tokens": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Completion Tokens"
-        },
         "cost_usd": {
           "anyOf": [
             {
@@ -473,18 +410,6 @@
           "title": "Extra",
           "type": "object"
         },
-        "prompt_tokens": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Prompt Tokens"
-        },
         "steps": {
           "anyOf": [
             {
@@ -497,6 +422,18 @@
           ],
           "default": null,
           "title": "Steps"
+        },
+        "token_counts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TokenCounts"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Total token counts the source reported for the run."
         }
       },
       "title": "RunTotals",
