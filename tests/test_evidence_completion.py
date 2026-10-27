@@ -17,7 +17,6 @@ from opentelemetry.trace import StatusCode
 from compass import telemetry
 from compass.insight import Insight, SpanEvidence, TraceEvidence
 from compass.insights_generation.insight_compilation import (
-    CompletionRegistry,
     EvidenceCompletion,
     EvidenceDecision,
     InsightCompilation,
@@ -177,7 +176,7 @@ def response(name, arguments, call_id):
 @pytest.mark.parametrize(
     "invalid_return, diagnostic",
     [
-        (None, "Unknown completion receipt"),
+        (None, "Without a predicate"),
         ("EvidenceCompletion(insight=completion.insight)", "Without a predicate"),
         (
             "completion.model_copy(update={'unresolved_reason': 'partial'})",
@@ -207,7 +206,6 @@ def test_invalid_return_can_be_fixed_in_same_python_session(
     insight, checks, snapshot = completion_case
     prepare = (
         "import json\nfrom compass.traces import UNSET\n"
-        "from compass.insights_generation.insight_compilation import EvidenceCompletion, EvidenceDecision\n"
         + inspect.getsource(truncated_enrich)
         + "\nchecks = [(trace_snapshot.get_trace_by_id(i), expected) for i, expected in "
         + repr([(t.id, expected) for t, expected in checks])
@@ -215,13 +213,9 @@ def test_invalid_return_can_be_fixed_in_same_python_session(
         "predicate=truncated_enrich, checks=checks)\noriginal_predicate = completion.predicate"
     )
     invalid = (
-        response("return_result", {"result": "[ec]"}, "invalid")
+        response("return_result", {"result": [{"insight": insight.model_dump()}]}, "invalid")
         if invalid_return is None
-        else response(
-            "execute_python",
-            {"code": f"return_result(completion_registry.save([{invalid_return}]))"},
-            "invalid",
-        )
+        else response("execute_python", {"code": f"return_result([{invalid_return}])"}, "invalid")
     )
     llm = FakeLLMClient(
         [
@@ -231,7 +225,7 @@ def test_invalid_return_can_be_fixed_in_same_python_session(
                 "execute_python",
                 {
                     "code": "assert completion.predicate is original_predicate\n"
-                    "return_result(completion_registry.save([completion]))"
+                    "return_result([completion])"
                 },
                 "correct",
             ),
@@ -256,7 +250,7 @@ def test_invalid_return_can_be_fixed_in_same_python_session(
     ]
     assert llm.call_count == 3
     assert diagnostic in str(llm.last_messages)
-    assert "completion_registry.save" in str(llm.last_messages)
+    assert "JSON cannot preserve their functions" in str(llm.last_messages)
 
 
 def test_skipping_the_scan_requires_nonblank_reason(completion_case):
@@ -265,18 +259,13 @@ def test_skipping_the_scan_requires_nonblank_reason(completion_case):
     llm = FakeLLMClient(
         [
             response(
-                "execute_python",
-                {
-                    "code": "from compass.insights_generation.insight_compilation import EvidenceCompletion\n"
-                    "completion_registry.save([EvidenceCompletion(insight=existing_insights[0], unresolved_reason='   ')])"
-                },
+                "return_result",
+                {"result": [{"insight": insight.model_dump(), "unresolved_reason": "   "}]},
                 "abstain",
             ),
             response(
-                "execute_python",
-                {
-                    "code": f"return_result(completion_registry.save([EvidenceCompletion(insight=existing_insights[0], unresolved_reason={valid_reason!r})]))"
-                },
+                "return_result",
+                {"result": [{"insight": insight.model_dump(), "unresolved_reason": valid_reason}]},
                 "correct",
             ),
         ]
@@ -285,49 +274,4 @@ def test_skipping_the_scan_requires_nonblank_reason(completion_case):
         assert asyncio.run(
             InsightCompilation(llm=llm).compile_insights([], snapshot, [insight], RUN_TIMESTAMP)
         ) == [insight]
-    assert llm.call_count == 2
-
-
-def test_receipts_are_scoped_to_the_saved_batch(completion_case):
-    insight, checks, _ = completion_case
-    completion = EvidenceCompletion(insight=insight, predicate=truncated_enrich, checks=checks)
-    registry = CompletionRegistry()
-    receipt = registry.save([completion])
-    assert registry.resolve(receipt)[0] is completion
-    with pytest.raises(ValueError, match="Unknown completion receipt"):
-        CompletionRegistry().resolve(receipt)
-    empty_receipt = registry.save([])
-    assert registry.resolve(empty_receipt) == []
-    with pytest.raises(ValueError, match="Unknown completion receipt"):
-        registry.resolve(receipt)
-
-
-def test_saved_completions_are_revalidated(completion_case):
-    insight, checks, _ = completion_case
-    completion = EvidenceCompletion(insight=insight, predicate=truncated_enrich, checks=checks)
-    registry = CompletionRegistry()
-    receipt = registry.save([completion])
-    completion.checks.clear()
-    with pytest.raises(ValueError, match="Checks must include"):
-        registry.resolve(receipt)
-
-
-def test_receipt_can_cross_the_standalone_json_return_tool(monkeypatch, completion_case):
-    from uuid import UUID
-
-    from compass.insights_generation import insight_compilation
-
-    receipt = UUID(int=1)
-    monkeypatch.setattr(insight_compilation, "uuid4", lambda: receipt)
-    _, _, snapshot = completion_case
-    llm = FakeLLMClient(
-        [
-            response("execute_python", {"code": "print(completion_registry.save([]))"}, "save"),
-            response("return_result", {"result": receipt.hex}, "return"),
-        ]
-    )
-    assert (
-        asyncio.run(InsightCompilation(llm=llm).compile_insights([], snapshot, [], RUN_TIMESTAMP))
-        == []
-    )
     assert llm.call_count == 2

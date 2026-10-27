@@ -6,13 +6,11 @@ from __future__ import annotations
 import warnings
 from collections.abc import Callable
 from datetime import datetime
-from typing import Literal
-from uuid import uuid4
+from typing import Annotated, Literal
 
 from nooa import Agent, no_trace, strategy
 from nooa.config import CodeActConfig
 from nooa.strategies import CodeActStrategy
-from nooa.strategies.current_call import CurrentCall
 from nooa.strategy_validation import InvariantError
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.json_schema import SkipJsonSchema
@@ -42,7 +40,7 @@ class EvidenceCompletion(BaseModel):
     """
 
     insight: Insight
-    # JSON cannot carry a function. Keep this object in the per-call registry.
+    # JSON cannot carry a function. Return this object from the agent's Python session.
     predicate: SkipJsonSchema[Callable[[Trace], EvidenceDecision | dict[str, object]] | None] = (
         Field(default=None, exclude=True, repr=False)
     )
@@ -157,53 +155,20 @@ class EvidenceCompletion(BaseModel):
         )
 
 
-class CompletionRegistry:
-    """Keep one compilation's live objects behind a JSON-safe receipt."""
-
-    def __init__(self) -> None:
-        self._receipt: str | None = None
-        self._completions: list[EvidenceCompletion] = []
-
-    def save(self, completions: list[EvidenceCompletion]) -> str:
-        """Validate and retain the entire batch; return its receipt."""
-        if not isinstance(completions, list) or any(
-            not isinstance(completion, EvidenceCompletion) for completion in completions
-        ):
-            raise InvariantError("Pass a list of live EvidenceCompletion objects to save().")
-        self._validate(completions)
-        self._completions = list(completions)
-        self._receipt = uuid4().hex
-        return self._receipt
-
-    def resolve(self, receipt: str) -> list[EvidenceCompletion]:
-        """Reject invented or stale receipts and recheck retained objects."""
-        if self._receipt is None or receipt != self._receipt:
-            raise InvariantError(
-                "Unknown completion receipt. Inside execute_python, call "
-                "receipt = completion_registry.save([completion, ...]), then "
-                "return_result(receipt). Return the receipt string, not an object repr "
-                "or a Python expression. JSON cannot preserve their functions."
-            )
-        self._validate(self._completions)
-        return list(self._completions)
-
-    @staticmethod
-    def _validate(completions: list[EvidenceCompletion]) -> None:
-        for completion in completions:
-            try:
-                completion.validate_result()
-            except Exception as error:
-                raise InvariantError(
-                    f"{completion.insight.name}: {error}. "
-                    "Fix the completion and call completion_registry.save again. "
-                    "If you cannot check the evidence, use predicate=None and checks=[]. "
-                    "Explain why in unresolved_reason."
-                ) from error
-
-
-def _validate_receipt(_agent: Agent, receipt: str, call: CurrentCall) -> None:
+def _validate_completions(
+    _agent: Agent, completions: list[EvidenceCompletion], _call: object
+) -> None:
     """Reject invalid returns while the agent can still fix them in Python."""
-    call.kwargs["completion_registry"].resolve(receipt)
+    for completion in completions:
+        try:
+            completion.validate_result()
+        except Exception as error:
+            raise InvariantError(
+                f"{completion.insight.name}: {error}. "
+                "Inside Python, call return_result with the EvidenceCompletion objects you "
+                "created. JSON cannot preserve their functions. If you cannot check the evidence, "
+                "return predicate=None and checks=[]. Explain why in unresolved_reason."
+            ) from error
 
 
 class InsightCompilation(Agent):
@@ -215,24 +180,32 @@ class InsightCompilation(Agent):
         existing_insights: list[Insight],
         run_timestamp: datetime,
     ) -> list[Insight]:
-        completion_registry = CompletionRegistry()
-        receipt = await self._compile_insights(
-            compass_signals, trace_snapshot, existing_insights, run_timestamp, completion_registry
+        completions = await self._compile_insights(
+            compass_signals, trace_snapshot, existing_insights, run_timestamp
         )
-        completions = completion_registry.resolve(receipt)
         return [completion.apply(trace_snapshot, run_timestamp) for completion in completions]
 
     @no_trace
-    @strategy(CodeActStrategy(config=CodeActConfig(postconditions=[_validate_receipt])))
+    @strategy(CodeActStrategy(config=CodeActConfig(postconditions=[_validate_completions])))
     async def _compile_insights(
         self,
         compass_signals: list[CompassSignalResult],
         trace_snapshot: TraceSnapshot,
         existing_insights: list[Insight],
         run_timestamp: datetime,
-        completion_registry: CompletionRegistry,
-    ) -> str:  # ty: ignore[empty-body] -- Nooa generates the ellipsis method at runtime.
+    ) -> Annotated[  # ty: ignore[empty-body] -- Nooa generates the ellipsis method at runtime.
+        list[EvidenceCompletion],
+        "Contains live Python functions. Finish inside execute_python with "
+        "return_result(completions), where completions is the actual list. "
+        "Do not call the standalone return_result tool for this result. "
+        "Never serialize the list or quote its name, an expression, or an object repr.",
+    ]:
         """
+        Completion protocol: your result contains live Python functions that JSON
+        cannot preserve. Finish this task inside execute_python by calling
+        return_result(completions), where completions is the actual list of
+        EvidenceCompletion objects. Do not call the standalone return_result tool.
+
         Your job is to be the last step of the insight creation process. An
         insight is a bug report or problem that is identified by looking at the
         runtime traces of an AI agent, either in production or an offline
@@ -398,16 +371,19 @@ class InsightCompilation(Agent):
            Discard all proposed additions. A broken function returning zero matches
            does not prove there are none.
 
-        Import the completion types inside Python:
-        from compass.insights_generation.insight_compilation import EvidenceCompletion, EvidenceDecision
+        Finish inside execute_python using the objects and functions you created:
 
-        Save the complete batch of live objects inside Python, then return its receipt:
-        receipt = completion_registry.save([completion])
-        return_result(receipt)
+            completions = [
+                EvidenceCompletion(insight=insight, predicate=predicate, checks=checks)
+            ]
+            return_result(completions)
 
-        Include one completion per final insight in save(). If there are no final
-        insights, explicitly save([]) and return that receipt. Never return an
-        object repr, JSON completion objects, or a Python expression such as "[ec]".
+        Include every final insight in completions. For no final insights, call
+        return_result([]) inside execute_python. Never pass a string such as
+        "[ec]", "completions", or "[EvidenceCompletion(...)]". For example, the
+        standalone tool call {"result": "[ec]"} sends text, not your Python objects,
+        and fails validation. Do not serialize the completion objects.
+
         Do not add their matches to evidence yourself. You can
         fix a rejected return while your Python variables still exist. Fixing how
         you return an existing function does not count as changing it.
@@ -423,7 +399,7 @@ class InsightCompilation(Agent):
         covers this snapshot under the checked function. It does not prove that
         the function found every supporting trace. Note these limits in your working analysis.
 
-        Save one EvidenceCompletion per final insight.
+        Return one EvidenceCompletion per final insight.
         Include existing insights.
         """
         ...
