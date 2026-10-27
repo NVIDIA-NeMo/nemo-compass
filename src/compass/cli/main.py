@@ -538,8 +538,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if re.search(r"\bnemotron\b.*\blightning\b", model, re.IGNORECASE):
             output.console.print(
                 f"Warning: {model} has known tool-calling failures in Compass. "
-                "Try NVIDIA Nemotron 3.5 Super VL instead. "
-                "Analysis will continue with your selected model.",
+                "Try NVIDIA Nemotron 3.5 Super VL instead.",
                 soft_wrap=True,
             )
         if config.ethos_path is None and config.compass_signals.ethos_divergence is not None:
