@@ -60,7 +60,7 @@ We recommend the following models for NeMo Compass:
 
 The following models are known to cause issues in NeMo Compass and shouldn't be used:
 
-- **NVIDIA Nemotron 3.5 Lightning**. Use NVIDIA Nemotron 3.5 Super VL instead.
+- **NVIDIA Nemotron 3.5 Lightning 30B**. Use NVIDIA Nemotron 3.5 Super VL instead.
 
 ## Credentials
 

@@ -524,8 +524,11 @@ def test_configuration_errors_are_reported_together(tmp_path, monkeypatch, capsy
     [
         ("nvidia/nemotron-3.5-lightning-30b", None, True),
         (None, "openai/NVIDIA/Nemotron-3.5-Lightning-30B", True),
-        ("openai/nemotron-lightning", "openai/nemotron-3.5-super-vl", False),
-        (None, "openai/other-lightning", False),
+        ("nvidia/nemotron-3.5-lightning-30b", "openai/nemotron-3.5-super-vl", False),
+        (None, "nvidia/nemotron-4-lightning-30b", False),
+        (None, "nvidia/nemotron-3.5-lightning-70b", False),
+        (None, "nvidia/nemotron-3.5-lightning-30b-custom", False),
+        (None, "other/nemotron-3.5-lightning-30b", False),
         (None, "openai/nemotron-lightningfast", False),
         (None, None, False),
     ],

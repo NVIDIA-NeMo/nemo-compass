@@ -535,7 +535,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = get_config(argv)
         _check_environment(config)
         model = _configured_model(config)
-        if re.search(r"\bnemotron\b.*\blightning\b", model, re.IGNORECASE):
+        if re.search(r"(?:^|/)nvidia/nemotron-3\.5-lightning-30b$", model, re.IGNORECASE):
             output.console.print(
                 f"Warning: {model} has known tool-calling failures in Compass. "
                 "Try NVIDIA Nemotron 3.5 Super VL instead.",
