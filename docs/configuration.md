@@ -15,17 +15,14 @@ in the environment or `.env`.
 | --- | --- |
 | `trace` | Exactly one source; see the [source guides](../README.md#start-here). |
 | `trace.max_traces` | Limit complete traces from a provider or native export. Unsupported for canonical JSONL, ATIF, and Gym rollouts. |
-| `ethos_path` | Optional path to [ETHOS.md](https://github.com/NVIDIA/skills/tree/main/skills/ethos-orchestrate), which defines the agent’s purpose and behavioral requirements. Defaults to `ETHOS.md`, then `ethos.md`, at the Git repository root. Used by the ethos divergence signal and candidate problem validation. |
+| `ethos_path` | Optional path to [ETHOS.md](https://github.com/NVIDIA/skills/tree/main/skills/ethos-orchestrate), which defines the agent’s purpose and behavioral requirements. Defaults to `ETHOS.md` at the nearest repository root. Used by the ethos divergence signal and candidate problem validation. |
 | `output_path` | YAML output file; defaults to `insights.yml`. Use `-` for stdout. |
 | `model`, `api_base`, `max_tokens` | [Inference settings](model-access.md#choose-a-model). |
 | `compass_signals` | [Compass Signals and their prerequisites](compass-signals.md). All five are enabled by default. |
 | `code_base` | [Local agent source](#candidate-problem-validation) to consult during candidate problem validation and confidence review. |
 | `existing_insights` | Previous JSON or YAML insight collection to reconcile with this run. |
 
-Explicit relative paths resolve from the directory where you run the command.
-Automatic ethos discovery checks only the nearest enclosing Git repository or
-worktree root, not the current subdirectory. Outside a Git repository, supply
-`ethos_path` explicitly.
+Relative paths resolve from the directory where you run the command.
 
 ## Candidate problem validation
 

@@ -17,9 +17,8 @@ All five Compass Signals are enabled by default. Each runs when its prerequisite
 what an agent is for, what it must not do, and what success looks like. This Compass Signal
 finds recorded behavior that diverges from those requirements.
 
-Compass looks for `ETHOS.md`, then `ethos.md`, at the nearest enclosing Git
-repository or worktree root. Outside a repository, supply a path explicitly.
-To use a different file, set `ethos_path`:
+Compass looks for `ETHOS.md` at the nearest repository root.
+To supply a path explicitly, set `ethos_path`:
 
 ```yaml
 ethos_path: path/to/ETHOS.md
