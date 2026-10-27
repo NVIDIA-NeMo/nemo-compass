@@ -63,6 +63,17 @@ map a tracer's default success status to `False`. Attach declared tools as
 they belong to, or to the LLM span they were offered to. `trace_ingest.catalog`
 resolves them for Compass Signals.
 
+When the source records a conversation, populate `AGENT.turns` in recorded
+order and link turns to the relevant execution spans. Use stable, unique IDs.
+Leave `turns` unset when no conversation is recorded, and `authorship` unknown
+without source evidence. Order is scoped to each agent. Field details are on
+`trace_ingest.models.Turn`.
+
+Use `attributes` only for source data that no typed field or `extra` slot
+represents. Record information the source lost, or the loader could not follow,
+as a `Loss` in `Trace.losses` whose `detail` is a JSON object, never an encoded
+string.
+
 `describe()` should report the loaded corpus counts and enough source identity
 and selection configuration to reproduce the run. Provider-specific diagnostics
 belong in a typed report or extended description, as in the MLflow loader.

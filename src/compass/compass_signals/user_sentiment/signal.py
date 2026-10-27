@@ -88,7 +88,10 @@ class UserMessageExtractor(Agent):
 
         Inspect all distinct source structures before choosing extraction rules.
 
-        User text can be in conversation messages or tool_call.prior_user_text.
+        When an AGENT span records `turns`, those are its conversation in order:
+        read role=user turns (content is a string or text/image parts) instead of
+        span input or output. Otherwise user text can be in conversation messages
+        or tool_call.prior_user_text.
         Inspect that field's format: it may contain JSON-encoded user strings and
         null entries separated by newlines, representing accumulated user history.
         Decode recorded JSON, discard null/empty entries, and preserve the text.

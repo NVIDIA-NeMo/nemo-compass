@@ -566,3 +566,51 @@ def test_compilation_receives_ethos_with_divergence_disabled(tmp_path, monkeypat
     assert compilation.compile_insights.await_args.kwargs == {"ethos": ethos}
     assert phase.call_args.kwargs == {"ethos": ethos}
     assert validation.await_count == (1 if ethos is not None else 0)
+
+
+@pytest.mark.parametrize(
+    ("env_model", "selected_model", "warns"),
+    [
+        ("nvidia/nemotron-3.5-lightning-30b", None, True),
+        (None, "openai/NVIDIA/Nemotron-3.5-Lightning-30B", True),
+        ("nvidia/nemotron-3.5-lightning-30b", "openai/nemotron-3.5-super-vl", False),
+        (None, "nvidia/nemotron-4-lightning-30b", False),
+        (None, "nvidia/nemotron-3.5-lightning-70b", False),
+        (None, "nvidia/nemotron-3.5-lightning-30b-custom", False),
+        (None, "other/nemotron-3.5-lightning-30b", False),
+        (None, "openai/nemotron-lightningfast", False),
+        (None, None, False),
+    ],
+)
+def test_model_warning_is_nonblocking_and_uses_effective_model(
+    clean_environment, monkeypatch, tmp_path, capsys, env_model, selected_model, warns
+):
+    monkeypatch.setenv("COMPASS_API_KEY", "test-key")
+    if env_model:
+        monkeypatch.setenv("COMPASS_MODEL", env_model)
+    config = RunConfig(
+        trace={"filesystem": {"path": "unused.jsonl"}},
+        model=selected_model,
+        output_path=tmp_path / "insights.yaml",
+        compass_signals={"tool_issues": {}},
+    )
+    monkeypatch.setattr(cli, "get_config", lambda argv: config)
+    client = Mock()
+    monkeypatch.setattr(cli, "CompletionClient", client)
+
+    async def generate(config, output):
+        # The warning must precede analysis and must not replace the model.
+        stderr = capsys.readouterr().err
+        assert ("known tool-calling failures" in stderr) is warns
+        if warns:
+            assert "NVIDIA Nemotron 3.5 Super VL" in stderr
+            assert stderr.count("known tool-calling failures") == 1
+        cli._build_llm(config, "test-key")
+        assert client.call_args.kwargs["model"] == (
+            selected_model or env_model or cli.DEFAULT_MODEL
+        )
+        return cli.RunResult(trace_count=0, evidence=[], insights=[])
+
+    monkeypatch.setattr(cli, "_generate_insights", generate)
+    assert cli.main(["--config", "unused.yaml"]) == 0
+    assert yaml.safe_load(capsys.readouterr().out) == []

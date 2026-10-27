@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 from argparse import SUPPRESS, Action, ArgumentParser
 from collections.abc import Callable, Sequence
@@ -350,10 +351,14 @@ async def _rate_confidence_with_code(
     return [task.result() for task in tasks]
 
 
+def _configured_model(config: RunConfig) -> str:
+    return config.model or resolve(ENV_MODEL) or DEFAULT_MODEL
+
+
 def _build_llm(config: RunConfig, api_key: str) -> CompletionClient:
     """Construct an LLM client with the run's shared model settings."""
 
-    model = config.model or resolve(ENV_MODEL) or DEFAULT_MODEL
+    model = _configured_model(config)
     api_base = config.api_base or os.environ.get(ENV_API_BASE)
     # A gateway configured for OpenAI must not redirect native provider routes.
     if not api_base and not model.startswith(("anthropic/", "openrouter/")):
@@ -530,6 +535,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         config = get_config(argv)
         _check_environment(config)
+        model = _configured_model(config)
+        if re.search(r"(?:^|/)nvidia/nemotron-3\.5-lightning-30b$", model, re.IGNORECASE):
+            output.console.print(
+                f"Warning: {model} has known tool-calling failures in Compass. "
+                "Try NVIDIA Nemotron 3.5 Super VL instead.",
+                soft_wrap=True,
+            )
         if config.ethos_path is None and config.compass_signals.ethos_divergence is not None:
             output.console.print(
                 "Warning: skipping ethos divergence because no ethos_path was specified and no "

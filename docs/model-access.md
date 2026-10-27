@@ -58,6 +58,10 @@ We recommend the following models for NeMo Compass:
 - **Claude Sonnet 5.5**
 - **GPT-6 Luna**
 
+The following models are known to cause issues in NeMo Compass and shouldn't be used:
+
+- **NVIDIA Nemotron 3.5 Lightning 30B**. Use NVIDIA Nemotron 3.5 Super VL instead.
+
 ## Credentials
 
 Keep `.env` in the folder where you run the command to load it automatically:
