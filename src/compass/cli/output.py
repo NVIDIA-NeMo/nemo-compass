@@ -188,7 +188,7 @@ class RunOutput:
             self.console.print(
                 Text(
                     "\nTo enable ethos divergence, set ethos_path: ETHOS.md in YAML "
-                    "or pass --ethos-path ETHOS.md, or place ETHOS.md in the working directory."
+                    "or pass --ethos-path ETHOS.md, or place ETHOS.md at the Git repository root."
                 )
             )
         if skipped:

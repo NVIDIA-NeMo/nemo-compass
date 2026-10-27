@@ -15,14 +15,17 @@ in the environment or `.env`.
 | --- | --- |
 | `trace` | Exactly one source; see the [source guides](../README.md#start-here). |
 | `trace.max_traces` | Limit complete traces from a provider or native export. Unsupported for canonical JSONL, ATIF, and Gym rollouts. |
-| `ethos_path` | Optional path to [ETHOS.md](https://github.com/NVIDIA/skills/tree/main/skills/ethos-orchestrate), which defines the agent’s purpose and behavioral requirements. Defaults to `ETHOS.md` in the current working directory. Used by the ethos divergence signal and candidate problem validation. |
+| `ethos_path` | Optional path to [ETHOS.md](https://github.com/NVIDIA/skills/tree/main/skills/ethos-orchestrate), which defines the agent’s purpose and behavioral requirements. Defaults to `ETHOS.md`, then `ethos.md`, at the Git repository root. Used by the ethos divergence signal and candidate problem validation. |
 | `output_path` | YAML output file; defaults to `insights.yml`. Use `-` for stdout. |
 | `model`, `api_base`, `max_tokens` | [Inference settings](model-access.md#choose-a-model). |
 | `compass_signals` | [Compass Signals and their prerequisites](compass-signals.md). All five are enabled by default. |
 | `code_base` | [Local agent source](#candidate-problem-validation) to consult during candidate problem validation and confidence review. |
 | `existing_insights` | Previous JSON or YAML insight collection to reconcile with this run. |
 
-Relative paths resolve from the directory where you run the command.
+Explicit relative paths resolve from the directory where you run the command.
+Automatic ethos discovery checks only the nearest enclosing Git repository or
+worktree root, not the current subdirectory. Outside a Git repository, supply
+`ethos_path` explicitly.
 
 ## Candidate problem validation
 
@@ -31,7 +34,7 @@ into insights, candidate problem validation reviews and filters these problems u
 ETHOS.md, source code, or both.
 
 Set `code_base` to provide your agent's local source and `ethos_path` to provide its
-ETHOS.md (or let Compass discover ETHOS.md in the current working directory).
+ETHOS.md (or let Compass discover ETHOS.md at the Git repository root).
 Each candidate problem receives its supporting traces and the configured context.
 Source-code access is read-only: the validator cannot edit or execute your agent's code.
 Validation runs even when the ethos divergence signal is disabled, and is skipped

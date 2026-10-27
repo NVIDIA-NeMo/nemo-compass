@@ -222,6 +222,7 @@ def test_default_ethos_warning_only_when_skipped(tmp_path, monkeypatch, capsys, 
 def test_empty_ethos_fails_before_loading(tmp_path, monkeypatch, capsys, content, source):
     from unittest.mock import Mock
 
+    (tmp_path / ".git").mkdir()
     monkeypatch.chdir(tmp_path)
     path = tmp_path / "ETHOS.md"
     path.write_text(content)

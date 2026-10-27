@@ -190,8 +190,12 @@ def test_langfuse_export_requires_explicit_version_and_matching_paths(source, ma
 
 @pytest.mark.parametrize("names", [("ETHOS.md",), ("ethos.md",), ("ETHOS.md", "ethos.md")])
 @pytest.mark.parametrize("selection", [{}, {"ethos_divergence": True}, {"ethos_divergence": False}])
-def test_discovers_ethos_in_working_directory(tmp_path, monkeypatch, names, selection):
-    monkeypatch.chdir(tmp_path)
+def test_discovers_ethos_at_repository_root(tmp_path, monkeypatch, names, selection):
+    (tmp_path / ".git").mkdir()
+    nested = tmp_path / "src"
+    nested.mkdir()
+    (nested / "ETHOS.md").write_text("Wrong nested requirements")
+    monkeypatch.chdir(nested)
     for name in names:
         (tmp_path / name).write_text("Agent requirements")
     config = RunConfig(trace={"filesystem": {"path": "traces.jsonl"}}, compass_signals=selection)
@@ -223,3 +227,28 @@ def test_ethos_discovery_does_not_search_config_directory(tmp_path, monkeypatch)
     monkeypatch.chdir(tmp_path)
     config = RunConfig(_cli_parse_args=["--config", str(config_file)])
     assert config.ethos_path is None
+
+
+@pytest.mark.parametrize("marker", ["directory", "file"])
+def test_ethos_discovery_stops_at_nearest_repository(tmp_path, monkeypatch, marker):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "ETHOS.md").write_text("Outer repository requirements")
+    inner = tmp_path / "inner"
+    inner.mkdir()
+    if marker == "directory":
+        (inner / ".git").mkdir()
+    else:
+        (inner / ".git").write_text("gitdir: elsewhere")
+    monkeypatch.chdir(inner)
+    config = RunConfig(trace={"filesystem": {"path": "traces.jsonl"}})
+    assert config.ethos_path is None
+    (inner / "ETHOS.md").write_text("Inner repository requirements")
+    assert (
+        RunConfig(trace={"filesystem": {"path": "traces.jsonl"}}).ethos_path == inner / "ETHOS.md"
+    )
+
+
+def test_ethos_discovery_requires_a_repository(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "ETHOS.md").write_text("Unrelated requirements")
+    assert RunConfig(trace={"filesystem": {"path": "traces.jsonl"}}).ethos_path is None

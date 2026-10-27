@@ -312,7 +312,7 @@ class RunConfig(BaseSettings):
     trace: TraceConfig = Field(description="Trace source and loading settings")
     ethos_path: FilePath | None = Field(
         default=None,
-        description="Agent purpose and behavioral requirements document; defaults to ETHOS.md in the working directory",
+        description="Agent purpose and behavioral requirements document; defaults to ETHOS.md at the Git repository root",
     )
     output_path: Path = Field(default=Path("insights.yml"), description="Output path")
     compass_signals: CompassSignalsConfig = Field(
@@ -342,8 +342,14 @@ class RunConfig(BaseSettings):
     @classmethod
     def discover_ethos_document(cls, value: object) -> object:
         if value is None:
+            current = Path.cwd()
+            root = next(
+                (path for path in (current, *current.parents) if (path / ".git").exists()), None
+            )
+            if root is None:
+                return None
             for name in ("ETHOS.md", "ethos.md"):
-                path = Path.cwd() / name
+                path = root / name
                 if path.is_file():
                     return path
         return value
@@ -389,7 +395,7 @@ class RunConfig(BaseSettings):
             raise PydanticCustomError(
                 "ethos_path_required",
                 "Ethos divergence was explicitly enabled but no ETHOS.md was found. "
-                "Place ETHOS.md in the working directory, set ethos_path in YAML, "
+                "Place ETHOS.md at the Git repository root, set ethos_path in YAML, "
                 "or pass --ethos-path to an existing ETHOS.md.",
             )
         return self
