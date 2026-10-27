@@ -447,7 +447,11 @@ async def _generate_insights(config: RunConfig, output: RunOutput) -> RunResult:
             with telemetry.confidence(result.insights, config.code_base) as record:
                 async with _build_llm(config, api_key) as llm:
                     result.insights = await _rate_confidence_with_code(
-                        result.insights, snapshot, config.code_base, llm
+                        result.insights,
+                        snapshot,
+                        config.code_base,
+                        llm,
+                        repository_history=config.repository_history,
                     )
                 telemetry.record_confidence(record, result.insights)
         return result

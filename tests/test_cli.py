@@ -289,9 +289,11 @@ def test_repository_history_refreshes_once_and_enriches_confidence(tmp_path, mon
     assert result[0].confidence == "med"
 
 
-@pytest.mark.parametrize("with_code_base", [False, True])
+@pytest.mark.parametrize(
+    "with_code_base,repository_history", [(False, False), (True, False), (True, True)]
+)
 def test_final_compilation_severity_does_not_require_code_base(
-    tmp_path, monkeypatch, with_code_base
+    tmp_path, monkeypatch, with_code_base, repository_history
 ) -> None:
     from rich.console import Console
 
@@ -338,6 +340,7 @@ def test_final_compilation_severity_does_not_require_code_base(
     config = RunConfig(
         trace={"filesystem": {"path": "traces.jsonl"}},
         code_base=tmp_path if with_code_base else None,
+        repository_history=repository_history,
     )
 
     result = asyncio.run(cli._generate_insights(config, cli.RunOutput(Console(quiet=True))))
@@ -346,6 +349,8 @@ def test_final_compilation_severity_does_not_require_code_base(
     assert result.insights[0].severity == "high"
     assert result.insights[0].confidence == ("high" if with_code_base else None)
     assert review.await_count == int(with_code_base)
+    if with_code_base:
+        assert review.await_args.kwargs == {"repository_history": repository_history}
 
 
 def test_compass_signals_share_cli_loop_and_run_concurrently(monkeypatch):
