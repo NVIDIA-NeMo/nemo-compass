@@ -57,17 +57,6 @@ This adds up to 12 investigation rounds and a final response per insight, with u
 100,000 characters of supporting traces plus tool results in context. Time and token
 usage depend on the model, trace size, and investigation length.
 
-## ETHOS-aware compilation
-
-Compilation uses the full ETHOS.md to select, merge, and prioritize insights from all
-signals, even when the ethos divergence signal is disabled. Its priorities help interpret
-task success and acceptable tradeoffs; severity still depends on observed consequences.
-A new insight normally requires multiple supporting traces. A single trace may qualify
-when it clearly demonstrates a meaningful violation of an explicit ETHOS constraint;
-the insight must quote that constraint and explain the consequence without claiming recurrence.
-Existing insights retain their ratings and descriptions. Without ETHOS.md, compilation
-uses the usual impact, fixability, and recurrence criteria.
-
 ## One-run overrides
 
 CLI options override individual YAML values. YAML uses underscores; CLI options use hyphens:
