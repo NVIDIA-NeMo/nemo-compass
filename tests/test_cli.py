@@ -522,7 +522,7 @@ def test_configuration_errors_are_reported_together(tmp_path, monkeypatch, capsy
 @pytest.mark.parametrize(
     ("env_model", "selected_model", "warns"),
     [
-        ("openai/nvidia/nemotron-3.5-lightning-30b", None, True),
+        ("nvidia/nemotron-3.5-lightning-30b", None, True),
         (None, "openai/NVIDIA/Nemotron-3.5-Lightning-30B", True),
         ("openai/nemotron-lightning", "openai/nemotron-3.5-super-vl", False),
         (None, "openai/other-lightning", False),
