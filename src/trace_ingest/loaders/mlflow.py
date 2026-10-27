@@ -13,20 +13,27 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlsplit
 
 from pydantic import JsonValue
 
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
     UNSET,
+    AudioPart,
+    Authorship,
+    ImagePart,
+    Loss,
     Span,
     SpanKind,
+    TextPart,
     ToolCall,
     ToolResult,
     Trace,
     TraceAggregate,
     TraceSnapshot,
+    Turn,
+    TurnRole,
     case_key,
 )
 from trace_ingest.source_links import file_source_url, http_source_url
@@ -572,6 +579,28 @@ def _normalize_trace(
         },
     }
 
+    # The first root span holds the conversation when it orchestrates (AGENT,
+    # CHAIN, TASK or WORKFLOW): it becomes the AGENT span the turns attach to,
+    # keeping its MLflow type as the subtype. Unresolved parents leave no root.
+    losses: list[Loss] = []
+    root = root_spans[0] if root_spans and not unresolved else None
+    root_type = _provider_span_type(by_id[root.id]).removeprefix("SPAN_KIND_") if root else None
+    if root is not None and root_type in _ORCHESTRATION_TYPES:
+        if root.kind is not SpanKind.AGENT:
+            root.kind = SpanKind.AGENT
+            root.attributes["subtype"] = root_type
+        try:
+            root.turns, losses = _agent_turns(
+                getattr(provider_trace.info, "request_preview", None),
+                getattr(provider_trace.info, "response_preview", None),
+                metadata,
+                by_id,
+                effective_parents,
+                normalized_by_id,
+                root,
+            )
+        except _NoTurns:
+            pass  # No recoverable conversation: turns stay unset.
     trace = Trace(
         id=trace_id,
         session_id=session[0] if session is not None else None,
@@ -580,6 +609,7 @@ def _normalize_trace(
         aggregate=TraceAggregate(latency_ms=_trace_latency_ms(ordered)),
         evaluator_results=evaluator_results,
         attributes=attributes,
+        losses=losses,
     )
     return (
         trace,
@@ -587,6 +617,265 @@ def _normalize_trace(
         len(normalized_by_id),
         tool_call_index,
     )
+
+
+_LLM_TYPES = frozenset({"CHAT_MODEL", "LLM", "MODEL", "PROMPT"})
+_TOOL_TYPES = frozenset(
+    {"EMBEDDING", "FUNCTION", "GUARDRAIL", "RERANKER", "RETRIEVER", "SEARCH", "TOOL"}
+)
+_ORCHESTRATION_TYPES = frozenset({"AGENT", "CHAIN", "TASK", "WORKFLOW"})
+_INPUT_KEYS = (_INPUTS_ATTRIBUTE, "input.value", "gen_ai.input.messages")
+_OUTPUT_KEYS = (_OUTPUTS_ATTRIBUTE, "output.value", "gen_ai.output.messages")
+_IMAGE_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+_IMAGE_SUFFIXES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+
+
+class _NoTurns(Exception):
+    """The trace records no conversation that the turn mapping can recover."""
+
+
+def _parse_json(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
+def _has_input(value: object) -> bool:
+    """Whether an input carries an instruction rather than an empty export placeholder."""
+
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (dict, list, tuple)):
+        return bool(value)
+    return True
+
+
+def _text(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _message_text(value: object) -> str:
+    """The message text of a chat message, completion, or answer object; else its JSON."""
+
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        for key in ("content", "message", "text", "response", "answer", "output"):
+            candidate = value.get(key)
+            if isinstance(candidate, str):
+                return candidate
+        choices = value.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            message = choices[0].get("message")
+            if isinstance(message, dict) and isinstance(message.get("content"), str):
+                return message["content"]
+            if isinstance(choices[0].get("text"), str):
+                return choices[0]["text"]
+    return _text(value)
+
+
+def _content_parts(value: object) -> list[TextPart | ImagePart | AudioPart] | None:
+    """OpenAI chat content parts, when every part is text or an image with a known type."""
+
+    if not isinstance(value, list) or not value:
+        return None
+    parts: list[TextPart | ImagePart | AudioPart] = []
+    for part in value:
+        if not isinstance(part, dict):
+            return None
+        image = part.get("image_url")
+        url = image.get("url") if isinstance(image, dict) else image
+        if part.get("type") == "text" and isinstance(part.get("text"), str):
+            parts.append(TextPart(text=part["text"]))
+        elif part.get("type") == "image_url" and isinstance(url, str) and url.strip():
+            if url.startswith("data:"):
+                media_type = url[5:].split(";", 1)[0].split(",", 1)[0]
+            else:
+                media_type = _IMAGE_SUFFIXES.get(Path(urlsplit(url).path).suffix.lower())
+            if media_type not in _IMAGE_TYPES:
+                return None
+            parts.append(ImagePart(media_type=media_type, path=url))
+        else:
+            return None
+    return parts
+
+
+def _message_records(value: object) -> list[dict[str, Any]] | None:
+    candidate = value.get("messages") if isinstance(value, dict) else value
+    if not isinstance(candidate, list) or not candidate:
+        return None
+    if not all(
+        isinstance(item, dict) and ("role" in item or "source" in item) for item in candidate
+    ):
+        return None
+    return candidate
+
+
+def _is_chat_shaped(value: object) -> bool:
+    if isinstance(value, dict):
+        return "messages" in value
+    return isinstance(value, list) and any(
+        isinstance(item, dict) and ("role" in item or "source" in item) for item in value
+    )
+
+
+def _input_turns(value: object) -> list[tuple[Turn, str | None]]:
+    """Turns for the trace input, each with its text when the role is agent.
+
+    Messages other than the last user message are copied context. A non-chat
+    input is one user turn holding its text or JSON.
+    """
+
+    messages = _message_records(value)
+    if messages is None:
+        if _is_chat_shaped(value):
+            raise _NoTurns  # an empty or malformed message list
+        return [(Turn(id="-", index=1, role=TurnRole.USER, content=_text(value)), None)]
+    roles = [str(item.get("role") or item.get("source") or "").lower() for item in messages]
+    if "user" not in roles:
+        raise _NoTurns
+    last_user = len(roles) - 1 - roles[::-1].index("user")
+    turns: list[tuple[Turn, str | None]] = []
+    for index, (item, source_role) in enumerate(zip(messages, roles, strict=True)):
+        role = {"assistant": TurnRole.AGENT, "agent": TurnRole.AGENT, "user": TurnRole.USER}.get(
+            source_role, TurnRole.USER if source_role == "human" else TurnRole.SYSTEM
+        )
+        content = item.get("content", item.get("message", item.get("text", "")))
+        parts = _content_parts(content)
+        text = _message_text(content)
+        turn = Turn(
+            id="-",
+            index=index + 1,
+            role=role,
+            authorship=Authorship.UNKNOWN if index == last_user else Authorship.COPIED_CONTEXT,
+            content=parts if parts is not None else text,
+        )
+        turns.append((turn, text if role is TurnRole.AGENT else None))
+    return turns
+
+
+def _agent_turns(
+    request_preview: str | None,
+    response_preview: str | None,
+    metadata: dict[str, str],
+    by_id: dict[str, MLflowSpan],
+    effective_parents: dict[str, str | None],
+    normalized_by_id: dict[str, Span],
+    agent: Span,
+) -> tuple[list[Turn], list[Loss]]:
+    """The root AGENT span's conversation: the trace input, then span outputs in time order.
+
+    Model outputs link their LLM span and tool spans their TOOL span. A final
+    trace output that differs from the last agent message is a closing turn.
+    """
+
+    root_attributes = by_id[agent.id].attributes
+    candidates = [
+        _parse_json(root_attributes[key]) for key in _INPUT_KEYS if key in root_attributes
+    ]
+    candidates += [
+        _parse_json(metadata[key]) for key in ("mlflow.traceInputs", "inputs") if key in metadata
+    ]
+    candidates.append(_parse_json(request_preview))
+    trace_input = next((value for value in candidates if _has_input(value)), None)
+    if trace_input is None:
+        raise _NoTurns
+    entries = _input_turns(trace_input)
+    last_agent_text = next((text for _, text in reversed(entries) if text is not None), None)
+
+    def owner(span_id: str) -> str:
+        """The nearest AGENT ancestor, else the root span."""
+
+        parent = effective_parents[span_id]
+        while parent is not None and normalized_by_id[parent].kind is not SpanKind.AGENT:
+            span_id, parent = parent, effective_parents[parent]
+        return parent if parent is not None else span_id
+
+    parents = {parent for parent in effective_parents.values() if parent is not None}
+    outside: dict[str, list[str]] = {}
+    for provider_span in sorted(
+        by_id.values(), key=lambda item: (item.start_time_ns, str(item.span_id))
+    ):
+        span_id = str(provider_span.span_id)
+        span = normalized_by_id[span_id]
+        span_type = _provider_span_type(provider_span).removeprefix("SPAN_KIND_")
+        if span_id in parents and span_type in _ORCHESTRATION_TYPES:
+            continue
+        if span_type in _TOOL_TYPES:
+            last_agent_text = ""
+            # Only a TOOL span can be a turn's tool call; other tool-like spans stay spans.
+            if span.kind is not SpanKind.TOOL:
+                continue
+            turn = Turn(id="-", index=1, role=TurnRole.AGENT, tool_call_span_ids=[span_id])
+        elif span_type in _LLM_TYPES or span_type in _ORCHESTRATION_TYPES:
+            attributes = provider_span.attributes
+            output = next(
+                (_parse_json(attributes[key]) for key in _OUTPUT_KEYS if key in attributes), None
+            )
+            last_agent_text = _message_text(output)
+            model = span.kind is SpanKind.LLM
+            turn = Turn(
+                id="-",
+                index=1,
+                role=TurnRole.AGENT,
+                authorship=Authorship.MODEL if model else Authorship.UNKNOWN,
+                content=UNSET if output is None else last_agent_text,
+                llm_span_ids=[span_id] if model else [],
+            )
+        else:
+            continue
+        if span_id != agent.id and owner(span_id) != agent.id:
+            outside.setdefault(owner(span_id), []).append(span_id)
+            continue
+        entries.append((turn, None))
+
+    final = next(
+        (_parse_json(root_attributes[key]) for key in _OUTPUT_KEYS if key in root_attributes), None
+    )
+    if final is None:
+        final = next(
+            (
+                _parse_json(metadata[key])
+                for key in ("mlflow.traceOutputs", "outputs")
+                if key in metadata
+            ),
+            None,
+        )
+    if final is None:
+        final = _parse_json(response_preview)
+    if final is not None and _message_text(final) != last_agent_text:
+        entries.append(
+            (Turn(id="-", index=1, role=TurnRole.AGENT, content=_message_text(final)), None)
+        )
+
+    turns = [
+        turn.model_copy(update={"id": f"{agent.id}/turn/{index}", "index": index})
+        for index, (turn, _) in enumerate(entries, start=1)
+    ]
+    losses = [
+        Loss(
+            code="steps_outside_agent_not_in_turns",
+            detail={"agent_span_id": agent.id, "span_ids": list(span_ids)},
+            span_id=span_owner,
+        )
+        for span_owner, span_ids in outside.items()
+    ]
+    return turns, losses
 
 
 def _canonical_span_order(

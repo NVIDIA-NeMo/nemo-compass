@@ -1,0 +1,51 @@
+{
+  "info": {
+    "trace_id": "tr-synthetic-ci",
+    "trace_location": {
+      "type": "MLFLOW_EXPERIMENT",
+      "mlflow_experiment": {
+        "experiment_id": "1"
+      }
+    },
+    "request_time": "2026-09-01T00:00:00Z",
+    "state": "OK"
+  },
+  "data": {
+    "spans": [
+      {
+        "trace_id": "AAAAAAAAAAAAAAAAAAAAAA==",
+        "span_id": "AAAAAAAAAAE=",
+        "parent_span_id": null,
+        "name": "answer",
+        "start_time_unix_nano": 1000000000,
+        "end_time_unix_nano": 3000000000,
+        "status": {
+          "code": "STATUS_CODE_OK"
+        },
+        "attributes": {
+          "mlflow.spanType": "\"CHAIN\"",
+          "mlflow.spanInputs": "{\"question\": \"Where is Paris?\"}",
+          "mlflow.spanOutputs": "{\"answer\": \"France\"}",
+          "mlflow.traceRequestId": "\"tr-synthetic-ci\""
+        }
+      },
+      {
+        "trace_id": "AAAAAAAAAAAAAAAAAAAAAA==",
+        "span_id": "AAAAAAAAAAI=",
+        "parent_span_id": "AAAAAAAAAAE=",
+        "name": "lookup",
+        "start_time_unix_nano": 2000000000,
+        "end_time_unix_nano": 2500000000,
+        "status": {
+          "code": "STATUS_CODE_OK"
+        },
+        "attributes": {
+          "mlflow.spanType": "\"TOOL\"",
+          "mlflow.spanInputs": "{\"query\": \"Paris\"}",
+          "mlflow.spanOutputs": "{\"documents\": [\"Paris is in France.\"]}",
+          "mlflow.traceRequestId": "\"tr-synthetic-ci\""
+        }
+      }
+    ]
+  }
+}
