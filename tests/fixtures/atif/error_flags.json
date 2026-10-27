@@ -1,0 +1,98 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "trajectory_id": "error-flags",
+  "agent": {
+    "name": "agent",
+    "version": "1"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": "Try everything."
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "message": "Calling.",
+      "tool_calls": [
+        {
+          "tool_call_id": "none",
+          "function_name": "op",
+          "arguments": {}
+        },
+        {
+          "tool_call_id": "error",
+          "function_name": "op",
+          "arguments": {}
+        },
+        {
+          "tool_call_id": "not-error",
+          "function_name": "op",
+          "arguments": {}
+        },
+        {
+          "tool_call_id": "both-agree",
+          "function_name": "op",
+          "arguments": {}
+        },
+        {
+          "tool_call_id": "invalid",
+          "function_name": "op",
+          "arguments": {}
+        },
+        {
+          "tool_call_id": "conflicting",
+          "function_name": "op",
+          "arguments": {}
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "none",
+            "content": "x"
+          },
+          {
+            "source_call_id": "error",
+            "content": "x",
+            "extra": {
+              "isError": true,
+              "code": 2
+            }
+          },
+          {
+            "source_call_id": "not-error",
+            "content": "x",
+            "extra": {
+              "is_error": false
+            }
+          },
+          {
+            "source_call_id": "both-agree",
+            "content": "x",
+            "extra": {
+              "isError": true,
+              "is_error": true
+            }
+          },
+          {
+            "source_call_id": "invalid",
+            "content": "x",
+            "extra": {
+              "is_error": "yes"
+            }
+          },
+          {
+            "source_call_id": "conflicting",
+            "content": "x",
+            "extra": {
+              "isError": true,
+              "is_error": false
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
