@@ -54,7 +54,9 @@ You can also set `model` and `api_base` in YAML or override them on the CLI.
 
 We recommend the following models for NeMo Compass:
 
-- **NVIDIA Nemotron 3.5 Super VL**
+- **NVIDIA Nemotron 3.5 Super VL**. Avoid Nemotron Lightning models: they have known
+  tool-calling failures in Compass. The CLI warns when a selected model name identifies
+  Nemotron Lightning, but lets analysis continue without changing the model.
 - **Claude Sonnet 5.5**
 - **GPT-6 Luna**
 
