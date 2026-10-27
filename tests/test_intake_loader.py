@@ -633,11 +633,24 @@ def test_intake_atif_definitions_without_owner_are_a_gap():
             "success",
             {"is_error": True},
             None,
-            {"is_error_status": "conflicting"},
+            {
+                "is_error_status": "conflicting",
+                "is_error_flags": {"is_error": True, "status": "success"},
+            },
             True,
             "ATIF tool result reported is_error",
         ),
-        ("error", {"is_error": False}, None, {"is_error_status": "conflicting"}, True, "boom"),
+        (
+            "error",
+            {"is_error": False},
+            None,
+            {
+                "is_error_status": "conflicting",
+                "is_error_flags": {"is_error": False, "status": "error"},
+            },
+            True,
+            "boom",
+        ),
         ("error", {"is_error": True}, True, {}, True, "boom"),
         (
             "unknown",
@@ -646,6 +659,17 @@ def test_intake_atif_definitions_without_owner_are_a_gap():
             {},
             True,
             "ATIF tool result reported is_error",
+        ),
+        (
+            "unknown",
+            {"is_error": "yes", "extra": {"isError": True}},
+            None,
+            {
+                "is_error_status": "invalid",
+                "is_error_flags": {"is_error": "yes", "extra.isError": True},
+            },
+            None,
+            None,
         ),
     ],
 )

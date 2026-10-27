@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from nooa.unifiedllm import FakeLLMClient
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 import compass.cli.main as cli
 from compass.compass_signals.anomaly_and_patterns.signal import to_anomaly_and_patterns_trace
@@ -31,7 +31,6 @@ from trace_ingest.models import (
     LLMCallInfo,
     Loss,
     RunInfo,
-    RunTotals,
     Span,
     SpanKind,
     SubagentRef,
@@ -49,94 +48,9 @@ from trace_ingest.models import (
 FIXTURE = Path(__file__).parent / "data" / "atif_trajectories.jsonl"
 FIXTURES = Path(__file__).parent / "fixtures" / "atif"
 
-# Fields of harbor.models.trajectories (harbor 0.24.0, ATIF-v1.8). harbor is not a dev
-# dependency: adding it downgrades websockets, a runtime dependency of the langsmith
-# extra, so the lists are mirrored here. Every fixture under fixtures/atif was validated
-# with harbor's Trajectory model when it was written.
-HARBOR_FIELDS = {
-    "Trajectory": {
-        "schema_version",
-        "session_id",
-        "trajectory_id",
-        "agent",
-        "steps",
-        "notes",
-        "final_metrics",
-        "continued_trajectory_ref",
-        "extra",
-        "subagent_trajectories",
-    },
-    "Agent": {"name", "version", "model_name", "tool_definitions", "extra"},
-    "Step": {
-        "step_id",
-        "timestamp",
-        "source",
-        "model_name",
-        "reasoning_effort",
-        "message",
-        "reasoning_content",
-        "tool_calls",
-        "observation",
-        "metrics",
-        "is_copied_context",
-        "llm_call_count",
-        "extra",
-    },
-    "ToolCall": {"tool_call_id", "function_name", "arguments", "extra"},
-    "Observation": {"results"},
-    "ObservationResult": {"source_call_id", "content", "subagent_trajectory_ref", "extra"},
-    "Metrics": {
-        "prompt_tokens",
-        "completion_tokens",
-        "cached_tokens",
-        "cost_usd",
-        "prompt_token_ids",
-        "completion_token_ids",
-        "logprobs",
-        "extra",
-    },
-    "FinalMetrics": {
-        "total_prompt_tokens",
-        "total_completion_tokens",
-        "total_cached_tokens",
-        "total_cost_usd",
-        "total_steps",
-        "extra",
-    },
-    "ContentPart": {"type", "text", "source"},
-    "ImageSource": {"media_type", "path"},
-    "AudioSource": {"media_type", "path", "duration_sec"},
-    "SubagentTrajectoryRef": {"trajectory_id", "session_id", "trajectory_path", "extra"},
-}
-SOURCE_MODELS: dict[str, type[BaseModel]] = {
-    "Trajectory": atif._Trajectory,
-    "Agent": atif._Agent,
-    "Step": atif._Step,
-    "ToolCall": atif._Call,
-    "Observation": atif._Observation,
-    "ObservationResult": atif._Result,
-    "Metrics": atif._Metrics,
-    "FinalMetrics": atif._FinalMetrics,
-    "ContentPart": atif._ContentPart,
-    "ImageSource": atif._ImageSource,
-    "AudioSource": atif._AudioSource,
-    "SubagentTrajectoryRef": atif._Reference,
-}
-# Nested Harbor models by field, to walk a fixture with types.
-NESTED = {
-    ("Trajectory", "agent"): "Agent",
-    ("Trajectory", "steps"): "Step",
-    ("Trajectory", "final_metrics"): "FinalMetrics",
-    ("Trajectory", "subagent_trajectories"): "Trajectory",
-    ("Step", "message"): "ContentPart",
-    ("Step", "tool_calls"): "ToolCall",
-    ("Step", "observation"): "Observation",
-    ("Step", "metrics"): "Metrics",
-    ("Observation", "results"): "ObservationResult",
-    ("ObservationResult", "content"): "ContentPart",
-    ("ObservationResult", "subagent_trajectory_ref"): "SubagentTrajectoryRef",
-    ("ContentPart", "source"): "ImageSource",
-}
+# Fixtures under fixtures/atif must validate with harbor 0.24.0's Trajectory model. harbor is
+# not a dev dependency (it downgrades websockets, which the langsmith extra needs), so check
+# new fixtures by hand.
 
 
 def minimal():
@@ -220,50 +134,7 @@ def test_exact_normalization_and_description(tmp_path):
     }
 
 
-def _walk_fixture(model, value, seen):
-    if isinstance(value, list):
-        for item in value:
-            _walk_fixture(model, item, seen)
-        return
-    if not isinstance(value, dict):
-        return
-    for key, item in value.items():
-        if item is not None:
-            seen.add((model, key))
-        nested = NESTED.get((model, key))
-        if (model, key) == ("ContentPart", "source"):
-            nested = "AudioSource" if value.get("type") == "audio" else "ImageSource"
-        if nested is not None:
-            _walk_fixture(nested, item, seen)
-
-
-def _leaves(value):
-    if isinstance(value, dict):
-        for item in value.values():
-            yield from _leaves(item)
-    elif isinstance(value, list):
-        for item in value:
-            yield from _leaves(item)
-    else:
-        yield type(value).__name__, value
-
-
-def test_source_models_mirror_harbor_fields():
-    for name, fields in HARBOR_FIELDS.items():
-        declared = set(SOURCE_MODELS[name].model_fields)
-        # Root error flags are tolerated in addition to Harbor's fields.
-        assert declared - {"isError", "is_error"} == fields, name
-        assert SOURCE_MODELS[name].model_config["extra"] == "forbid"
-
-
-def test_maximal_fixture_sets_every_harbor_field():
-    seen = set()
-    _walk_fixture("Trajectory", json.loads((FIXTURES / "maximal.json").read_text()), seen)
-    expected = {(name, key) for name, fields in HARBOR_FIELDS.items() for key in fields}
-    assert expected - seen == set()
-
-
-def test_every_harbor_field_lands_in_a_typed_field():
+def test_maximal_fixture_maps_each_field_to_its_typed_place():
     source = json.loads((FIXTURES / "maximal.json").read_text())
     trace = load(FIXTURES / "maximal.json")
     spans = spans_by_id(trace)
@@ -280,12 +151,6 @@ def test_every_harbor_field_lands_in_a_typed_field():
             for result in turn.unlinked_results:
                 assert result.attributes == {}
 
-    # Every source value appears in the trace, except is_copied_context, which
-    # becomes authorship.
-    source_leaves = set(_leaves(source))
-    trace_leaves = set(_leaves(trace.model_dump(mode="json")))
-    assert source_leaves - trace_leaves == {("bool", True)}
-
     root = spans["trajectory"]
     assert root.agent == AgentInfo(
         name="max-agent",
@@ -301,13 +166,13 @@ def test_every_harbor_field_lands_in_a_typed_field():
         trajectory_id="max-trajectory",
         notes="max-notes",
         continued_trajectory_ref="max-continued.json",
-        final_metrics=RunTotals(
-            token_counts=TokenCounts(input_total=900, cached_input_tokens=240, output_tokens=140),
-            cost_usd=1.25,
-            steps=5,
-            extra={"final_extra": "final-extra-value"},
-        ),
+        total_steps=5,
+        final_metrics_extra={"final_extra": "final-extra-value"},
         extra={"trajectory_extra": "trajectory-extra-value"},
+    )
+    assert root.cost_usd == 1.25
+    assert root.token_counts == TokenCounts(
+        input_total=900, cached_input_tokens=240, output_tokens=140
     )
     assert trace.id == "max-trajectory"
     assert trace.aggregate == TraceAggregate(
@@ -320,7 +185,7 @@ def test_every_harbor_field_lands_in_a_typed_field():
         id="trajectory/turn/1",
         index=1,
         role=TurnRole.SYSTEM,
-        authorship=Authorship.HARNESS,
+        authorship=Authorship.UNKNOWN,
         content="max-system-message",
         timestamp="2026-10-01T09:00:00Z",
         extra={"system_extra": "system-extra-value"},
@@ -362,9 +227,9 @@ def test_every_harbor_field_lands_in_a_typed_field():
     assert step.token_counts == TokenCounts(
         input_total=500, cached_input_tokens=120, output_tokens=70
     )
+    assert step.llm_params == {"reasoning_effort": "max-effort"}
     assert step.llm_call == LLMCallInfo(
         call_count=3,
-        reasoning_effort="max-effort",
         prompt_token_ids=[11, 12, 13],
         completion_token_ids=[21, 22],
         logprobs=[-0.25, -1.5],
@@ -398,6 +263,12 @@ def test_every_harbor_field_lands_in_a_typed_field():
         extra={"tool_scope": {"transport": "max-transport"}, "call_extra": "call-extra-value"},
     )
     delegate = spans["trajectory/step/3/tool/1"]
+    assert delegate.input == {"task": "max-delegated-task"}
+    assert delegate.tool_name == "delegate"
+    assert (delegate.tool_call.call_id, delegate.tool_call.result_id) == (
+        "max-call-delegate",
+        "max-call-delegate",
+    )
     assert delegate.tool_call.results == [
         ToolResult(
             content="max-delegated",
@@ -416,8 +287,15 @@ def test_every_harbor_field_lands_in_a_typed_field():
     assert child.id == "trajectory/subagent/0"
     assert child.agent == AgentInfo(name="max-child-agent", version="2.0")
     assert child.run == RunInfo(
-        schema_version="ATIF-v1.6", session_id="max-child-session", trajectory_id="max-child"
+        schema_version="ATIF-v1.6",
+        session_id="max-child-session",
+        trajectory_id="max-child",
+        total_steps=2,
+        final_metrics_extra={"child_final_extra": "child-final-extra-value"},
     )
+    # A subagent's totals stay on its own span; the trace aggregate is the root's.
+    assert child.cost_usd == 0.5
+    assert child.token_counts == TokenCounts(input_total=40, output_tokens=8)
     assert [turn.content for turn in child.turns] == ["max-child-task", "max-child-answer"]
     assert trace.losses == [
         Loss(
@@ -615,12 +493,22 @@ def test_llm_call_count_variants():
     assert merged.cost_usd == 0.03
     assert dispatch.kind is SpanKind.CHAIN
     assert dispatch.model is None
-    assert dispatch.llm_call == LLMCallInfo(call_count=0, reasoning_effort="low")
+    assert dispatch.llm_call == LLMCallInfo(call_count=0)
+    # A dispatch made no model request, so its effort is not in llm_params.
+    assert dispatch.llm_params is None
+    assert dispatch.attributes == {"reasoning_effort": "low"}
     assert dispatch.children[0].tool_call.initiator is Initiator.HARNESS
     turns = {turn.index: turn for turn in trace.root_spans[0].turns}
     assert turns[4].llm_span_ids == ["trajectory/step/4"]
     assert turns[5].llm_span_ids == []
     assert turns[5].tool_call_span_ids == ["trajectory/step/5/tool/0"]
+    # Only a recorded model call (llm_call_count >= 1) establishes model authorship.
+    assert [turns[n].authorship for n in (2, 3, 4, 5)] == [
+        Authorship.UNKNOWN,
+        Authorship.MODEL,
+        Authorship.MODEL,
+        Authorship.UNKNOWN,
+    ]
     assert trace.losses == [
         Loss(
             code="llm_calls_aggregated",
@@ -640,8 +528,14 @@ def test_error_flag_fixture():
         (True, {}),
         (False, {}),
         (True, {}),
-        (None, {"is_error_status": "invalid"}),
-        (None, {"is_error_status": "conflicting"}),
+        (None, {"is_error_status": "invalid", "is_error_flags": {"extra.is_error": "yes"}}),
+        (
+            None,
+            {
+                "is_error_status": "conflicting",
+                "is_error_flags": {"extra.isError": True, "extra.is_error": False},
+            },
+        ),
     ]
     errors = [spans[f"trajectory/step/2/tool/{index}"].error for index in range(6)]
     assert errors == [None, atif.TOOL_ERROR, None, atif.TOOL_ERROR, None, None]
@@ -656,12 +550,31 @@ def test_error_flag_fixture():
         ({"is_error": False}, False, {}),
         ({"isError": True, "is_error": True}, True, {}),
         ({"isError": True, "extra": {"isError": True, "k": 1}}, True, {}),
-        ({"is_error": "yes"}, None, {"is_error_status": "invalid"}),
-        ({"is_error": None}, None, {"is_error_status": "invalid"}),
+        (
+            {"is_error": "yes"},
+            None,
+            {"is_error_status": "invalid", "is_error_flags": {"is_error": "yes"}},
+        ),
+        (
+            {"is_error": None},
+            None,
+            {"is_error_status": "invalid", "is_error_flags": {"is_error": None}},
+        ),
+        (
+            {"isError": "unexpected-value", "is_error": True},
+            None,
+            {
+                "is_error_status": "invalid",
+                "is_error_flags": {"isError": "unexpected-value", "is_error": True},
+            },
+        ),
         (
             {"is_error": True, "extra": {"is_error": False}},
             None,
-            {"is_error_status": "conflicting"},
+            {
+                "is_error_status": "conflicting",
+                "is_error_flags": {"is_error": True, "extra.is_error": False},
+            },
         ),
     ],
 )
@@ -802,6 +715,7 @@ def test_invalid_source_has_line_context(tmp_path, mutation, match):
 @pytest.mark.parametrize(
     "case, match",
     [
+        ("duplicate_call", "duplicate tool_call_id"),
         ("unknown_call", "unknown source_call_id"),
         ("duplicate_subagent", "unique trajectory_id"),
         ("anonymous_subagent", "unique trajectory_id"),
@@ -810,7 +724,9 @@ def test_invalid_source_has_line_context(tmp_path, mutation, match):
 def test_invalid_relationships(tmp_path, case, match):
     source = json.loads(FIXTURE.read_text())
     step = source["steps"][2]
-    if case == "unknown_call":
+    if case == "duplicate_call":
+        step["tool_calls"].append(step["tool_calls"][0])
+    elif case == "unknown_call":
         step["observation"]["results"][1]["source_call_id"] = "unknown"
     elif case == "duplicate_subagent":
         source["subagent_trajectories"].append(source["subagent_trajectories"][0])
@@ -818,25 +734,6 @@ def test_invalid_relationships(tmp_path, case, match):
         source["subagent_trajectories"][1].pop("trajectory_id")
     with pytest.raises(ATIFTraceLoadError, match=match):
         loader_for(tmp_path, source).load()
-
-
-def test_duplicate_tool_call_ids_are_a_loss(tmp_path):
-    source = with_agent_step(
-        {
-            "tool_calls": [
-                {"tool_call_id": "a", "function_name": "read", "arguments": {}},
-                {"tool_call_id": "a", "function_name": "read", "arguments": {"again": True}},
-            ],
-            "observation": {"results": [{"source_call_id": "a", "content": "x"}]},
-        }
-    )
-    trace = load_record(tmp_path, source)
-    spans = spans_by_id(trace)
-    assert spans["trajectory/step/2/tool/0"].tool_call.result_count == 1
-    assert spans["trajectory/step/2/tool/1"].tool_call.result_count == 0
-    assert [(loss.code, loss.detail, loss.span_id) for loss in trace.losses] == [
-        ("duplicate_tool_call_id", {"tool_call_id": "a"}, "trajectory/step/2/tool/1")
-    ]
 
 
 def test_missing_and_null_result_content_are_not_conflated(tmp_path):

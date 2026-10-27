@@ -58,25 +58,16 @@ still work when no span declares definitions.
 Each nonblank line must contain one complete ATIF trajectory with a `trajectory_id` or
 `session_id`. The loader accepts Harbor's `Trajectory` fields for schema versions `ATIF-v1.0`
 through `ATIF-v1.8`, validated strictly: values are not coerced, and unknown keys are rejected.
-Keep tool calls, observations, and nested subagent trajectories in the exported record.
 
-Every trajectory becomes an AGENT span with its agent, tool definitions, run metadata, and
-one turn per step. Agent steps become LLM spans (CHAIN when `llm_call_count` is 0) that parent
-their tool calls. A subagent reference resolves to a trajectory embedded in
-`subagent_trajectories` by `trajectory_id`; external `trajectory_path` files are not read.
-What the loader does not follow is listed in the trace's `losses` instead of failing the
-load. Each loss `detail` is a JSON object:
+ATIF steps become ordered conversation turns linked to recorded model and tool calls. Include
+subagent trajectories in the export; external trajectory files are not read. Missing
+references and other known gaps are recorded in `Trace.losses`. The
+[loader](../../src/trace_ingest/loaders/atif.py) documents the exact mapping, and
+[`Loss`](../../src/trace_ingest/models.py) the loss fields.
 
-| Loss `code` | `detail` |
-| --- | --- |
-| `unresolved_subagent_ref` | `ref`: the subagent reference as written |
-| `continued_trajectory_not_followed` | `continued_trajectory_ref` |
-| `duplicate_tool_call_id` | `tool_call_id`; its results go to the first call with that id |
-| `llm_calls_aggregated` | `llm_call_count` |
-
-The `session_id` is the trace's logical case. `agent.tool_definitions` enable tool-schema
-checks, and an observation result with `is_error: true` (on the result or in its `extra`)
-marks the tool call as failed.
+The `session_id` is the trace's logical case. Include `agent.tool_definitions` to enable
+tool-schema checks; an observation result with `is_error: true` (on the result or in its
+`extra`) marks the tool call as failed.
 
 ## A different trace system
 

@@ -220,21 +220,6 @@
           ],
           "default": null,
           "title": "Prompt Token Ids"
-        },
-        "reasoning_effort": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Reasoning Effort"
         }
       },
       "title": "LLMCallInfo",
@@ -255,7 +240,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/JsonValue"
           },
-          "description": "Structured loss data, never an encoded string. Keys by code: unresolved_subagent_ref has ref (the reference as written); continued_trajectory_not_followed has continued_trajectory_ref; duplicate_tool_call_id has tool_call_id; llm_calls_aggregated has llm_call_count.",
+          "description": "Structured loss data, never an encoded string. Keys by code: unresolved_subagent_ref has ref (the reference as written); continued_trajectory_not_followed has continued_trajectory_ref; llm_calls_aggregated has llm_call_count.",
           "title": "Detail",
           "type": "object"
         },
@@ -319,16 +304,13 @@
           "title": "Extra",
           "type": "object"
         },
-        "final_metrics": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/RunTotals"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null
+        "final_metrics_extra": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "description": "Source extension fields of the run's totals, verbatim. The totals themselves are the AGENT span's cost_usd and token_counts.",
+          "title": "Final Metrics Extra",
+          "type": "object"
         },
         "notes": {
           "anyOf": [
@@ -368,6 +350,20 @@
           "description": "Source session identifier of the run.",
           "title": "Session Id"
         },
+        "total_steps": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Step count the source reported for the run.",
+          "title": "Total Steps"
+        },
         "trajectory_id": {
           "anyOf": [
             {
@@ -383,60 +379,6 @@
         }
       },
       "title": "RunInfo",
-      "type": "object"
-    },
-    "RunTotals": {
-      "additionalProperties": {
-        "$ref": "#/$defs/JsonValue"
-      },
-      "description": "Source-reported totals for one agent run, as recorded (any may be missing).",
-      "properties": {
-        "cost_usd": {
-          "anyOf": [
-            {
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Cost Usd"
-        },
-        "extra": {
-          "additionalProperties": {
-            "$ref": "#/$defs/JsonValue"
-          },
-          "title": "Extra",
-          "type": "object"
-        },
-        "steps": {
-          "anyOf": [
-            {
-              "minimum": 0,
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Steps"
-        },
-        "token_counts": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/TokenCounts"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "description": "Total token counts the source reported for the run."
-        }
-      },
-      "title": "RunTotals",
       "type": "object"
     },
     "Span": {

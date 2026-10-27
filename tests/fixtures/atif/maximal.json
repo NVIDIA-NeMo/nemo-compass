@@ -216,7 +216,16 @@
           "source": "agent",
           "message": "max-child-answer"
         }
-      ]
+      ],
+      "final_metrics": {
+        "total_prompt_tokens": 40,
+        "total_completion_tokens": 8,
+        "total_cost_usd": 0.5,
+        "total_steps": 2,
+        "extra": {
+          "child_final_extra": "child-final-extra-value"
+        }
+      }
     }
   ]
 }

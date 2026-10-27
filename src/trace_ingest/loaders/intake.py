@@ -30,7 +30,12 @@ from pydantic import (
     model_validator,
 )
 
-from trace_ingest.loaders.atif import TOOL_ERROR, tool_definitions_from_atif, tool_result_from_atif
+from trace_ingest.loaders.atif import (
+    TOOL_ERROR,
+    error_flags_from_atif,
+    tool_definitions_from_atif,
+    tool_result_from_atif,
+)
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
     UNSET,
@@ -636,7 +641,8 @@ def _normalize_span(
     tool_call_index: int,
 ) -> Span:
     input_value = _payload(raw, "input")
-    output_value = _payload(raw, "output")
+    raw_output = _payload(raw, "output")
+    output_value = raw_output
     kind, subtype = _span_kind(raw.kind)
     tool_call: ToolCall | None = None
     payload_result: ToolResult | None = None
@@ -665,7 +671,13 @@ def _normalize_span(
             result_is_error = payload_result.is_error
         elif payload_result.is_error not in (None, result_is_error):
             result_is_error = None
+            assert isinstance(raw_output, Mapping)  # ATIF payloads parse only from objects.
             result_attributes["is_error_status"] = "conflicting"
+            # Keep the recorded flags that disagree, as the ATIF loader does.
+            result_attributes["is_error_flags"] = {
+                **error_flags_from_atif(raw_output),
+                "status": raw.status.value,
+            }
     # As in the ATIF loader, the span failed when any recorded flag reports an error.
     explicit_error = (
         True

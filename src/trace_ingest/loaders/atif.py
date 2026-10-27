@@ -21,12 +21,23 @@ field or an ``extra`` slot:
   ``llm_call_count`` is 0 (the turn's ``dispatch_span_id``). Its output is the
   message; it carries the model, cost, token counts (``prompt_tokens`` is the
   ``input_total``, cached tokens included), and ``llm_call`` (``LLMCallInfo``).
+  ``reasoning_effort`` is a request parameter in ``llm_params`` of an LLM span,
+  or ``attributes["reasoning_effort"]`` of a CHAIN span, which made no request.
   User and system steps have no span.
+* ``final_metrics`` totals are the AGENT span's ``cost_usd`` and ``token_counts``;
+  ``total_steps`` and ``extra`` go to ``RunInfo``. The root's totals are also
+  the trace aggregate.
+* Turn authorship follows the source only: ``copied_context`` when
+  ``is_copied_context``, ``model`` for an agent step that records at least one
+  model call (``llm_call_count`` >= 1), else ``unknown``.
 * Tool calls are TOOL spans ``<step span>/tool/{k}`` under the step span, with
   ``prior_user_text`` from the nearest preceding user step. Results with
   ``source_call_id`` go to that call's ``ToolCall.results`` and the span's
   ``output`` (the content, or a list of contents for several results); the rest
-  go to ``Turn.unlinked_results``.
+  go to ``Turn.unlinked_results``. A step's ``tool_call_id`` values must be unique.
+* A result whose error flags are not one boolean keeps them as recorded in
+  ``attributes["is_error_flags"]``, keyed by location (``is_error``,
+  ``extra.isError``, ...), beside ``attributes["is_error_status"]``.
 * A ``subagent_trajectory_ref`` resolves to an embedded trajectory by
   ``trajectory_id``. The subagent AGENT span is a child of the referencing TOOL
   span (or of the step span, or the AGENT span, for an unlinked result).
@@ -40,8 +51,6 @@ follow. Each ``Loss.detail`` is structured:
 * ``unresolved_subagent_ref`` (no embedded trajectory matches): ``{"ref": {...}}``,
   the reference object as recorded.
 * ``continued_trajectory_not_followed``: ``{"continued_trajectory_ref": value}``.
-* ``duplicate_tool_call_id``: ``{"tool_call_id": id}``; its results are matched
-  to the first call with that id.
 """
 
 from __future__ import annotations
@@ -68,7 +77,6 @@ from trace_ingest.models import (
     LLMCallInfo,
     Loss,
     RunInfo,
-    RunTotals,
     Span,
     SpanKind,
     SubagentRef,
@@ -90,6 +98,7 @@ __all__ = [
     "ATIFTraceDescription",
     "ATIFTraceLoadError",
     "ATIFTraceLoader",
+    "error_flags_from_atif",
     "tool_definitions_from_atif",
     "tool_result_from_atif",
 ]
@@ -113,7 +122,7 @@ class ATIFTraceDescription(TraceDescription):
     path: str
 
 
-# Source models mirror harbor.models.trajectories (harbor 0.20.0) field for field.
+# Source models mirror harbor.models.trajectories (harbor 0.24.0) field for field.
 class _Source(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -290,7 +299,10 @@ class _Trajectory(_Source):
         for index, step in enumerate(self.steps, start=1):
             if step.step_id != index:
                 raise ValueError(f"step_id must be sequential from 1; expected {index}")
-            calls = {call.tool_call_id for call in step.tool_calls or []}
+            ids = [call.tool_call_id for call in step.tool_calls or []]
+            calls = set(ids)
+            if len(calls) != len(ids):
+                raise ValueError(f"step {step.step_id} contains duplicate tool_call_id values")
             for result in step.observation.results if step.observation else []:
                 if result.source_call_id is not None and result.source_call_id not in calls:
                     raise ValueError(
@@ -307,28 +319,33 @@ def tool_definitions_from_atif(items: object) -> list[ToolDefinition]:
     return tool_definitions(items) or []
 
 
-def _error_verdict(flags: list[JsonValue]) -> tuple[bool | None, dict[str, JsonValue]]:
-    """Interpret error flags; return the flag and result attributes."""
+def _error_verdict(flags: dict[str, JsonValue]) -> tuple[bool | None, dict[str, JsonValue]]:
+    """Interpret error flags keyed by location; return the flag and result attributes.
 
-    verdicts = [flag for flag in flags if type(flag) is bool]
-    if len(verdicts) != len(flags):
-        return None, {"is_error_status": "invalid"}
+    Flags that are not one boolean are kept as recorded, since ``is_error`` cannot hold them.
+    """
+
+    values = list(flags.values())
+    verdicts = [flag for flag in values if type(flag) is bool]
+    if len(verdicts) != len(values):
+        return None, {"is_error_status": "invalid", "is_error_flags": flags}
     if len(set(verdicts)) > 1:
-        return None, {"is_error_status": "conflicting"}
+        return None, {"is_error_status": "conflicting", "is_error_flags": flags}
     return (verdicts[0] if verdicts else None), {}
+
+
+def error_flags_from_atif(result: Mapping[str, Any]) -> dict[str, JsonValue]:
+    """Error flags on an ATIF observation result and its ``extra``, keyed by location."""
+    flags: dict[str, JsonValue] = {key: result[key] for key in _ERROR_FLAGS if key in result}
+    extra = result.get("extra")
+    if isinstance(extra, Mapping):
+        flags |= {f"extra.{key}": extra[key] for key in _ERROR_FLAGS if key in extra}
+    return flags
 
 
 def tool_result_from_atif(result: Mapping[str, Any]) -> ToolResult:
     """Normalize one ATIF observation result, reading ``is_error`` from it and its ``extra``."""
-    extra = result.get("extra")
-    is_error, attributes = _error_verdict(
-        [
-            source[key]
-            for source in (result, extra if isinstance(extra, Mapping) else {})
-            for key in _ERROR_FLAGS
-            if key in source
-        ]
-    )
+    is_error, attributes = _error_verdict(error_flags_from_atif(result))
     return ToolResult(
         content=result.get("content", UNSET), is_error=is_error, attributes=attributes
     )
@@ -337,10 +354,10 @@ def tool_result_from_atif(result: Mapping[str, Any]) -> ToolResult:
 def _is_error(result: _Result) -> tuple[bool | None, dict[str, JsonValue]]:
     extra = result.extra or {}
     return _error_verdict(
-        [
-            *(getattr(result, key) for key in _ERROR_FLAGS if key in result.model_fields_set),
-            *(extra[key] for key in _ERROR_FLAGS if key in extra),
-        ]
+        {
+            **{key: getattr(result, key) for key in _ERROR_FLAGS if key in result.model_fields_set},
+            **{f"extra.{key}": extra[key] for key in _ERROR_FLAGS if key in extra},
+        }
     )
 
 
@@ -482,6 +499,18 @@ class _Subagents:
         ]
 
 
+def _authorship(step: _Step) -> Authorship:
+    """Who wrote the step, only as far as ATIF establishes it."""
+
+    if step.is_copied_context:
+        return Authorship.COPIED_CONTEXT
+    # Only a recorded model call establishes that a model wrote the step; the
+    # source role and a dispatch (llm_call_count=0) do not say who wrote it.
+    if step.source == "agent" and step.llm_call_count is not None and step.llm_call_count > 0:
+        return Authorship.MODEL
+    return Authorship.UNKNOWN
+
+
 def _step(
     step: _Step,
     *,
@@ -504,11 +533,13 @@ def _step(
         )
         llm_call = LLMCallInfo(
             call_count=step.llm_call_count,
-            reasoning_effort=step.reasoning_effort,
             prompt_token_ids=metrics.prompt_token_ids,
             completion_token_ids=metrics.completion_token_ids,
             logprobs=metrics.logprobs,
             metrics_extra=metrics.extra or {},
+        )
+        effort = (
+            {} if step.reasoning_effort is None else {"reasoning_effort": step.reasoning_effort}
         )
         step_span = Span(
             id=span_id,
@@ -518,7 +549,10 @@ def _step(
             cost_usd=metrics.cost_usd,
             token_counts=token_counts,
             output={"role": "assistant", "content": _content_json(step.message)},
+            llm_params=effort if effort and not dispatch else None,
             llm_call=llm_call if dispatch or llm_call != LLMCallInfo() else UNSET,
+            # A dispatch made no model request, so its effort is not a request parameter.
+            attributes=effort if dispatch else {},
         )
         if step.llm_call_count is not None and step.llm_call_count > 1:
             losses.append(
@@ -531,24 +565,15 @@ def _step(
             )
 
     calls = step.tool_calls or []
-    first_call: dict[str, int] = {}
-    for index, call in enumerate(calls):
-        if first_call.setdefault(call.tool_call_id, index) != index:
-            losses.append(
-                Loss(
-                    code="duplicate_tool_call_id",
-                    detail={"tool_call_id": call.tool_call_id},
-                    span_id=f"{span_id}/tool/{index}",
-                    turn_id=turn_id,
-                )
-            )
+    # _Trajectory guarantees each source_call_id names exactly one call of the step.
+    call_index = {call.tool_call_id: index for index, call in enumerate(calls)}
     matched: list[list[_Result]] = [[] for _ in calls]
     unlinked_source: list[_Result] = []
     for result in step.observation.results if step.observation else []:
         if result.source_call_id is None:
             unlinked_source.append(result)
         else:
-            matched[first_call[result.source_call_id]].append(result)
+            matched[call_index[result.source_call_id]].append(result)
 
     def tool_result(result: _Result, owner: str) -> tuple[ToolResult, list[Span]]:
         is_error, attributes = _is_error(result)
@@ -617,11 +642,7 @@ def _step(
         id=turn_id,
         index=step.step_id,
         role=TurnRole(step.source),
-        authorship=Authorship.COPIED_CONTEXT
-        if step.is_copied_context
-        else {"system": Authorship.HARNESS, "agent": Authorship.MODEL}.get(
-            step.source, Authorship.UNKNOWN
-        ),
+        authorship=_authorship(step),
         content=_turn_content(step.message),
         reasoning=step.reasoning_content if step.reasoning_content is not None else UNSET,
         timestamp=step.timestamp if step.timestamp is not None else UNSET,
@@ -664,11 +685,17 @@ def _agent_span(source: _Trajectory, prefix: str, losses: list[Loss]) -> Span:
         children.extend(spans)
     # Unreferenced subagents belong to the trajectory, not an invented calling step.
     children.extend(subagents.unattached())
-    metrics = source.final_metrics
+    metrics = source.final_metrics or _FinalMetrics()
     agent = source.agent
     return Span(
         id=prefix,
         kind=SpanKind.AGENT,
+        cost_usd=metrics.total_cost_usd,
+        token_counts=_tokens(
+            metrics.total_prompt_tokens,
+            metrics.total_cached_tokens,
+            metrics.total_completion_tokens,
+        ),
         agent=AgentInfo(
             name=agent.name,
             version=agent.version,
@@ -684,18 +711,8 @@ def _agent_span(source: _Trajectory, prefix: str, losses: list[Loss]) -> Span:
             trajectory_id=source.trajectory_id,
             notes=source.notes,
             continued_trajectory_ref=source.continued_trajectory_ref,
-            final_metrics=None
-            if metrics is None
-            else RunTotals(
-                token_counts=_tokens(
-                    metrics.total_prompt_tokens,
-                    metrics.total_cached_tokens,
-                    metrics.total_completion_tokens,
-                ),
-                cost_usd=metrics.total_cost_usd,
-                steps=metrics.total_steps,
-                extra=metrics.extra or {},
-            ),
+            total_steps=metrics.total_steps,
+            final_metrics_extra=metrics.extra or {},
             extra=source.extra or {},
         ),
         turns=turns,
@@ -709,18 +726,10 @@ def _normalize(source: _Trajectory) -> Trace:
         raise ValueError("trajectory_id or session_id is required for stable trace identity")
     losses: list[Loss] = []
     root = _agent_span(source, "trajectory", losses)
-    metrics = source.final_metrics or _FinalMetrics()
     return Trace(
         id=trace_id,
         root_spans=[root],
-        aggregate=TraceAggregate(
-            cost_usd=metrics.total_cost_usd,
-            token_counts=_tokens(
-                metrics.total_prompt_tokens,
-                metrics.total_cached_tokens,
-                metrics.total_completion_tokens,
-            ),
-        ),
+        aggregate=TraceAggregate(cost_usd=root.cost_usd, token_counts=root.token_counts),
         attributes={} if source.session_id is None else {"logical_case_id": source.session_id},
         losses=losses,
     )

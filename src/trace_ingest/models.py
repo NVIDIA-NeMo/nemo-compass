@@ -330,17 +330,6 @@ class AgentInfo(_TraceModel):
     )
 
 
-class RunTotals(_TraceModel):
-    """Source-reported totals for one agent run, as recorded (any may be missing)."""
-
-    token_counts: TokenCounts | None = Field(
-        default=None, description="Total token counts the source reported for the run."
-    )
-    cost_usd: float | None = None
-    steps: int | None = Field(default=None, ge=0)
-    extra: dict[str, JsonValue] = Field(default_factory=dict)
-
-
 class RunInfo(_TraceModel):
     """Source run metadata recorded for one AGENT span."""
 
@@ -360,7 +349,14 @@ class RunInfo(_TraceModel):
         default=None,
         description="Reference to the run's continuation, verbatim; not followed.",
     )
-    final_metrics: RunTotals | None = None
+    total_steps: int | None = Field(
+        default=None, ge=0, description="Step count the source reported for the run."
+    )
+    final_metrics_extra: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        description="Source extension fields of the run's totals, verbatim. The totals "
+        "themselves are the AGENT span's cost_usd and token_counts.",
+    )
     extra: dict[str, JsonValue] = Field(
         default_factory=dict, description="Source extension fields of the run, verbatim."
     )
@@ -377,7 +373,6 @@ class LLMCallInfo(_TraceModel):
             "0 a dispatch without a model call; null when unrecorded."
         ),
     )
-    reasoning_effort: str | float | None = None
     prompt_token_ids: list[int] | None = None
     completion_token_ids: list[int] | None = None
     logprobs: list[float] | None = None
@@ -396,7 +391,7 @@ class Loss(_TraceModel):
             "Structured loss data, never an encoded string. Keys by code: "
             "unresolved_subagent_ref has ref (the reference as written); "
             "continued_trajectory_not_followed has continued_trajectory_ref; "
-            "duplicate_tool_call_id has tool_call_id; llm_calls_aggregated has llm_call_count."
+            "llm_calls_aggregated has llm_call_count."
         ),
     )
     span_id: str | None = Field(default=None, description="Span the loss concerns.")
@@ -766,7 +761,6 @@ __all__ = [
     "LLMCallInfo",
     "Loss",
     "RunInfo",
-    "RunTotals",
     "SpanKind",
     "Span",
     "SubagentRef",
