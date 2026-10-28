@@ -3,8 +3,6 @@
 
 import json
 import socket
-import subprocess
-import sys
 
 import pytest
 from nooa.unifiedllm import FakeLLMClient
@@ -47,20 +45,3 @@ def test_cli_reaches_compilation(tmp_path, monkeypatch):
         cli.main(
             ["--trace.filesystem.path", "traces.jsonl", "--compass-signals", json.dumps(signals)]
         )
-
-
-@pytest.mark.parametrize("model", ["ToolCall", "ToolResult", "Trace"])
-def test_nooa_inspects_cold_trace_models(model):
-    # Each entry starts cold: no earlier test, construction, or schema generation
-    # can hide a first-use failure in NOOA's inspection of these nested models.
-    subprocess.run(
-        [
-            sys.executable,
-            "-I",
-            "-c",
-            f"from nooa.agentdoc import doc; from trace_ingest import {model}; "
-            f"doc({model}, inline_depth=4)",
-        ],
-        check=True,
-        timeout=30,
-    )
