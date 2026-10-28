@@ -100,6 +100,7 @@ jobs:
           cd "$smoke_env"
           "$smoke_env/bin/python" -I -c 'from compass.traces import Trace; from trace_ingest import Trace as SharedTrace; assert Trace is SharedTrace'
           "$smoke_env/bin/compass" --help
+          "$smoke_env/bin/python" -I "$GITHUB_WORKSPACE/tools/check_startup.py"
 
       - name: Validate release identity and checksum artifacts
         id: release
