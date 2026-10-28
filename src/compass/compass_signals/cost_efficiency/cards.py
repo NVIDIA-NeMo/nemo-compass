@@ -39,8 +39,7 @@ class RuleSpec:
     """How a rule's Problem reads."""
 
     rule: str
-    title: str
-    kinds: dict[str, tuple[str, str]]  # kind -> (label, suggested fix)
+    kinds: dict[str, tuple[str, str]]  # kind -> (title, suggested fix)
     waste: str  # what Finding.tokens counts, e.g. "previously cached tokens"
     evidence: Callable[[Finding], str]  # one sentence on one finding
     summary: Callable[[Finding], str]  # what changed in one finding of a kind; "" for nothing
@@ -89,7 +88,7 @@ def build_cards(
             CostCard(
                 card_id=f"ce:{rule}:{kind}",
                 rule=rule,
-                title=specs[rule].title,
+                title=specs[rule].kinds[kind][0],
                 waste=specs[rule].waste,
                 traces=len(trace_tokens),
                 sessions=len({member.session for member in members}),
@@ -141,9 +140,9 @@ def _describe(
     card: CostCard, spec: RuleSpec, members: Sequence[Finding], totals: Mapping[str, int]
 ) -> str:
     # A kind the spec does not list is a detector bug: the lookup raises.
-    label, fix = spec.kinds[card.kind]
+    fix = spec.kinds[card.kind][1]
     parts = [
-        f"{card.title} ({label}) in {_count(card.traces, 'trace')} "
+        f"{card.title} in {_count(card.traces, 'trace')} "
         f"({_percent(card.traces, totals['total_traces'])} of all traces, "
         f"{_percent(card.traces, totals['traces_with_counts'])} of traces with token counts; "
         f"{_count(card.sessions, 'session')}, "

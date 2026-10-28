@@ -22,7 +22,9 @@ from compass.traces import UNSET, Span
 from trace_ingest.models import ToolDefinition
 
 RULE = "cache_miss_after_tool_change"
-ToolChangeKind = Literal["set_changed", "definition_changed", "other"]
+ToolChangeKind = Literal[
+    "tools_added", "tools_removed", "tools_added_and_removed", "definition_changed", "other"
+]
 
 
 @dataclass(frozen=True)
@@ -39,7 +41,8 @@ class ToolChange:
 def check(call: Span, reference: Span) -> ToolChange | None:
     """The first difference from the reference's tool list to the call's, coarsest first.
 
-    ``set_changed``: tools added or removed, with their names.
+    ``tools_added``, ``tools_removed``, ``tools_added_and_removed``: the set of tool names
+    changed, with the added and removed names.
     ``definition_changed``: same names, a definition differs, with the changed names.
     ``other``: the lists differ in any other way, such as tool order, JSON key order,
     cache breakpoints or duplicate tool names.
@@ -51,10 +54,15 @@ def check(call: Span, reference: Span) -> ToolChange | None:
         return None
     old, new = _by_name(reference_sent), _by_name(sent)
     if old.keys() != new.keys():
-        return ToolChange(
-            "set_changed",
-            {"added": sorted(new.keys() - old.keys()), "removed": sorted(old.keys() - new.keys())},
+        added, removed = sorted(new.keys() - old.keys()), sorted(old.keys() - new.keys())
+        kind = (
+            "tools_added_and_removed"
+            if added and removed
+            else "tools_added"
+            if added
+            else "tools_removed"
         )
+        return ToolChange(kind, {"added": added, "removed": removed})
     # stable_json ignores key order but, unlike ==, tells 1 from true.
     changed = sorted(name for name in new if stable_json(old[name]) != stable_json(new[name]))
     if changed:
@@ -103,20 +111,17 @@ def _raw_json(definitions: list[ToolDefinition]) -> str:
 
 
 def _evidence(finding: Finding) -> str:
-    return (
-        f"The previous call left {finding.tokens:,} cached tokens; "
-        "this call read 0 after the tool list changed."
-    )
+    return f"The previous call left {finding.tokens:,} cached tokens; this call read 0."
 
 
 def _summary(finding: Finding) -> str:
     summary = cast(dict[str, list[str]], finding.change_summary)  # as check() records it
-    if finding.kind == "set_changed":
+    if finding.kind in ("tools_added", "tools_removed", "tools_added_and_removed"):
         parts = []
         if summary.get("added"):
             parts.append(f"Tools added: {names(summary['added'])}")
         if summary.get("removed"):
-            parts.append(f"removed: {names(summary['removed'])}")
+            parts.append(f"Tools removed: {names(summary['removed'])}")
         return "; ".join(parts) + "." if parts else ""
     if finding.kind == "definition_changed":
         return f"Changed tools: {names(summary['changed'])}."
@@ -125,19 +130,31 @@ def _summary(finding: Finding) -> str:
 
 SPEC = RuleSpec(
     rule=RULE,
-    title="Cache miss after a tool change",
     kinds={
-        "set_changed": (
-            "tools added or removed",
+        "tools_added": (
+            "Cache miss after tools were added",
             "Check whether added tools were available earlier. If so, consider registering "
             "them before the first call.",
         ),
+        "tools_removed": (
+            "Cache miss after tools were removed",
+            "Check whether removed tools must leave the list. If not, consider keeping them "
+            "registered.",
+        ),
+        "tools_added_and_removed": (
+            "Cache miss after tools were added and removed",
+            "Check whether added tools were available earlier and whether removed tools must "
+            "leave the list. If not, consider keeping one tool list from the first call.",
+        ),
         "definition_changed": (
-            "tool definitions changed",
+            "Cache miss after a tool definition changed",
             "Avoid changes that do not change the tool's meaning; keep changes needed for "
             "correct tool use.",
         ),
-        "other": ("tool list changed otherwise", "Send a byte-identical tool list on every call."),
+        "other": (
+            "Cache miss after the tool list was reordered or reformatted",
+            "Send a byte-identical tool list on every call.",
+        ),
     },
     waste="previously cached tokens; savings from a fix are unknown",
     evidence=_evidence,

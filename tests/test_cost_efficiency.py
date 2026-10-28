@@ -149,7 +149,7 @@ def test_worked_example_end_to_end():
     result = run(traces)
 
     assert sum(len(list(t.root_spans[0].children)) for t in traces) == 180
-    assert kinds(result) == [(f"t{i}", "set_changed") for i in range(1, 5)]
+    assert kinds(result) == [(f"t{i}", "tools_added") for i in range(1, 5)]
     finding = result.artifacts.findings[0]
     assert finding.tokens == 41500
     assert finding.details == {
@@ -160,14 +160,14 @@ def test_worked_example_end_to_end():
     }
     assert finding.change_summary == {"added": ["jira_lookup"], "removed": []}
     (card,) = result.artifacts.cards
-    assert card.card_id == "ce:cache_miss_after_tool_change:set_changed"
+    assert card.card_id == "ce:cache_miss_after_tool_change:tools_added"
     assert card.eligible
     (problem,) = result.problems
     assert problem.description == (
-        "Cache miss after a tool change (tools added or removed) in 4 traces (20% of all traces, "
+        "Cache miss after tools were added in 4 traces (20% of all traces, "
         "20% of traces with token counts; 4 sessions, 20% of sessions with token counts), 4 calls (2.2% of LLM calls with token counts). The "
-        "previous call left 41,500 cached tokens; this call read 0 after the tool list "
-        "changed. (166,000 previously cached tokens; savings from a fix are unknown.) "
+        "previous call left 41,500 cached tokens; this call read 0. "
+        "(166,000 previously cached tokens; savings from a fix are unknown.) "
         "Tools added: jira_lookup. "
         "Suggested fix: Check whether added tools were available earlier. If so, consider "
         "registering them before the first call. Figures cover only the observed calls."
@@ -192,16 +192,16 @@ def test_each_tool_change_kind_is_its_own_problem():
     ]
     result = run(traces)
     assert {(card.card_id, card.traces) for card in result.artifacts.cards} == {
-        ("ce:cache_miss_after_tool_change:set_changed", 3),
+        ("ce:cache_miss_after_tool_change:tools_added", 3),
         ("ce:cache_miss_after_tool_change:definition_changed", 3),
     }
     added, edited_problem = sorted(
-        result.problems, key=lambda p: "(tools added" not in p.description
+        result.problems, key=lambda p: "after tools were added" not in p.description
     )
-    assert "(tools added or removed) in 3 traces" in added.description
+    assert "Cache miss after tools were added in 3 traces" in added.description
     assert "Suggested fix: Check whether added tools" in added.description
     assert "Avoid changes" not in added.description
-    assert "(tool definitions changed) in 3 traces" in edited_problem.description
+    assert "Cache miss after a tool definition changed in 3 traces" in edited_problem.description
     assert "Suggested fix: Avoid changes that do not change" in edited_problem.description
 
 
@@ -228,7 +228,7 @@ def test_cross_trace_reference():
         )
     result = run(traces)
     assert [(f.trace_id, f.reference_trace_id, f.kind) for f in result.artifacts.findings] == [
-        (f"x{i}b", f"x{i}a", "set_changed") for i in range(3)
+        (f"x{i}b", f"x{i}a", "tools_removed") for i in range(3)
     ]
     assert result.problems
 
@@ -236,6 +236,9 @@ def test_cross_trace_reference():
 @pytest.mark.parametrize(
     ("second", "kind"),
     [
+        ([tool("search"), tool("read_file"), tool("jira")], "tools_added"),
+        ([tool("search")], "tools_removed"),
+        ([tool("search"), tool("jira")], "tools_added_and_removed"),
         ([tool("search", "Changed at 12:01."), tool("read_file")], "definition_changed"),
         ([tool("read_file"), tool("search")], "other"),  # order
         ([tool("search"), {**tool("read_file"), "cache_control": {"type": "ephemeral"}}], "other"),
@@ -520,7 +523,7 @@ def test_a_tool_change_is_found_even_when_the_model_also_changed():
         call("c1", 0, 2, uncached=10, read=0, write=20000),
         call("c2", 3, 5, uncached=10, read=0, write=20100, tools=("search",), model="other"),
     ]
-    assert kinds(run([trace("m", "m", calls)])) == [("m", "set_changed")]
+    assert kinds(run([trace("m", "m", calls)])) == [("m", "tools_removed")]
 
 
 def review_with(monkeypatch, cited: tuple[str, ...]) -> list[tuple[tuple[str, ...], str]]:
@@ -565,7 +568,7 @@ def test_llm_review_keeps_problems_two_traces_confirm(monkeypatch, cited, confir
     assert calls == [(("t1", "t2", "t3", "t4"), problem.description)]
     assert result.problems == ((problem,) if kept else ())
     assert result.finding_count == deterministic.finding_count
-    assert result.artifacts.review == {"ce:cache_miss_after_tool_change:set_changed": confirmed}
+    assert result.artifacts.review == {"ce:cache_miss_after_tool_change:tools_added": confirmed}
 
 
 def test_without_an_llm_the_signal_stays_deterministic(monkeypatch):
