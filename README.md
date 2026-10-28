@@ -51,6 +51,10 @@ Install from PyPI as [`nemo-compass`](https://pypi.org/project/nemo-compass/); t
 If `compass` is not found after installation, run `uv tool update-shell`
 and restart your terminal.
 
+Code analysis (`code_base`) also requires [ripgrep](https://github.com/BurntSushi/ripgrep)
+on `PATH`. Install it separately with `brew install ripgrep` on macOS or
+`sudo apt-get install ripgrep` on Debian/Ubuntu; the Python package does not install it.
+
 ## After your first run
 
 - [Read your results](docs/results.md) — understand insights, skipped Compass Signals, and saved output.
@@ -115,23 +119,3 @@ This project is licensed under the [Apache License, Version 2.0](LICENSE). See
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for human-readable dependency license
 disclosures, and [third_party/licenses.jsonl](third_party/licenses.jsonl) for the machine-readable
 inventory.
-
-### Source-code search prerequisite
-
-When `code_base` is enabled, install [ripgrep](https://github.com/BurntSushi/ripgrep)
-and make `rg` available on `PATH` (for example, `brew install ripgrep` on macOS
-or `apt-get install ripgrep` on Debian/Ubuntu). No search executable is needed
-when source-code access is disabled. Compass includes hidden and gitignored
-source files but retains its exclusions for credentials and generated directories.
-Patterns keep the existing `Path.match()` behavior: a relative pattern can match
-a suffix under the configured root (`tools/*.py` can also match
-`fixture/tools/example.py`). `search_code(..., path="tools")` instead scopes to
-that exact root-relative directory and its descendants. Outside paths are rejected.
-Discovery skips symlinks; explicit in-root file links resolve through the root check.
-Search uses ripgrep Unicode case matching, which does not expand `ß` to `ss` as
-Python `casefold()` did. The existing return limits are 200 paths, 100 matching
-lines, 1 MB per file and 400 lines per read; they are output/resource guardrails,
-not an assertion that the whole repository was returned. Capped subsets may vary
-with parallel traversal. A new 30-second search deadline raises `TimeoutError`
-and discards partial results; the child process is killed and reaped. The deadline
-is an operational guardrail, not a measured optimum.
