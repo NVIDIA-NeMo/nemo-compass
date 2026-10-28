@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-import json
-from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -17,7 +15,7 @@ from nooa.config import CodeActConfig
 from nooa.errors import GenerationAborted, GenerationError
 from nooa.strategies import CodeActStrategy
 from nooa.unifiedllm import UnifiedLLM
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from compass.compass_signals.compass_signals import CompassSignalResult, Problem
 from compass.insights_generation.codebase import CodebaseTools
@@ -43,7 +41,6 @@ class CandidateProblemDecision(BaseModel):
     ethos_assessment: str | None = None
     rejection_basis: Literal["code", "ethos", "code_and_ethos"] | None = None
     ethos_passage: str | None = None
-    _source_paths: tuple[str, ...] = PrivateAttr(default=())
 
     @model_validator(mode="after")
     def grounded_rejection(self) -> CandidateProblemDecision:
@@ -77,21 +74,6 @@ class CandidateProblemValidationResult:
 
     signal_results: list[CompassSignalResult]
     decisions: list[list[CandidateProblemDecision]]
-
-    def context_for(self, trace_ids: set[str]) -> str:
-        """Return only verified source paths from candidates with overlapping evidence."""
-        paths = sorted(
-            {
-                path
-                for result, decisions in zip(self.signal_results, self.decisions, strict=True)
-                for problem, decision in zip(result.problems, decisions, strict=True)
-                if decision.supported is not False
-                and trace_ids.intersection(problem.supporting_trace_ids)
-                for path in decision._source_paths
-            }
-        )
-        context = json.dumps(paths, ensure_ascii=False)
-        return context if paths and len(context) <= 8_000 else ""
 
     def retained_signal_results(self) -> list[CompassSignalResult]:
         """Keep supported and unresolved problems in their original signal results."""
@@ -163,10 +145,6 @@ class _ValidationAgent(Agent):
         deployment issues leave uncertainty. Batch reads and searches; aim for eight
         steps, with a maximum of 25 iterations.
 
-        Search a relevant file or directory first, then expand only if necessary.
-        search_code matches literal text, not regex alternation. Read short source
-        excerpts. A 200-path listing may be truncated; narrow its glob to continue.
-
         Return supported=true when evidence establishes the problem, false only when
         concrete evidence invalidates its actual claim, and null when evidence is
         missing, ambiguous, conflicting, or insufficient. Unresolved problems are retained.
@@ -199,24 +177,13 @@ class CandidateProblemValidator:
     """Review one candidate problem using optional source code and ETHOS text."""
 
     def __init__(
-        self,
-        code_base_path: Path | None,
-        llm: UnifiedLLM,
-        ethos: str | None = None,
-        *,
-        codebase: CodebaseTools | None = None,
+        self, code_base_path: Path | None, llm: UnifiedLLM, ethos: str | None = None
     ) -> None:
         if ethos is not None and not ethos.strip():
             raise ValueError("Candidate problem validation requires a non-empty ETHOS document")
         if code_base_path is None and ethos is None:
             raise ValueError("Candidate problem validation requires code_base or ETHOS.md")
-        self._codebase = codebase or (
-            CodebaseTools(code_base_path) if code_base_path is not None else None
-        )
-        if codebase is not None and (
-            code_base_path is None or codebase._root != code_base_path.expanduser().resolve()
-        ):
-            raise ValueError("Source tools must match code_base")
+        self._codebase = CodebaseTools(code_base_path) if code_base_path is not None else None
         self._ethos = ethos
         self._llm = llm
 
@@ -225,11 +192,7 @@ class CandidateProblemValidator:
     ) -> CandidateProblemDecision:
         agent = _ValidationAgent(self._codebase, self._llm)
         try:
-            with self._codebase.capture_reads() if self._codebase else nullcontext(set()) as paths:
-                decision = await agent.decide(
-                    problem, _trace_context(supporting_traces), self._ethos
-                )
-            decision._source_paths = tuple(sorted(paths))
+            decision = await agent.decide(problem, _trace_context(supporting_traces), self._ethos)
         except GenerationAborted:
             raise
         except GenerationError:

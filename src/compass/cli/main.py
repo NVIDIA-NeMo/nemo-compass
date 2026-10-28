@@ -42,7 +42,6 @@ from compass.compass_signals.compass_signals import (
 )
 from compass.config import CompassSignalsConfig, RunConfig, TraceConfig
 from compass.insight import Insight, load_insights, resolve_trace_links
-from compass.insights_generation.codebase import CodebaseTools
 from compass.insights_generation.confidence import InsightConfidence
 from compass.insights_generation.config import (
     ENV_API_BASE,
@@ -294,11 +293,9 @@ async def _validate_candidate_problems(
     code_base_path: Path | None,
     llm: UnifiedLLM,
     ethos: str | None = None,
-    *,
-    codebase: CodebaseTools | None = None,
 ) -> CandidateProblemValidationResult:
     """Review the candidate problems in each signal result, preserving their order."""
-    validator = CandidateProblemValidator(code_base_path, llm, ethos, codebase=codebase)
+    validator = CandidateProblemValidator(code_base_path, llm, ethos)
 
     async def validate_problem(problem: Problem) -> CandidateProblemDecision:
         traces = tuple(snapshot.get_trace_by_id(tid) for tid in problem.supporting_trace_ids)
@@ -324,16 +321,13 @@ async def _rate_confidence_with_code(
     snapshot: TraceSnapshot,
     code_base_path: Path,
     llm: UnifiedLLM,
-    *,
-    codebase: CodebaseTools | None = None,
-    candidate_validation: CandidateProblemValidationResult | None = None,
 ) -> list[Insight]:
     """Rate each insight's confidence against the supplied codebase."""
 
     code_base_path = code_base_path.expanduser().resolve()
     if not code_base_path.is_dir():
         raise ValueError(f"code_base must be an existing directory: {code_base_path}")
-    rater = InsightConfidence(code_base_path, llm, codebase=codebase)
+    rater = InsightConfidence(code_base_path, llm)
 
     def supporting_trace(ref: str) -> Trace | None:
         try:
@@ -348,12 +342,7 @@ async def _rate_confidence_with_code(
             if trace is not None
         )
         with telemetry.insight_confidence(insight, code_base_path) as record:
-            prior = (
-                candidate_validation.context_for({item.trace_id for item in insight.evidence})
-                if candidate_validation is not None
-                else ""
-            )
-            rating = await rater.rate(insight, supporting_traces, source_paths=prior)
+            rating = await rater.rate(insight, supporting_traces)
             telemetry.record_rating(record, insight, rating)
             return insight.model_copy(update={"confidence": rating})
 
@@ -423,11 +412,10 @@ async def _generate_insights(config: RunConfig, output: RunOutput) -> RunResult:
             existing_insights=existing,
             limitations=signal_limitations(evidence),
         )
-        codebase = CodebaseTools(config.code_base) if config.code_base is not None else None
         if any(item.problems for item in evidence):
             run_timestamp = datetime.now(timezone.utc)
             result.insights = await _compile_evidence(
-                config, api_key, snapshot, result, output, run_timestamp, codebase=codebase
+                config, api_key, snapshot, result, output, run_timestamp
             )
         result.insights = resolve_trace_links(result.insights, snapshot, existing)
         if config.code_base is not None and result.insights:
@@ -435,12 +423,7 @@ async def _generate_insights(config: RunConfig, output: RunOutput) -> RunResult:
             with telemetry.confidence(result.insights, config.code_base) as record:
                 async with _build_llm(config, api_key) as llm:
                     result.insights = await _rate_confidence_with_code(
-                        result.insights,
-                        snapshot,
-                        config.code_base,
-                        llm,
-                        codebase=codebase,
-                        candidate_validation=result.candidate_validation,
+                        result.insights, snapshot, config.code_base, llm
                     )
                 telemetry.record_confidence(record, result.insights)
         return result
@@ -453,8 +436,6 @@ async def _compile_evidence(
     result: RunResult,
     output: RunOutput,
     run_timestamp: datetime,
-    *,
-    codebase: CodebaseTools | None = None,
 ) -> list[Insight]:
     signal_results = result.evidence
     async with _build_llm(config, api_key) as llm:
@@ -466,10 +447,9 @@ async def _compile_evidence(
                 signal_results, config.code_base, ethos
             ) as record:
                 validation = await _validate_candidate_problems(
-                    signal_results, snapshot, config.code_base, llm, ethos, codebase=codebase
+                    signal_results, snapshot, config.code_base, llm, ethos
                 )
                 telemetry.record_candidate_problem_validation(record, validation)
-            result.candidate_validation = validation
             signal_results = validation.retained_signal_results()
             result.validation_rejections = validation.rejections
             if validation.unresolved_count:

@@ -148,28 +148,3 @@ def test_candidate_problem_validation_preserves_cancellation(monkeypatch, tmp_pa
     monkeypatch.setattr(validation, "_ValidationAgent", lambda *args: SimpleNamespace(decide=abort))
     with pytest.raises(GenerationAborted):
         _validate(tmp_path, FakeLLMClient())
-
-
-def test_source_paths_are_relevant_verified_and_bounded():
-    from compass.compass_signals.compass_signals import CompassSignalResult
-    from compass.insights_generation.validation import (
-        CandidateProblemDecision,
-        CandidateProblemValidationResult,
-    )
-
-    problem = Problem(description="Timeout", supporting_trace_ids=("t1",))
-    decision = CandidateProblemDecision(
-        supported=None, explanation="Unresolved", code_assessment="Untrusted invented.py"
-    )
-    result = CandidateProblemValidationResult(
-        [CompassSignalResult(signal_name="test", problems=(problem,))], [[decision]]
-    )
-    assert result.context_for({"t1"}) == ""
-    decision._source_paths = ("agent.py",)
-    assert json.loads(result.context_for({"t1"})) == ["agent.py"]
-    assert result.context_for({"other"}) == ""
-    decision._source_paths = ("x" * 8_000,)
-    assert result.context_for({"t1"}) == ""
-    decision._source_paths = ("agent.py",)
-    decision.supported = False
-    assert result.context_for({"t1"}) == ""

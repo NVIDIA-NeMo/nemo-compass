@@ -19,10 +19,7 @@ from rich.text import Text
 
 from compass.compass_signals.compass_signals import CompassSignalResult
 from compass.insight import Insight
-from compass.insights_generation.validation import (
-    CandidateProblemRejection,
-    CandidateProblemValidationResult,
-)
+from compass.insights_generation.validation import CandidateProblemRejection
 
 _SIGNAL_LABELS = {
     "anomaly-and-patterns": "Anomalies and patterns",
@@ -56,7 +53,6 @@ class RunResult:
     existing_insights: list[Insight] = field(default_factory=list)
     validation_rejections: list[CandidateProblemRejection] = field(default_factory=list)
     limitations: list[str] = field(default_factory=list)
-    candidate_validation: CandidateProblemValidationResult | None = None
 
 
 def signal_limitations(evidence: list[CompassSignalResult]) -> list[str]:

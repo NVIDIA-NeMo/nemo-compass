@@ -9,11 +9,10 @@ and summaries stay at this boundary rather than influencing analysis decisions.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sized
+from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
-from functools import wraps
 from pathlib import Path
-from typing import TYPE_CHECKING, Concatenate, ParamSpec, TypeVar
+from typing import TYPE_CHECKING
 
 from openinference.instrumentation._spans import OpenInferenceSpan
 from opentelemetry.trace import StatusCode
@@ -35,33 +34,10 @@ from compass.telemetry import record_span
 
 if TYPE_CHECKING:
     from compass.cli.output import RunResult
-    from compass.insights_generation.codebase import CodebaseTools
     from compass.insights_generation.validation import (
         CandidateProblemDecision,
         CandidateProblemValidationResult,
     )
-
-
-_P = ParamSpec("_P")
-_R = TypeVar("_R", bound=Sized)
-
-
-def codebase_operation(
-    method: Callable[Concatenate[CodebaseTools, _P], _R],
-) -> Callable[Concatenate[CodebaseTools, _P], _R]:
-    """Record one source operation; cache counters are cumulative per tools instance."""
-
-    @wraps(method)
-    def call(tools: CodebaseTools, /, *args: _P.args, **kwargs: _P.kwargs) -> _R:
-        with _phase(f"codebase.{call.__name__}", {"args": args, "kwargs": kwargs}) as record:
-            result = method(tools, *args, **kwargs)
-            record.set_output(
-                {"result_count": len(result), "cache_totals": dict(tools._cache_stats)}
-            )
-            return result
-
-    return call
-
 
 # These are display names, not keys used to look up configuration.
 _SIGNAL_NAMES = {
