@@ -54,8 +54,12 @@ compass --config config.yaml --trace.intake.query.experiment-id my-experiment-id
 ```
 
 `sort` defaults to `started_at` (oldest first); use `-started_at` for newest first.
-`trace.max_traces` overrides `query.max_traces`. Without either limit, all matching traces
-in the window are loaded.
+
+Compass loads one trace per session: every matching trace in the window that shares a
+`session_id` becomes one conversation, in start order, with spans named
+`<trace id>/<span id>`. `trace.max_traces` overrides `query.max_traces`, and both count
+sessions; each selected session is loaded completely within the window. Without either
+limit, all matching sessions in the window are loaded.
 
 Under `trace.intake`, `page_size` controls pagination (1–1,000; default 100), and
 `timeout_seconds` sets the HTTP timeout (default 30). Endpoint and workspace have no

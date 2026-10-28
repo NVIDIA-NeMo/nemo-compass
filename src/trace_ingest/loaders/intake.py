@@ -36,6 +36,7 @@ from trace_ingest.loaders.atif import (
     tool_definitions_from_atif,
     tool_result_from_atif,
 )
+from trace_ingest.loaders.helper.merge import Record, assemble
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
     UNSET,
@@ -187,7 +188,7 @@ class IntakeTraceQuery(_StrictModel):
     test_case_name: str | None = None
     session_id: str | None = None
     status: IntakeStatus | None = None
-    max_traces: int | None = Field(default=None, ge=1)
+    max_traces: int | None = Field(default=None, ge=1, description="Maximum sessions loaded")
     sort: Literal["started_at", "-started_at"] = "started_at"
 
     @field_validator("started_at_gte", "started_at_lte")
@@ -433,32 +434,55 @@ class IntakeTraceLoader:
         self._snapshot = snapshot
         return snapshot
 
-    def _traces(self, client: _IntakeClient) -> Iterator[Trace]:
-        count = 0
-        for intake_trace in client.traces(self.config.query):
-            raw_spans = [
-                span for span_page in client.span_pages(intake_trace.id) for span in span_page.data
-            ]
+    def _traces(self, client: _IntakeClient) -> list[Trace]:
+        query = self.config.query
+        # Select sessions from trace records only; stop before another page is requested.
+        sessions: dict[str, None] = {}
+        for intake_trace in client.traces(query):
+            if intake_trace.session_id in sessions:
+                continue
+            if len(sessions) == query.max_traces:
+                break
+            sessions[intake_trace.session_id] = None
+
+        records: list[Record] = []
+        for session_id in sessions:
+            selection = query.model_copy(update={"session_id": session_id, "max_traces": None})
+            session_traces = list(client.traces(selection))
             raw_results = [
                 result
-                for result_page in client.evaluator_result_pages(intake_trace.session_id)
+                for result_page in client.evaluator_result_pages(session_id)
                 for result in result_page.data
             ]
-            try:
-                yield _normalize_trace(
-                    intake_trace,
-                    raw_spans,
-                    raw_results,
-                    base_url=self.config.base_url,
-                    workspace=self.config.workspace,
+            for intake_trace in session_traces:
+                raw_spans = [
+                    span
+                    for span_page in client.span_pages(intake_trace.id)
+                    for span in span_page.data
+                ]
+                try:
+                    trace = _normalize_trace(
+                        intake_trace,
+                        raw_spans,
+                        raw_results,
+                        base_url=self.config.base_url,
+                        workspace=self.config.workspace,
+                    )
+                except (ValueError, TypeError) as error:
+                    raise IntakeLoadError(
+                        f"failed to normalize Intake trace {intake_trace.id!r}: {error}"
+                    ) from error
+                intake = trace.attributes["intake"]
+                assert isinstance(intake, dict)
+                records.append(
+                    Record(
+                        trace,
+                        conversation_input=trace.attributes.get("task_text"),
+                        conversation_output=intake.get("output"),
+                    )
                 )
-            except (ValueError, TypeError) as error:
-                raise IntakeLoadError(
-                    f"failed to normalize Intake trace {intake_trace.id!r}: {error}"
-                ) from error
-            count += 1
-            if count == self.config.query.max_traces:
-                return
+        # Every selected session is fetched completely within the window, so none is partial.
+        return assemble(records)
 
     def describe(self) -> IntakeTraceDescription:
         """Describe the configured source and most recently loaded corpus."""
