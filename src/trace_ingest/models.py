@@ -74,6 +74,52 @@ class Initiator(str, Enum):
     ENVIRONMENT = "environment"
 
 
+class SubagentRef(_TraceModel):
+    """A tool result's reference to a delegated subagent run."""
+
+    span_id: str | None = Field(
+        default=None,
+        description="The AGENT span holding the subagent run; null when it could not be resolved.",
+    )
+    trajectory_id: str | None = Field(default=None, description="Referenced run identifier.")
+    session_id: str | None = Field(
+        default=None,
+        description="Informational session identifier.",
+    )
+    trajectory_path: str | None = Field(
+        default=None,
+        description="Referenced external file or URL, verbatim.",
+    )
+    extra: dict[str, JsonValue] = Field(
+        default_factory=dict, description="Source extension fields of the reference."
+    )
+
+
+class ToolResult(_TraceModel):
+    """One source result returned for a tool invocation."""
+
+    content: JsonValue | UNSET = Field(
+        default=UNSET,
+        description="Raw recorded result content. Omit when absent; explicit JSON null remains null.",
+    )
+    is_error: bool | None = Field(
+        default=None,
+        description="Source-recorded error flag; null when the source did not record a usable flag.",
+    )
+    subagent_refs: list[SubagentRef] = Field(
+        default_factory=list,
+        description="Subagent runs this result delegated to, in source order.",
+    )
+    extra: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        description="Source extension fields of the result, minus flags that were interpreted.",
+    )
+    attributes: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        description="Additional lossless result metadata not represented by a typed field.",
+    )
+
+
 class ToolCall(_TraceModel):
     """Source metadata that identifies and joins one tool invocation."""
 
@@ -135,52 +181,6 @@ class ToolCall(_TraceModel):
         if self.results is not UNSET and len(self.results) != self.result_count:
             raise ValueError("result_count must equal len(results)")
         return self
-
-
-class ToolResult(_TraceModel):
-    """One source result returned for a tool invocation."""
-
-    content: JsonValue | UNSET = Field(
-        default=UNSET,
-        description="Raw recorded result content. Omit when absent; explicit JSON null remains null.",
-    )
-    is_error: bool | None = Field(
-        default=None,
-        description="Source-recorded error flag; null when the source did not record a usable flag.",
-    )
-    subagent_refs: list[SubagentRef] = Field(
-        default_factory=list,
-        description="Subagent runs this result delegated to, in source order.",
-    )
-    extra: dict[str, JsonValue] = Field(
-        default_factory=dict,
-        description="Source extension fields of the result, minus flags that were interpreted.",
-    )
-    attributes: dict[str, JsonValue] = Field(
-        default_factory=dict,
-        description="Additional lossless result metadata not represented by a typed field.",
-    )
-
-
-class SubagentRef(_TraceModel):
-    """A tool result's reference to a delegated subagent run."""
-
-    span_id: str | None = Field(
-        default=None,
-        description="The AGENT span holding the subagent run; null when it could not be resolved.",
-    )
-    trajectory_id: str | None = Field(default=None, description="Referenced run identifier.")
-    session_id: str | None = Field(
-        default=None,
-        description="Informational session identifier.",
-    )
-    trajectory_path: str | None = Field(
-        default=None,
-        description="Referenced external file or URL, verbatim.",
-    )
-    extra: dict[str, JsonValue] = Field(
-        default_factory=dict, description="Source extension fields of the reference."
-    )
 
 
 class ToolDefinition(_TraceModel):

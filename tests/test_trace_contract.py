@@ -1,6 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import subprocess
+import sys
+import textwrap
+
 import pytest
 from pydantic import ValidationError
 
@@ -18,6 +22,29 @@ from trace_ingest import (
     Turn,
     TurnRole,
 )
+
+
+def test_trace_models_can_be_documented_before_first_use():
+    # Other tests validate these models and can hide their first-use behavior.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent(
+                """
+                from nooa.agentdoc import doc
+                from trace_ingest import ToolCall, ToolResult
+
+                for model in (ToolCall, ToolResult):
+                    assert model.__name__ in doc(model)
+                """
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def tool(span_id, tool_call=None, **values):
