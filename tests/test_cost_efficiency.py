@@ -167,7 +167,8 @@ def test_worked_example_end_to_end():
         "Cache miss after a tool change (tools added or removed) in 4 traces (20% of all traces, "
         "20% of traces with token counts; 4 sessions, 20% of sessions with token counts), 4 calls (2.2% of LLM calls with token counts). The "
         "previous call left 41,500 cached tokens; this call read 0 after the tool list "
-        "changed. (166,000 input tokens not read from cache.) Tools added: jira_lookup. "
+        "changed. (166,000 previously cached tokens; savings from a fix are unknown.) "
+        "Tools added: jira_lookup. "
         "Suggested fix: Check whether added tools were available earlier. If so, consider "
         "registering them before the first call. Figures cover only the observed calls."
     )

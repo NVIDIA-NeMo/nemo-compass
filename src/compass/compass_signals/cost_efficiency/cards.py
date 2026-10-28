@@ -27,7 +27,7 @@ class Finding(BaseModel):
     session_id: str | None  # source-recorded; session falls back to the trace ID
     span_ids: tuple[str, ...]
     model: str | None
-    tokens: int  # what the rule counts as wasted; RuleSpec.waste names it
+    tokens: int  # what the rule counts, not a known saving; RuleSpec.waste names it
     change_summary: dict[str, JsonValue] = {}
     reference_trace_id: str | None = None  # the call compared against, for rules that compare
     reference_span_id: str | None = None
@@ -41,7 +41,7 @@ class RuleSpec:
     rule: str
     title: str
     kinds: dict[str, tuple[str, str]]  # kind -> (label, suggested fix)
-    waste: str  # what Finding.tokens counts, e.g. "input tokens not read from cache"
+    waste: str  # what Finding.tokens counts, e.g. "previously cached tokens"
     evidence: Callable[[Finding], str]  # one sentence on one finding
     summary: Callable[[Finding], str]  # what changed in one finding of a kind; "" for nothing
 

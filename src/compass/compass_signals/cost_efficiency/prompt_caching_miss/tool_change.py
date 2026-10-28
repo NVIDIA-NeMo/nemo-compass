@@ -139,7 +139,7 @@ SPEC = RuleSpec(
         ),
         "other": ("tool list changed otherwise", "Send a byte-identical tool list on every call."),
     },
-    waste="input tokens not read from cache",
+    waste="previously cached tokens; savings from a fix are unknown",
     evidence=_evidence,
     summary=_summary,
 )
