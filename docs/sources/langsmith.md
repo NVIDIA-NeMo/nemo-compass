@@ -57,7 +57,16 @@ Add fields under `trace.langsmith` as needed:
 | `api_url` | `https://langsmith.example.com` | A regional or self-hosted API endpoint. |
 
 `api_url` overrides `LANGSMITH_ENDPOINT`. Set `LANGSMITH_WORKSPACE_ID` in `.env`
-if your key needs an explicit workspace. The default limit is 100 complete traces.
+if your key needs an explicit workspace.
+
+Compass loads one trace per conversation: root runs whose metadata shares a
+`thread_id` (else `session_id`, else `conversation_id`) become one trace, in start
+order, with spans named `<trace id>/<run id>` and turns joined across the thread.
+A root run without that metadata stays its own trace; a single `chain` root is its
+agent run, with turns read from its inputs, LLM outputs, and outputs. A thread has turns
+only when every one of its root runs is an `agent` or `chain`.
+The default limit is 100 conversations. When roots remain past the limit, each loaded
+thread is marked `merge_incomplete`, since unread roots may belong to it.
 
 ## Use an export
 
@@ -78,5 +87,7 @@ trace:
 
 Rerun the same analysis command. Local exports need inference credentials only.
 Use `--full` to include child runs. The loader accepts one `.jsonl` file or a directory
-of immediate `.jsonl` files and validates the complete export before applying the limit.
+of immediate `.jsonl` files, validates and merges the complete export, then keeps the
+`max_traces` conversations with the newest root runs, the ones a live load selects,
+so a thread is never split.
 Both paths use Python SDK `>=0.12,<0.13`, installed by the extra.

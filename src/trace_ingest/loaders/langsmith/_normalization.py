@@ -152,7 +152,7 @@ def normalize_trace(
             normalized_by_id[parent_id].children.append(normalized)
 
     cost = _trace_cost_usd(runs, trace_id)
-    session = _session_key(root)
+    session = session_key(root)
     attributes: dict[str, JsonValue] = {
         "source_pointer": base_pointer,
         "langsmith": dict(langsmith_attributes),
@@ -408,7 +408,9 @@ def _trace_latency_ms(runs: Sequence[_LangSmithRun]) -> float | None:
     return (max(ends) - min(starts)).total_seconds() * 1_000
 
 
-def _session_key(root: _LangSmithRun) -> tuple[str, str] | None:
+def session_key(root: _LangSmithRun) -> tuple[str, str] | None:
+    """Return a root Run's thread key and the metadata field it was read from."""
+
     extra = getattr(root, "extra", None)
     if not isinstance(extra, Mapping):
         return None

@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +14,7 @@ from typing import Any
 
 from pydantic import JsonValue
 
+from trace_ingest.loaders.helper.merge import Record, assemble, merged_trace_id
 from trace_ingest.loaders.langsmith._normalization import (
     LANGSMITH_DEFAULT_MAX_TRACES,
     LangSmithTraceLoadError,
@@ -23,7 +24,7 @@ from trace_ingest.loaders.langsmith._normalization import (
     walk_spans,
 )
 from trace_ingest.loaders.trace_loaders import TraceDescription
-from trace_ingest.models import SpanKind, Trace, TraceSnapshot, case_key
+from trace_ingest.models import SpanKind, TraceSnapshot, case_key
 from trace_ingest.source_links import file_source_url
 
 __all__ = [
@@ -116,13 +117,15 @@ class _ExportTrace:
 
 @dataclass
 class LangSmithTraceExportFileLoader:
-    """Normalize complete traces emitted by ``langsmith trace export --full``.
+    """Normalize complete conversations emitted by ``langsmith trace export --full``.
 
     Current LangSmith CLI exports contain one JSONL file per trace and one Run
     object per line. A single JSONL file is also accepted, including the
-    stitched format produced by concatenating a directory's trace files. The
-    newest root Runs are selected before ``max_traces`` is applied, so the bound
-    matches LangSmith Trace Loader behavior and can never split a trace.
+    stitched format produced by concatenating a directory's trace files. Every
+    trace is normalized, traces that share a thread key merge into one trace,
+    and the ``max_traces`` merged traces with the newest root Runs are kept, as
+    the API loader selects them, so the bound counts conversations and can never
+    split one.
     """
 
     config: LangSmithTraceExportFileConfig
@@ -158,55 +161,50 @@ class LangSmithTraceExportFileLoader:
                 )
             seen_export_trace_ids.add(trace_id)
         export_trace_count = len(traces_from_export)
-        traces_from_export = sorted(
-            traces_from_export,
-            key=lambda trace: trace_sort_key(trace.root, trace.root.trace_id),
-            reverse=True,
-        )[: self.config.max_traces]
-        run_count = 0
-        call_count = 0
-        cases: set[str] = set()
-        sessions: set[str] = set()
-
-        def traces() -> Iterator[Trace]:
-            nonlocal run_count, call_count
-            for export_trace in reversed(traces_from_export):
-                path = export_trace.path
-                provider_runs = export_trace.runs
-                root = export_trace.root
-                trace_id = root.trace_id
-                trace, unresolved = normalize_trace(
-                    trace_id,
-                    root,
-                    provider_runs,
-                    source_pointer={
-                        "provider": "langsmith",
-                        "export_path": str(export_path),
-                        "export_file": path.name,
-                    },
-                    langsmith_attributes={"export_file": path.name},
-                    run_source_pointers={
-                        run.id: {"line_number": export_trace.line_numbers[run.id]}
-                        for run in provider_runs
-                    },
-                )
-                trace.source_url = file_source_url(path, export_trace.line_numbers[root.id])
-                if unresolved:
-                    # _parse_trace_export_file rejects this first; keep the invariant
-                    # explicit if the shared normalizer changes later.
-                    raise LangSmithTraceLoadError(
-                        f"LangSmith export file {str(path)!r} is incomplete"
-                    )
-                run_count += len(provider_runs)
-                call_count += sum(
-                    span.kind is SpanKind.TOOL for span in walk_spans(trace.root_spans)
-                )
-                cases.add(case_key(trace))
-                if trace.session_id:
-                    sessions.add(trace.session_id)
-                yield trace
-
-        snapshot = TraceSnapshot(traces())
+        traces_from_export.sort(key=lambda trace: trace_sort_key(trace.root, trace.root.trace_id))
+        run_counts: dict[str, int] = {}
+        newest_root: dict[str, tuple[datetime, str]] = {}
+        records: list[Record] = []
+        for export_trace in traces_from_export:
+            path = export_trace.path
+            provider_runs = export_trace.runs
+            root = export_trace.root
+            trace_id = root.trace_id
+            trace, unresolved = normalize_trace(
+                trace_id,
+                root,
+                provider_runs,
+                source_pointer={
+                    "provider": "langsmith",
+                    "export_path": str(export_path),
+                    "export_file": path.name,
+                },
+                langsmith_attributes={"export_file": path.name},
+                run_source_pointers={
+                    run.id: {"line_number": export_trace.line_numbers[run.id]}
+                    for run in provider_runs
+                },
+            )
+            trace.source_url = file_source_url(path, export_trace.line_numbers[root.id])
+            if unresolved:
+                # _parse_trace_export_file rejects this first; keep the invariant
+                # explicit if the shared normalizer changes later.
+                raise LangSmithTraceLoadError(f"LangSmith export file {str(path)!r} is incomplete")
+            merged_id = merged_trace_id(trace.session_id) if trace.session_id else trace_id
+            run_counts[merged_id] = run_counts.get(merged_id, 0) + len(provider_runs)
+            # Records arrive oldest root first, so the last one is the newest.
+            newest_root[merged_id] = trace_sort_key(root, trace_id)
+            records.append(
+                Record(trace, conversation_input=root.inputs, conversation_output=root.outputs)
+            )
+        try:
+            merged = assemble(records)
+        except ValueError as error:
+            raise LangSmithTraceLoadError(str(error)) from error
+        kept = set(sorted(newest_root, key=newest_root.__getitem__)[-self.config.max_traces :])
+        traces = [trace for trace in merged if trace.id in kept]
+        snapshot = TraceSnapshot(traces)
+        run_count = sum(run_counts[trace.id] for trace in traces)
 
         self._snapshot = snapshot
         self.report = LangSmithTraceLoadReport(
@@ -217,14 +215,18 @@ class LangSmithTraceExportFileLoader:
         self._description = {
             "source": f"langsmith-trace-export-file:{export_path}",
             "trace_count": snapshot.trace_count,
-            "call_count": call_count,
-            "distinct_cases": len(cases),
-            "distinct_sessions": len(sessions),
+            "call_count": sum(
+                span.kind is SpanKind.TOOL
+                for trace in traces
+                for span in walk_spans(trace.root_spans)
+            ),
+            "distinct_cases": len({case_key(trace) for trace in traces}),
+            "distinct_sessions": len({trace.session_id for trace in traces if trace.session_id}),
             "run_count": run_count,
             "unresolved_parent_count": 0,
             "export_path": str(export_path),
             "export_trace_count": export_trace_count,
-            "truncated": export_trace_count > snapshot.trace_count,
+            "truncated": len(merged) > snapshot.trace_count,
             "max_traces": self.config.max_traces,
         }
         return snapshot

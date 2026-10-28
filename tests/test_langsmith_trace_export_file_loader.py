@@ -14,8 +14,17 @@ from compass.trace_loaders.langsmith import (
     LangSmithTraceExportFileLoader,
     LangSmithTraceLoadError,
 )
-from compass.traces import SpanKind
-from trace_ingest.models import UNSET, ToolResult
+from compass.traces import SpanKind, Trace
+from trace_ingest.models import UNSET, Authorship, ToolResult, TurnRole
+
+
+def _records(trace: Trace) -> list[dict]:
+    """The merged session's per-record provenance entries."""
+    records = trace.attributes["records"]
+    assert isinstance(records, list)
+    entries = [entry for entry in records if isinstance(entry, dict)]
+    assert len(entries) == len(records)
+    return entries
 
 
 def trace_export_run_record(
@@ -112,23 +121,41 @@ def test_loader_reads_native_cli_export_and_preserves_hierarchy_and_provenance(t
 
     assert snapshot.trace_count == 1
     trace = next(iter(snapshot))
-    assert trace.id == "trace-1"
+    assert trace.id == "session:session-7"
     assert trace.aggregate.cost_usd == 0.025
     assert trace.aggregate.latency_ms == 3000
     assert (trace.session_id, trace.session_basis) == (
         "session-7",
         "langsmith.metadata.session_id",
     )
-    assert trace.attributes["source_pointer"] == {
+    assert trace.evaluator_results == {
+        "langsmith.feedback_stats.quality": [
+            {"trace_id": "trace-1", "value": {"trace-1": {"avg": 1.0}}}
+        ]
+    }
+    (record,) = _records(trace)
+    assert record["trace_id"] == "trace-1"
+    assert record["source_url"] == f"{path.resolve().as_uri()}#L2"
+    record_attributes = record["attributes"]
+    assert isinstance(record_attributes, dict)
+    assert record_attributes["source_pointer"] == {
         "provider": "langsmith",
         "export_path": str(tmp_path.resolve()),
         "export_file": "trace-1.jsonl",
         "trace_id": "trace-1",
     }
-    root_span = trace.root_spans[0]
+    (session_root,) = trace.root_spans
+    (root_span,) = session_root.children
+    assert root_span.id == "trace-1/trace-1"
     assert root_span.input == {"messages": [{"role": "user", "content": "find it"}]}
-    assert [span.id for span in root_span.children] == ["llm-1", "tool-1"]
+    assert [span.id for span in root_span.children] == ["trace-1/llm-1", "trace-1/tool-1"]
     assert [span.kind for span in root_span.children] == [SpanKind.LLM, SpanKind.TOOL]
+    assert session_root.turns is not UNSET
+    assert [(turn.content, turn.tool_call_span_ids) for turn in session_root.turns] == [
+        ("find it", []),
+        ("use the search tool", ["trace-1/tool-1"]),
+        ("done", []),
+    ]
     langsmith = root_span.attributes["langsmith"]
     assert isinstance(langsmith, dict)
     assert langsmith["tags"] == ["production"]
@@ -230,6 +257,149 @@ def test_loader_selects_newest_whole_traces_before_applying_bound(tmp_path):
     assert [trace.id for trace in loader.load()] == ["trace-b"]
     assert loader.describe()["export_trace_count"] == 2
     assert loader.describe()["truncated"] is True
+
+
+def test_loader_bounds_merged_conversations_and_never_splits_a_thread(tmp_path):
+    path = tmp_path / "all.jsonl"
+    write_trace_export_file(
+        path,
+        *(
+            trace_export_run_record(
+                trace_id,
+                trace_id=trace_id,
+                start_time=start,
+                end_time=None,
+                custom_metadata={"thread_id": "x"} if thread else None,
+            )
+            for trace_id, start, thread in [
+                ("oldest", "2026-08-31T12:00:00Z", False),
+                ("thread-old", "2026-09-01T12:00:00Z", True),
+                ("single", "2026-09-02T12:00:00Z", False),
+                ("thread-new", "2026-09-03T12:00:00Z", True),
+            ]
+        ),
+    )
+    loader = LangSmithTraceExportFileLoader(LangSmithTraceExportFileConfig(path, max_traces=2))
+
+    traces = list(loader.load())
+
+    assert [trace.id for trace in traces] == ["session:x", "single"]
+    assert [record["trace_id"] for record in _records(traces[0])] == ["thread-old", "thread-new"]
+    assert all(loss.code != "merge_incomplete" for loss in traces[0].losses)
+    description = loader.describe()
+    assert description["export_trace_count"] == 4
+    assert description["run_count"] == 3
+    assert description["truncated"] is True
+    assert (description["distinct_cases"], description["distinct_sessions"]) == (2, 1)
+
+
+def test_loader_ranks_conversations_by_their_newest_root_like_a_live_load(tmp_path):
+    path = tmp_path / "all.jsonl"
+    write_trace_export_file(
+        path,
+        *(
+            trace_export_run_record(
+                trace_id,
+                trace_id=trace_id,
+                start_time=start,
+                end_time=None,
+                custom_metadata={"thread_id": "x"} if thread else None,
+            )
+            for trace_id, start, thread in [
+                ("thread-old", "2026-09-01T12:00:00Z", True),
+                ("single", "2026-09-02T12:00:00Z", False),
+                ("thread-new", "2026-09-03T12:00:00Z", True),
+            ]
+        ),
+    )
+    loader = LangSmithTraceExportFileLoader(LangSmithTraceExportFileConfig(path, max_traces=1))
+
+    # The live loader lists roots newest first, so thread x is selected first.
+    (trace,) = loader.load()
+
+    assert trace.id == "session:x"
+    assert [record["trace_id"] for record in _records(trace)] == ["thread-old", "thread-new"]
+
+
+def test_loader_merges_traces_that_share_a_thread(tmp_path):
+    write_trace_export_file(
+        tmp_path / "all.jsonl",
+        trace_export_run_record("trace-1", custom_metadata={"thread_id": "t"}),
+        trace_export_run_record(
+            "trace-2",
+            trace_id="trace-2",
+            start_time="2026-09-01T12:01:00Z",
+            end_time="2026-09-01T12:01:03Z",
+            custom_metadata={"thread_id": "t"},
+        ),
+    )
+    loader = LangSmithTraceExportFileLoader(LangSmithTraceExportFileConfig(tmp_path / "all.jsonl"))
+
+    (trace,) = loader.load()
+
+    assert trace.id == "session:t"
+    assert (trace.session_id, trace.session_basis) == ("t", "langsmith.metadata.thread_id")
+    (session_root,) = trace.root_spans
+    assert session_root.kind is SpanKind.AGENT
+    assert [span.id for span in session_root.children] == ["trace-1/trace-1", "trace-2/trace-2"]
+    assert [record["trace_id"] for record in _records(trace)] == ["trace-1", "trace-2"]
+    description = loader.describe()
+    assert (description["trace_count"], description["export_trace_count"]) == (1, 2)
+    assert description["truncated"] is False
+
+
+def test_langchain_llm_run_under_a_chain_root_becomes_turns(tmp_path):
+    messages = {
+        "messages": [
+            [
+                {
+                    "lc": 1,
+                    "type": "constructor",
+                    "id": ["langchain", "schema", "messages", "HumanMessage"],
+                    "kwargs": {"content": "hi"},
+                }
+            ]
+        ]
+    }
+    path = tmp_path / "langchain.jsonl"
+    write_trace_export_file(
+        path,
+        trace_export_run_record("trace-1", inputs=messages),
+        trace_export_run_record(
+            "llm-1",
+            parent_run_id="trace-1",
+            run_type="llm",
+            inputs=messages,
+            outputs={"generations": [[{"text": "hello"}]]},
+        ),
+    )
+
+    (trace,) = LangSmithTraceExportFileLoader(LangSmithTraceExportFileConfig(path)).load()
+
+    (root,) = trace.root_spans
+    assert root.kind is SpanKind.AGENT
+    assert root.turns is not UNSET
+    assert [
+        (turn.role, turn.authorship, turn.content, turn.llm_span_ids) for turn in root.turns
+    ] == [
+        (TurnRole.USER, Authorship.UNKNOWN, "hi", []),
+        (TurnRole.AGENT, Authorship.MODEL, "hello", ["llm-1"]),
+    ]
+
+
+def test_chain_root_without_a_session_is_promoted_to_the_run_root(tmp_path):
+    path = tmp_path / "chain.jsonl"
+    write_trace_export_file(path, trace_export_run_record("trace-1", run_type="chain"))
+
+    (trace,) = LangSmithTraceExportFileLoader(LangSmithTraceExportFileConfig(path)).load()
+
+    assert trace.id == "trace-1"
+    assert trace.session_id is None
+    (root,) = trace.root_spans
+    assert root.kind is SpanKind.AGENT
+    assert root.attributes["subtype"] == "CHAIN"
+    # The export recorded no conversation input, so the promoted root has no turns.
+    assert root.turns is UNSET
 
 
 @pytest.mark.parametrize(
