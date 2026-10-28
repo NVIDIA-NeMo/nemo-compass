@@ -63,11 +63,11 @@ def _pagination(*, page: int, total_pages: int, total_results: int, size: int) -
     }
 
 
-def _trace_record(trace_id: str = TRACE_ID) -> dict:
+def _trace_record(trace_id: str = TRACE_ID, session_id: str = "session-1") -> dict:
     return {
         "id": trace_id,
         "root_span_id": "root",
-        "session_id": "session-1",
+        "session_id": session_id,
         "workspace": WORKSPACE,
         "input": '{"messages":[{"role":"user","content":"find it"}]}',
         "output": "null",
@@ -190,6 +190,22 @@ def _config(**overrides) -> IntakeTraceLoaderConfig:
     return IntakeTraceLoaderConfig.model_validate(values)
 
 
+def _record_roots(trace: Trace):
+    """Every record's root spans, under the merged trace's root span."""
+    (merged_root,) = trace.root_spans
+    assert merged_root.id == trace.id == f"session:{trace.session_id}"
+    return merged_root.children
+
+
+def _records(trace: Trace) -> list[dict]:
+    """The merged trace's per-record provenance entries."""
+    records = trace.attributes["records"]
+    assert isinstance(records, list)
+    entries = [entry for entry in records if isinstance(entry, dict)]
+    assert len(entries) == len(records)
+    return entries
+
+
 def test_intake_query_requires_timezone_aware_ordered_bounds():
     with pytest.raises(ValueError, match="started_at_gte must include a timezone"):
         IntakeTraceQuery(
@@ -267,11 +283,14 @@ def test_intake_loader_returns_canonical_snapshot_without_writing_files(tmp_path
 
     assert loader.load() is snapshot
     assert snapshot.trace_count == 1
-    trace = snapshot.get_trace_by_id(TRACE_ID)
-    assert [span.id for span in trace.root_spans] == ["root"]
-    assert [span.id for span in trace.root_spans[0].children] == ["tool"]
-    assert trace.root_spans[0].start_time is not None
-    assert trace.root_spans[0].start_time.tzinfo == timezone.utc
+    trace = snapshot.get_trace_by_id("session:session-1")
+    assert (trace.session_id, trace.session_basis) == ("session-1", "intake.session_id")
+    (root,) = _record_roots(trace)
+    assert root.id == f"{TRACE_ID}/root"
+    assert (root.kind, root.attributes["subtype"]) == (SpanKind.CHAIN, "AGENT")
+    assert [span.id for span in root.children] == [f"{TRACE_ID}/tool"]
+    assert root.start_time is not None
+    assert root.start_time.tzinfo == timezone.utc
     assert trace.attributes["task_text"] == {"messages": [{"role": "user", "content": "find it"}]}
     assert trace.case_id == "case-a"
     assert "tool_catalog" not in trace.attributes
@@ -282,12 +301,14 @@ def test_intake_loader_returns_canonical_snapshot_without_writing_files(tmp_path
             "required": ["query"],
         }
     }
-    intake_attributes = trace.attributes["intake"]
+    (record,) = _records(trace)
+    assert record["trace_id"] == TRACE_ID
+    intake_attributes = record["attributes"]["intake"]
     assert isinstance(intake_attributes, dict)
     assert intake_attributes["output"] is None
     assert trace.aggregate.cost_usd == 0.125
     assert trace.aggregate.latency_ms == 2000.0
-    tool = trace.root_spans[0].children[0]
+    tool = root.children[0]
     assert tool.kind is SpanKind.TOOL
     assert tool.input == {"query": "report"}
     assert tool.output == '{"documents":["report"]}'
@@ -301,12 +322,14 @@ def test_intake_loader_returns_canonical_snapshot_without_writing_files(tmp_path
     ]
 
     assert Trace.model_validate_json(trace.model_dump_json()) == trace
-    assert trace.model_dump(exclude_unset=True)["root_spans"][0]["children"][0]["id"] == "tool"
+    dumped = trace.model_dump(exclude_unset=True)
+    assert dumped["root_spans"][0]["children"][0]["children"][0]["id"] == f"{TRACE_ID}/tool"
     assert list(tmp_path.iterdir()) == []
     assert loader.describe()["source"].startswith("intake:https://")
-    assert loader.describe()["span_count"] == 2
+    assert loader.describe()["span_count"] == 3
     assert loader.describe()["call_count"] == 1
     assert loader.describe()["distinct_cases"] == 1
+    assert loader.describe()["distinct_sessions"] == 1
 
 
 @pytest.mark.parametrize("source", ["atif", "otel"])
@@ -347,8 +370,8 @@ def test_intake_preserves_missing_and_explicit_null_payloads(source):
     )
 
     trace = next(iter(loader.load()))
-    assert trace.id == TRACE_ID
-    missing_span, null_span = trace.root_spans
+    assert trace.id == "session:session-1"
+    missing_span, null_span = _record_roots(trace)
     assert missing_span.input is UNSET
     assert missing_span.output is UNSET
     assert missing_span.tool_call is not None
@@ -402,16 +425,24 @@ def test_intake_loader_rejects_pagination_inconsistency():
 
 
 def test_intake_max_traces_stops_before_requesting_another_page():
-    requested_trace_pages = []
+    selection_pages = []
+    session_requests = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        params = request.url.params
         if request.url.path.endswith("/traces"):
-            page = int(request.url.params["page"])
-            requested_trace_pages.append(page)
-            data = [_trace_record(f"trace-{page}")]
-            pagination = _pagination(page=page, total_pages=2, total_results=2, size=1)
+            if "filter[session_id]" in params:
+                session_requests.append(dict(params))
+                session = params["filter[session_id]"]
+                data = [_trace_record(f"trace-{session[-1]}", session)]
+                pagination = _pagination(page=1, total_pages=1, total_results=1, size=1)
+            else:
+                page = int(params["page"])
+                selection_pages.append(page)
+                data = [_trace_record(f"trace-{page}", f"session-{page}")]
+                pagination = _pagination(page=page, total_pages=3, total_results=3, size=1)
         else:
-            trace_id = request.url.params["filter[trace_id]"]
+            trace_id = params["filter[trace_id]"]
             data = [_span_record("root", trace_id=trace_id)]
             pagination = _pagination(page=1, total_pages=1, total_results=1, size=1)
         return httpx.Response(200, json={"data": data, "pagination": pagination})
@@ -425,8 +456,13 @@ def test_intake_max_traces_stops_before_requesting_another_page():
     assert isinstance(loader, IntakeTraceLoader)
     loader.transport = _mock_transport(handler)
 
-    assert [trace.id for trace in loader.load()] == ["trace-1"]
-    assert requested_trace_pages == [1]
+    assert [trace.id for trace in loader.load()] == ["session:session-1"]
+    # Page 2 shows session-1 ended; page 3 is never requested.
+    assert selection_pages == [1, 2]
+    (session_request,) = session_requests
+    assert session_request["filter[session_id]"] == "session-1"
+    assert session_request["filter[started_at][gte]"] == "2026-08-28T18:40:00+00:00"
+    assert session_request["filter[started_at][lte]"] == "2026-08-28T18:42:00+00:00"
 
 
 def test_intake_loader_rejects_duplicate_trace_ids():
@@ -444,8 +480,93 @@ def test_intake_loader_rejects_duplicate_trace_ids():
         transport=_mock_transport(handler),
     )
 
-    with pytest.raises(IntakeLoadError, match="duplicate trace id"):
+    # Both records namespace their spans by the shared trace id, which collides.
+    with pytest.raises(IntakeLoadError, match="session 'session-1' could not be merged"):
         loader.load()
+
+
+def _conversation_handler(requests):
+    """Two traces of session-1; the second re-sends the first exchange."""
+    inputs = {
+        "trace-1": [{"role": "user", "content": "find it"}],
+        "trace-2": [
+            {"role": "user", "content": "find it"},
+            {"role": "assistant", "content": "found"},
+            {"role": "user", "content": "thanks"},
+        ],
+    }
+    outputs = {"trace-1": "found", "trace-2": "you're welcome"}
+    started = {"trace-1": "2026-08-28T18:40:00", "trace-2": "2026-08-28T18:41:00"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/evaluator-results"):
+            return _empty_evaluator_page()
+        if request.url.path.endswith("/traces"):
+            data = []
+            for trace_id in inputs:
+                record = _trace_record(trace_id)
+                record["input"] = json.dumps({"messages": inputs[trace_id]})
+                record["started_at"] = started[trace_id]
+                record["ended_at"] = None
+                data.append(record)
+        else:
+            trace_id = request.url.params["filter[trace_id]"]
+            times = {"started_at": started[trace_id], "ended_at": started[trace_id]}
+            data = [
+                _span_record("root", trace_id=trace_id, **times),
+                _span_record(
+                    "llm",
+                    trace_id=trace_id,
+                    parent_span_id="root",
+                    kind="LLM",
+                    output=json.dumps(outputs[trace_id]),
+                    **times,
+                ),
+            ]
+        return httpx.Response(
+            200,
+            json={
+                "data": data,
+                "pagination": _pagination(
+                    page=1, total_pages=1, total_results=len(data), size=len(data)
+                ),
+            },
+        )
+
+    return handler
+
+
+def test_intake_session_traces_merge_into_one_conversation():
+    requests = []
+    loader = IntakeTraceLoader(
+        config=_config(), transport=httpx.MockTransport(_conversation_handler(requests))
+    )
+
+    (trace,) = loader.load()
+
+    assert trace.id == "session:session-1"
+    roots = _record_roots(trace)
+    assert [(root.id, root.kind, root.attributes["subtype"]) for root in roots] == [
+        ("trace-1/root", SpanKind.CHAIN, "AGENT"),
+        ("trace-2/root", SpanKind.CHAIN, "AGENT"),
+    ]
+    turns = trace.root_spans[0].turns
+    assert turns is not UNSET
+    assert [(turn.role.value, turn.content, turn.llm_span_ids) for turn in turns] == [
+        ("user", "find it", []),
+        ("agent", "found", ["trace-1/llm"]),
+        ("user", "thanks", []),
+        ("agent", "you're welcome", ["trace-2/llm"]),
+    ]
+    trace_requests = [r for r in requests if r.url.path.endswith("/traces")]
+    session_request = trace_requests[-1].url.params
+    assert session_request["filter[session_id]"] == "session-1"
+    assert session_request["filter[started_at][gte]"] == "2026-08-28T18:40:00+00:00"
+    assert session_request["filter[started_at][lte]"] == "2026-08-28T18:42:00+00:00"
+    # Evaluator results are per session, so they are fetched once for both traces.
+    evaluator_requests = [r for r in requests if r.url.path.endswith("/evaluator-results")]
+    assert [r.url.params["filter[session_id]"] for r in evaluator_requests] == ["session-1"]
 
 
 def test_intake_loader_rejects_an_empty_selection():
@@ -493,7 +614,8 @@ def test_intake_optional_auth_is_sent_on_every_page_without_persisting_token(mon
 
     loader = IntakeTraceLoader(config=_config(), transport=httpx.MockTransport(handler))
     loader.load()
-    assert len(requests) == 4
+    # Trace selection, the session's traces, its evaluator results, and two span pages.
+    assert len(requests) == 5
     if token:
         assert token not in repr(loader.config)
         assert token not in json.dumps(loader.describe())
@@ -555,9 +677,10 @@ def test_intake_equal_time_span_order_is_independent_of_response_order():
         loader = _loader_for_records(list(ordering))
         trace = next(iter(loader.load()))
         outputs.append(trace.model_dump_json())
-        assert [(span.id, span.tool_call.index) for span in trace.root_spans[0].children] == [
-            ("a", 0),
-            ("b", 1),
+        (root,) = _record_roots(trace)
+        assert [(span.id, span.tool_call.index) for span in root.children] == [
+            (f"{TRACE_ID}/a", 0),
+            (f"{TRACE_ID}/b", 1),
         ]
     assert len(set(outputs)) == 1
 
@@ -568,7 +691,7 @@ def test_intake_preserves_span_model_and_cost():
             _span_record("root", kind="LLM", model="example-model", cost_total_usd=0.125),
         ],
     )
-    span = next(iter(loader.load())).root_spans[0]
+    (span,) = _record_roots(next(iter(loader.load())))
     assert span.model == "example-model"
     assert span.cost_usd == 0.125
 
@@ -579,7 +702,7 @@ def _agent_attributes(*names: str) -> str:
 
 
 @pytest.mark.parametrize("root_names", [("search",), ()])
-def test_intake_atif_definitions_stay_on_the_span_that_declared_them(root_names):
+def test_intake_atif_definitions_stay_on_the_agent_that_declared_them(root_names):
     trace = next(
         iter(
             _loader_for_records(
@@ -601,13 +724,16 @@ def test_intake_atif_definitions_stay_on_the_span_that_declared_them(root_names)
         )
     )
 
-    root = trace.root_spans[0]
+    session = trace.root_spans[0]
+    (root,) = session.children
     sub = root.children[0]
-    assert root.tool_definitions is not UNSET
-    assert [definition.name for definition in root.tool_definitions] == list(root_names)
+    # The record's root agent is the merged trace's run, so its tools move to its root.
+    assert root.tool_definitions is UNSET
+    declared = [] if session.tool_definitions is UNSET else session.tool_definitions
+    assert [definition.name for definition in declared] == list(root_names)
     assert [definition.name for definition in sub.tool_definitions] == ["lookup", "lookup", "write"]
     assert sub.children[0].tool_definitions is UNSET
-    assert "intake_loader_gaps" not in trace.attributes
+    assert "intake_loader_gaps" not in _records(trace)[0]["attributes"]
 
 
 def test_intake_atif_definitions_without_owner_are_a_gap():
@@ -620,7 +746,7 @@ def test_intake_atif_definitions_without_owner_are_a_gap():
     )
 
     assert tool_catalog(trace) is None
-    assert trace.attributes["intake_loader_gaps"] == [
+    assert _records(trace)[0]["attributes"]["intake_loader_gaps"] == [
         {"code": "tool_definitions_without_owner_span", "span_id": "root"}
     ]
 
@@ -694,7 +820,7 @@ def test_intake_atif_tool_result_combines_status_and_payload_flag(
         )
     )
 
-    tool = trace.root_spans[0].children[0]
+    tool = _record_roots(trace)[0].children[0]
     assert tool.tool_call.results == [
         ToolResult(content="x", is_error=is_error, attributes=result_attributes)
     ]
@@ -747,10 +873,14 @@ def test_intake_failed_load_does_not_cache_partial_snapshot_and_can_retry():
     assert loader.describe() == before
     fail = False
     snapshot = loader.load()
-    assert [trace.id for trace in snapshot] == ["trace-1", "trace-2"]
+    assert [trace.id for trace in snapshot] == ["session:session-1"]
+    (trace,) = snapshot
+    assert [record["trace_id"] for record in _records(trace)] == ["trace-1", "trace-2"]
     assert loader.load() is snapshot
     description = loader.describe()
-    assert description["trace_count"] == description["span_count"] == 2
+    assert description["trace_count"] == 1
+    # The merged root and both records' root spans.
+    assert description["span_count"] == 3
     assert description["distinct_cases"] == 1
     description["query"].clear()
     assert loader.describe()["query"] == _query().describe()
@@ -788,17 +918,27 @@ def test_experiment_selection_pages_evaluations_and_merges_traces_before_limit(s
             assert params["sort"] == sort
             name = params["filter[evaluation_name]"]
             selected = sorted(records[name], reverse=sort.startswith("-"))
-            trace_id, timestamp = selected[page - 1]
-            trace_pages.append((name, page))
-            record = _trace_record(trace_id)
-            record["started_at"] = timestamp
-            record["ended_at"] = None
-            record["evaluation_context"]["evaluation_name"] = name
+            session = params.get("filter[session_id]")
+            if session is not None:
+                selected = [entry for entry in selected if entry[0] == session]
+                page_count = len(selected)
+            else:
+                trace_pages.append((name, page))
+                page_count = 2
+            data = []
+            for trace_id, timestamp in selected[page - 1 : page]:
+                record = _trace_record(trace_id, trace_id)
+                record["started_at"] = timestamp
+                record["ended_at"] = None
+                record["evaluation_context"]["evaluation_name"] = name
+                data.append(record)
             return httpx.Response(
                 200,
                 json={
-                    "data": [record],
-                    "pagination": _pagination(page=page, total_pages=2, total_results=2, size=1),
+                    "data": data,
+                    "pagination": _pagination(
+                        page=page, total_pages=page_count, total_results=page_count, size=len(data)
+                    ),
                 },
             )
         if request.url.path.endswith("/spans"):
@@ -829,9 +969,10 @@ def test_experiment_selection_pages_evaluations_and_merges_traces_before_limit(s
     snapshot = loader.load()
 
     assert [trace.id for trace in snapshot] == (
-        ["b4", "a3"] if sort.startswith("-") else ["a1", "b2"]
+        ["session:b4", "session:a3"] if sort.startswith("-") else ["session:a1", "session:b2"]
     )
-    assert len(trace_pages) == 3
+    # Selection reads one trace past the second session to see that it is a third.
+    assert len(trace_pages) == 4
     assert len([r for r in requests if r.url.path.endswith("/spans")]) == 2
     assert loader.describe()["query"]["experiment_id"] == "experiment-1"
     assert loader.load() is snapshot
@@ -877,7 +1018,8 @@ def test_experiment_selection_intersects_evaluation_name_and_never_falls_back(
     )
     if has_evaluations and evaluation_name != "outside-experiment":
         assert loader.load().trace_count == 1
-        assert len(trace_requests) == 1
+        # The session selection, then the selected session's traces.
+        assert len(trace_requests) == 2
     else:
         with pytest.raises(IntakeLoadError, match="returned no traces"):
             loader.load()

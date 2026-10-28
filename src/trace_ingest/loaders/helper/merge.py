@@ -11,11 +11,13 @@ spans are demoted to CHAIN so the trace's root is their nearest agent.
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import JsonValue
 
+from trace_ingest.loaders.helper.turns import NoTurns, agent_turns, with_run_root_turns
 from trace_ingest.models import (
     UNSET,
     Authorship,
@@ -329,4 +331,88 @@ def merge_records(
     )
 
 
-__all__ = ["join_turns", "merge_records", "merged_trace_id", "prepare_record"]
+@dataclass(frozen=True)
+class Record:
+    """One normalized provider record and its recorded conversation input and output."""
+
+    trace: Trace
+    conversation_input: object = None
+    conversation_output: object = None
+
+
+def _merge_group(group: Sequence[Record], *, capped: bool) -> Trace:
+    first = group[0].trace
+    assert first.session_id is not None and first.session_basis is not None
+    prepared = [prepare_record(record.trace) for record in group]
+    owner_id = merged_trace_id(first.session_id)
+    record_turns: list[list[Turn]] | None = []
+    turn_losses: list[Loss] = []
+    try:
+        for (trace, _), record in zip(prepared, group, strict=True):
+            turns, losses = agent_turns(
+                trace.root_spans,
+                owner_id=owner_id,
+                conversation_input=record.conversation_input,
+                conversation_output=record.conversation_output,
+            )
+            record_turns.append(turns)
+            turn_losses += losses
+    except NoTurns:
+        record_turns, turn_losses = None, []
+    return merge_records(
+        [trace for trace, _ in prepared],
+        session_id=first.session_id,
+        session_basis=first.session_basis,
+        definitions=[definition for _, definitions in prepared for definition in definitions],
+        record_turns=record_turns,
+        turn_losses=turn_losses,
+        partial_reason="max_traces" if capped else None,
+    )
+
+
+def assemble(
+    records: Sequence[Record],
+    *,
+    orchestration_subtypes: frozenset[str] = frozenset(),
+    capped: bool = False,
+) -> list[Trace]:
+    """One trace per ``session_id``, in order of each key's first record.
+
+    Records sharing a ``session_id`` merge into one trace whose turns are built
+    per record and joined; when any record has no recoverable conversation, the
+    merged trace has no turns. A record without a ``session_id`` stays its own
+    trace, with turns on its promoted run root. ``capped`` marks every merged
+    trace incomplete because selection stopped at the loader's limit. Raises
+    ``ValueError`` naming the ``session_id`` when its records cannot be merged.
+    """
+    groups: dict[str | int, list[Record]] = {}
+    for index, record in enumerate(records):
+        groups.setdefault(record.trace.session_id or index, []).append(record)
+    traces: list[Trace] = []
+    for key, group in groups.items():
+        if isinstance(key, int):
+            (record,) = group
+            traces.append(
+                with_run_root_turns(
+                    record.trace,
+                    conversation_input=record.conversation_input,
+                    conversation_output=record.conversation_output,
+                    orchestration_subtypes=orchestration_subtypes,
+                )
+            )
+            continue
+        try:
+            traces.append(_merge_group(group, capped=capped))
+        except ValueError as error:
+            raise ValueError(f"session {key!r} could not be merged: {error}") from error
+    return traces
+
+
+__all__ = [
+    "Record",
+    "assemble",
+    "join_turns",
+    "merge_records",
+    "merged_trace_id",
+    "prepare_record",
+]

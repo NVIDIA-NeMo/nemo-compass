@@ -20,7 +20,13 @@ from trace_ingest import (
     TraceAggregate,
     TurnRole,
 )
-from trace_ingest.loaders.helper.merge import join_turns, merge_records, prepare_record
+from trace_ingest.loaders.helper.merge import (
+    Record,
+    assemble,
+    join_turns,
+    merge_records,
+    prepare_record,
+)
 
 U = TurnRole.USER
 A = TurnRole.AGENT
@@ -32,8 +38,10 @@ def at(second):
     return datetime(2026, 1, 1, 0, 0, second, tzinfo=UTC)
 
 
-def llm(span_id, second):
-    return Span(id=span_id, kind=SpanKind.LLM, start_time=at(second), end_time=at(second + 1))
+def llm(span_id, second, **values):
+    return Span(
+        id=span_id, kind=SpanKind.LLM, start_time=at(second), end_time=at(second + 1), **values
+    )
 
 
 def record(trace_id, *roots, **values):
@@ -290,6 +298,43 @@ def test_case_id_is_dropped_when_records_disagree():
     ]
 
     assert merge_records(records, session_id="s", session_basis="b").case_id is None
+
+
+def session_record(trace_id, second, conversation_input, session_id="s"):
+    trace = record(
+        trace_id,
+        chain("c", llm("l", second, output="reply")),
+        session_id=session_id,
+        session_basis="test.session",
+    )
+    return Record(trace, conversation_input=conversation_input)
+
+
+def test_assemble_groups_by_session_id_and_keeps_records_without_one():
+    loose = Record(
+        record("loose", chain("c", llm("l", 9, output="hi"))), conversation_input="hello"
+    )
+    traces = assemble(
+        [session_record("r1", 1, "q1"), loose, session_record("r2", 5, "q2")], capped=True
+    )
+
+    merged, single = traces
+    assert (merged.id, single.id) == ("session:s", "loose")
+    merged_turns = merged.root_spans[0].turns
+    assert merged_turns is not UNSET
+    assert [turn.content for turn in merged_turns] == ["q1", "reply", "q2", "reply"]
+    assert merged.losses[-1].code == "merge_incomplete"
+    (root,) = single.root_spans
+    assert (root.id, root.kind, root.attributes["subtype"]) == ("c", SpanKind.AGENT, "CHAIN")
+    assert root.turns is not UNSET
+    assert [turn.content for turn in root.turns] == ["hello", "hi"]
+    assert single.losses == []
+
+
+def test_session_without_a_recorded_input_has_no_turns():
+    (merged,) = assemble([session_record("r1", 1, "q1"), session_record("r2", 5, None)])
+
+    assert merged.root_spans[0].turns is UNSET
 
 
 def test_session_basis_requires_session_id():
