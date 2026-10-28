@@ -6,7 +6,8 @@
 Source contract: https://github.com/harbor-framework/harbor/blob/main/rfcs/0001-trajectory-format.md
 
 Each non-blank line is one trajectory with a ``trajectory_id`` or ``session_id``.
-``trace.attributes["logical_case_id"]`` is the ``session_id``, when recorded.
+``Trace.session_id`` is the ``session_id``, when recorded (``session_basis``
+``atif.session_id``).
 
 Accepted input is Harbor's ``Trajectory`` field set for ATIF-v1.0 through v1.8,
 validated strictly (no type coercion, unknown keys rejected), plus
@@ -90,6 +91,7 @@ from trace_ingest.models import (
     TraceSnapshot,
     Turn,
     TurnRole,
+    case_key,
 )
 from trace_ingest.source_links import file_source_url
 
@@ -730,7 +732,8 @@ def _normalize(source: _Trajectory) -> Trace:
         id=trace_id,
         root_spans=[root],
         aggregate=TraceAggregate(cost_usd=root.cost_usd, token_counts=root.token_counts),
-        attributes={} if source.session_id is None else {"logical_case_id": source.session_id},
+        session_id=source.session_id,
+        session_basis=None if source.session_id is None else "atif.session_id",
         losses=losses,
     )
 
@@ -746,6 +749,7 @@ class ATIFTraceLoader:
         path = self.config.path
         _line_number = call_count = 0
         cases: set[str] = set()
+        sessions: set[str] = set()
 
         def traces() -> Iterator[Trace]:
             nonlocal _line_number, call_count
@@ -760,7 +764,9 @@ class ATIFTraceLoader:
                         span = pending.pop()
                         call_count += span.kind is SpanKind.TOOL
                         pending.extend(span.children)
-                    cases.add(str(trace.attributes.get("logical_case_id") or trace.id))
+                    cases.add(case_key(trace))
+                    if trace.session_id:
+                        sessions.add(trace.session_id)
                     yield trace
 
         try:
@@ -774,7 +780,8 @@ class ATIFTraceLoader:
             path=str(path.resolve()),
             trace_count=len(snapshot),
             call_count=call_count,
-            distinct_logical_cases=len(cases),
+            distinct_cases=len(cases),
+            distinct_sessions=len(sessions),
         )
 
     def load(self) -> TraceSnapshot:

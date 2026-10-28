@@ -23,7 +23,7 @@ from trace_ingest.loaders.langsmith._normalization import (
     walk_spans,
 )
 from trace_ingest.loaders.trace_loaders import TraceDescription
-from trace_ingest.models import SpanKind, Trace, TraceSnapshot
+from trace_ingest.models import SpanKind, Trace, TraceSnapshot, case_key
 from trace_ingest.source_links import file_source_url
 
 __all__ = [
@@ -165,7 +165,8 @@ class LangSmithTraceExportFileLoader:
         )[: self.config.max_traces]
         run_count = 0
         call_count = 0
-        logical_cases: set[str] = set()
+        cases: set[str] = set()
+        sessions: set[str] = set()
 
         def traces() -> Iterator[Trace]:
             nonlocal run_count, call_count
@@ -200,7 +201,9 @@ class LangSmithTraceExportFileLoader:
                 call_count += sum(
                     span.kind is SpanKind.TOOL for span in walk_spans(trace.root_spans)
                 )
-                logical_cases.add(str(trace.attributes.get("logical_case_id") or trace.id))
+                cases.add(case_key(trace))
+                if trace.session_id:
+                    sessions.add(trace.session_id)
                 yield trace
 
         snapshot = TraceSnapshot(traces())
@@ -215,7 +218,8 @@ class LangSmithTraceExportFileLoader:
             "source": f"langsmith-trace-export-file:{export_path}",
             "trace_count": snapshot.trace_count,
             "call_count": call_count,
-            "distinct_logical_cases": len(logical_cases),
+            "distinct_cases": len(cases),
+            "distinct_sessions": len(sessions),
             "run_count": run_count,
             "unresolved_parent_count": 0,
             "export_path": str(export_path),

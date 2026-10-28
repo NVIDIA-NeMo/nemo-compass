@@ -240,7 +240,7 @@
           "additionalProperties": {
             "$ref": "#/$defs/JsonValue"
           },
-          "description": "Structured loss data, never an encoded string. Keys by code: unresolved_subagent_ref has ref (the reference as written); continued_trajectory_not_followed has continued_trajectory_ref; llm_calls_aggregated has llm_call_count.",
+          "description": "Structured loss data, never an encoded string. Keys by code: unresolved_subagent_ref has ref (the reference as written); continued_trajectory_not_followed has continued_trajectory_ref; llm_calls_aggregated has llm_call_count; session_partial has reason and loaded_record_count.",
           "title": "Detail",
           "type": "object"
         },
@@ -1264,7 +1264,7 @@
   "additionalProperties": {
     "$ref": "#/$defs/JsonValue"
   },
-  "description": "Canonical representation of one complete end-to-end agent run.\n\nSource loaders deterministically construct this model before any Compass\nSignal runs. Provider-specific parsing or compatibility logic does not\nbelong downstream of this boundary.",
+  "description": "Canonical representation of one conversation: one provider record, or every record\nthat shares a provider session key, merged by the loader.\n\nSource loaders deterministically construct this model before any Compass\nSignal runs. Provider-specific parsing or compatibility logic does not\nbelong downstream of this boundary.",
   "properties": {
     "aggregate": {
       "$ref": "#/$defs/TraceAggregate",
@@ -1277,6 +1277,20 @@
       "description": "Additional lossless trace-level source metadata; do not invent values.",
       "title": "Attributes",
       "type": "object"
+    },
+    "case_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Task or retry identity; never a session key.",
+      "title": "Case Id"
     },
     "evaluator_results": {
       "additionalProperties": {
@@ -1309,11 +1323,39 @@
       "type": "array"
     },
     "schema_version": {
-      "const": "2",
-      "default": "2",
+      "const": "3",
+      "default": "3",
       "description": "Canonical trace contract version.",
       "title": "Schema Version",
       "type": "string"
+    },
+    "session_basis": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Provider field session_id was read from, e.g. langfuse.sessionId.",
+      "title": "Session Basis"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Provider conversation key shared by every record in this trace.",
+      "title": "Session Id"
     },
     "source_url": {
       "anyOf": [

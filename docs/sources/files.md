@@ -44,6 +44,11 @@ recorded; `null` means the source explicitly recorded null. Output links back to
 and its physical line number; whether the viewer jumps to that line depends on its support
 for URL fragments. Repeated problems need supporting evidence across multiple traces.
 
+One trace is one conversation. Set `case_id` when several traces are attempts at the same
+task, so they count as one independent case. Set `session_id` with `session_basis` (the
+source field it came from) when the trace carries a provider conversation key; without
+`case_id`, it identifies the case.
+
 Put `tool_definitions` on the owning AGENT span or the LLM span offered those tools.
 Keep every entry in order, with its original value in `raw`. Add `name` and `input_schema`
 when understood to enable tool-schema checks. Omit an unavailable list; `[]` means the
@@ -65,9 +70,9 @@ references and other known gaps are recorded in `Trace.losses`. The
 [loader](../../src/trace_ingest/loaders/atif.py) documents the exact mapping, and
 [`Loss`](../../src/trace_ingest/models.py) the loss fields.
 
-The `session_id` is the trace's logical case. Include `agent.tool_definitions` to enable
-tool-schema checks; an observation result with `is_error: true` (on the result or in its
-`extra`) marks the tool call as failed.
+The `session_id` becomes the trace's `session_id`, with `session_basis` `atif.session_id`.
+Include `agent.tool_definitions` to enable tool-schema checks; an observation result with
+`is_error: true` (on the result or in its `extra`) marks the tool call as failed.
 
 ## A different trace system
 
