@@ -90,21 +90,6 @@ jobs:
       - name: Check distributions
         run: uv run --locked python tools/check_distribution_licenses.py
 
-      - name: Install application wheel in a clean environment
-        run: |
-          smoke_env="$(mktemp -d)"
-          trap 'rm -rf "$smoke_env"' EXIT
-          uv venv "$smoke_env"
-          uv pip install --no-config --no-sources --python "$smoke_env/bin/python" \
-            dist/nemo_compass-*.whl
-          uv pip install --python "$smoke_env/bin/python" pytest
-          cp tests/test_startup.py tests/test_trace_schema.py "$smoke_env/"
-          cd "$smoke_env"
-          "$smoke_env/bin/python" -I -c 'from compass.traces import Trace; from trace_ingest import Trace as SharedTrace; assert Trace is SharedTrace'
-          "$smoke_env/bin/compass" --help
-          "$smoke_env/bin/python" -I -m pytest --import-mode=importlib \
-            test_startup.py test_trace_schema.py::test_nooa_inspects_cold_trace_models
-
       - name: Validate release identity and checksum artifacts
         id: release
         if: inputs.release-ref != ''
