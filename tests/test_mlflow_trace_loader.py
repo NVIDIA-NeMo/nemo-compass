@@ -736,10 +736,10 @@ def test_agent_root_conversation_becomes_linked_turns():
             [],
             [],
         ),
-        ("root/turn/5", TurnRole.AGENT, model, "Looking.", ["llm"], []),
-        ("root/turn/6", TurnRole.AGENT, unknown, UNSET, [], ["tool"]),
+        # The tool call joins the model turn that precedes it.
+        ("root/turn/5", TurnRole.AGENT, model, "Looking.", ["llm"], ["tool"]),
         # The root output matches the last model message, so no closing turn.
-        ("root/turn/7", TurnRole.AGENT, model, "A bolt.", ["final"], []),
+        ("root/turn/6", TurnRole.AGENT, model, "A bolt.", ["final"], []),
     ]
     # A nested agent's model call belongs to that agent, not the root's conversation.
     assert normalized.losses == [

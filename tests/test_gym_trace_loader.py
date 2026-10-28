@@ -822,12 +822,12 @@ def test_responses_items_become_ordered_linked_turns(tmp_path):
         )
         for turn in root.turns
     ]
-    unknown, generated = Authorship.UNKNOWN, Authorship.MODEL
+    copied, unknown, generated = Authorship.COPIED_CONTEXT, Authorship.UNKNOWN, Authorship.MODEL
     assert rows == [
         (
             "gym/response/turn/1",
             TurnRole.SYSTEM,
-            unknown,
+            copied,
             "Recorded system instructions",
             [],
             [],
@@ -836,7 +836,7 @@ def test_responses_items_become_ordered_linked_turns(tmp_path):
         (
             "gym/response/turn/2",
             TurnRole.SYSTEM,
-            unknown,
+            copied,
             "Recorded developer rules",
             [],
             [],
@@ -907,13 +907,14 @@ def test_request_history_turns_are_not_attributed_to_the_response(tmp_path):
     (root,) = next(iter(loader_for(tmp_path, source).load())).root_spans
     model, called, generated = root.children
     # The echoed request prefix is counted once; calls split at the request boundary.
+    # Request history is copied context and links no spans of this response.
     assert [
         (turn.role, turn.authorship, turn.llm_span_ids, turn.tool_call_span_ids)
         for turn in root.turns
     ] == [
-        (TurnRole.SYSTEM, Authorship.UNKNOWN, [], []),
+        (TurnRole.SYSTEM, Authorship.COPIED_CONTEXT, [], []),
         (TurnRole.USER, Authorship.UNKNOWN, [], []),
-        (TurnRole.AGENT, Authorship.UNKNOWN, [], [called.id]),
+        (TurnRole.AGENT, Authorship.COPIED_CONTEXT, [], []),
         (TurnRole.AGENT, Authorship.MODEL, [model.id], [generated.id]),
     ]
 
