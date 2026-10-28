@@ -11,7 +11,6 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
-from threading import Timer
 from typing import Annotated
 
 from nooa.agentdoc import hidden, spec
@@ -77,7 +76,7 @@ class CodebaseTools(Skill):
         return resolved
 
     @hidden
-    def _run_rg(self, args: list[str], scope: str = ".") -> Iterator[bytes]:
+    def _ripgrep_output(self, args: list[str], scope: str = ".") -> Iterator[bytes]:
         executable = shutil.which("rg")
         if executable is None:
             raise RuntimeError("Code search requires ripgrep (rg) on PATH; install ripgrep.")
@@ -102,36 +101,30 @@ class CodebaseTools(Skill):
             "--",
             scope,
         ]
-        with (
-            tempfile.TemporaryFile() as errors,
-            subprocess.Popen(
-                command, cwd=self._root, stdout=subprocess.PIPE, stderr=errors
-            ) as process,
-        ):
-            timer = Timer(_SEARCH_TIMEOUT_SECONDS, process.kill)
-            timer.start()
+        with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
             try:
-                assert process.stdout is not None
-                stream = process.stdout
-                pending = b""
-                separator = b"\0" if "--null" in args else b"\n"
-                for block in iter(lambda: stream.read(65536), b""):
-                    pieces = (pending + block).split(separator)
-                    pending = pieces.pop()
-                    yield from pieces
-                if pending:
-                    yield pending
-                if process.wait() not in (0, 1):
-                    errors.seek(0)
-                    raise RuntimeError(
-                        "ripgrep failed or exceeded 30 seconds: "
-                        + errors.read(2000).decode("utf-8", errors="replace")
-                    )
-            finally:
-                timer.cancel()
-                if process.poll() is None:
-                    process.kill()
-                process.wait()
+                result = subprocess.run(
+                    command,
+                    cwd=self._root,
+                    stdout=output,
+                    stderr=errors,
+                    timeout=_SEARCH_TIMEOUT_SECONDS,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired as error:
+                raise TimeoutError(
+                    f"ripgrep exceeded {_SEARCH_TIMEOUT_SECONDS}s; results discarded"
+                ) from error
+            if result.returncode not in (0, 1):
+                errors.seek(0)
+                raise RuntimeError(
+                    "ripgrep failed: " + errors.read(2000).decode("utf-8", errors="replace")
+                )
+            output.seek(0)
+            if "--null" in args:
+                yield from filter(None, output.read().split(b"\0"))
+            else:
+                yield from output
 
     @hidden
     def _read_text(self, path: Path) -> str | None:
@@ -161,14 +154,19 @@ class CodebaseTools(Skill):
         if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
             raise ValueError("pattern must stay inside the codebase")
         matches = []
-        with closing(self._run_rg(["--files", "--null", "--glob", pattern])) as lines:
+        with closing(
+            self._ripgrep_output(["--files", "--null", "--glob", "**/" + pattern])
+        ) as lines:
             for line in lines:
                 path = line.decode("utf-8", errors="surrogateescape")
                 try:
                     resolved = self._resolve(path)
                 except ValueError:
                     continue
-                matches.append(str(resolved.relative_to(self._root)))
+                relative = resolved.relative_to(self._root)
+                if pattern != "**/*" and not relative.match(pattern):
+                    continue
+                matches.append(str(relative))
                 if len(matches) == _MAX_LISTED_FILES:
                     break
         return sorted(matches)
@@ -181,12 +179,7 @@ class CodebaseTools(Skill):
             spec(description="Repository-relative file or directory to search"),
         ] = ".",
     ) -> list[dict[str, str | int]]:
-        """Search UTF-8 files with ripgrep's case-insensitive literal matching.
-
-        Scope to a known file/directory first. At most 100 matching lines return;
-        narrow the path/query if the limit is reached. Ignored/hidden source is included.
-        Regex syntax is literal. Each directory search can use ripgrep worker threads.
-        """
+        """Search literal text within a root-relative file/directory; return up to 100 lines."""
 
         if not query:
             raise ValueError("query must not be empty")
@@ -207,10 +200,12 @@ class CodebaseTools(Skill):
             "utf-8",
             "--max-filesize",
             str(_MAX_FILE_BYTES),
+            "--max-count",
+            str(_MAX_MATCHES),
             "--regexp",
             query,
         ]
-        with closing(self._run_rg(args, str(scope.relative_to(self._root)))) as lines:
+        with closing(self._ripgrep_output(args, str(scope.relative_to(self._root)))) as lines:
             for line in lines:
                 event = json.loads(line)
                 if event["type"] != "match":

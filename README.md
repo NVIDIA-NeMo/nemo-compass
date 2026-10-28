@@ -123,7 +123,15 @@ and make `rg` available on `PATH` (for example, `brew install ripgrep` on macOS
 or `apt-get install ripgrep` on Debian/Ubuntu). No search executable is needed
 when source-code access is disabled. Compass includes hidden and gitignored
 source files but retains its exclusions for credentials and generated directories.
-Discovery skips symlinks; an explicit file read/search must resolve inside the repository.
+Patterns keep the existing `Path.match()` behavior: a relative pattern can match
+a suffix under the configured root (`tools/*.py` can also match
+`fixture/tools/example.py`). `search_code(..., path="tools")` instead scopes to
+that exact root-relative directory and its descendants. Outside paths are rejected.
+Discovery skips symlinks; explicit in-root file links resolve through the root check.
 Search uses ripgrep Unicode case matching, which does not expand `ß` to `ss` as
-Python `casefold()` did. Results are capped at 200 paths / 100 matching lines;
-when capped, the subset can vary with parallel traversal. Narrow the scope for more.
+Python `casefold()` did. The existing return limits are 200 paths, 100 matching
+lines, 1 MB per file and 400 lines per read; they are output/resource guardrails,
+not an assertion that the whole repository was returned. Capped subsets may vary
+with parallel traversal. A new 30-second search deadline raises `TimeoutError`
+and discards partial results; the child process is killed and reaped. The deadline
+is an operational guardrail, not a measured optimum.

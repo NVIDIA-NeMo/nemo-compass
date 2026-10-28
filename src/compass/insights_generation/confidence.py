@@ -53,21 +53,9 @@ class _ConfidenceAgent(Agent):
 
         Confidence scoring:
         Use self.codebase (list_files, search_code, read_file) to investigate the root
-        cause claimed by the insight and shown in the supporting traces. Inspect the
-        execution path linked to that evidence. Follow prompts, configuration, guards,
-        and retries when they affect the claim; do not audit the whole repository.
-
-        Start with file paths named by the trace or insight. Use a narrow filename
-        glob to locate code before searching contents; search the relevant file or
-        directory before expanding to the repository. Queries are literal, not regexes.
-        Directory searches use ripgrep, which can search files in parallel internally.
-        Batch independent lookups and short reads in one Python step to reduce model
-        round trips. Batching does not make Python calls parallel; do not await these
-        synchronous tools or create threads, subagents, or shell commands yourself.
-        If 200 paths or 100 matching lines return, narrow the query. An incomplete
-        listing or one unsuccessful search does not establish that code is absent.
-        Stop when the claim is supported, contradicted, or remains uncertain; avoid
-        exploring unrelated code. Preserve uncertainty when relevant evidence is missing.
+        cause claimed by the insight and shown in the supporting traces. Review every
+        relevant source of the behavior, including prompts, configuration, guards,
+        retries, and any other involved code path.
 
         After completing the investigation, assign a confidence score based on how much
         of the insight's claim is supported across the agent's behavior, root cause,

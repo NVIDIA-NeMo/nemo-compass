@@ -173,16 +173,19 @@ def test_empty_repository_missing_scope_and_missing_executable(tmp_path, monkeyp
         tools.search_code("absent")
 
 
-@pytest.mark.parametrize("body", ["exit 2", "exec sleep 2"])
-def test_backend_errors_and_timeouts_are_not_empty_results(tmp_path, monkeypatch, body):
+@pytest.mark.parametrize("program", ["raise SystemExit(2)", "import time; time.sleep(5)"])
+def test_backend_errors_and_timeouts_are_not_empty_results(tmp_path, monkeypatch, program):
     from compass.insights_generation import codebase
 
-    executable = tmp_path / "fake-rg"
-    executable.write_text("#!/bin/sh\n" + body + "\n")
-    executable.chmod(0o755)
-    monkeypatch.setattr(codebase.shutil, "which", lambda _: str(executable))
-    monkeypatch.setattr(codebase, "_SEARCH_TIMEOUT_SECONDS", 0.05)
-    with pytest.raises(RuntimeError, match="ripgrep failed"):
+    execute = codebase.subprocess.run
+    monkeypatch.setattr(codebase.shutil, "which", lambda _: sys.executable)
+    monkeypatch.setattr(
+        codebase.subprocess,
+        "run",
+        lambda _command, **kwargs: execute([sys.executable, "-c", program], **kwargs),
+    )
+    monkeypatch.setattr(codebase, "_SEARCH_TIMEOUT_SECONDS", 1)
+    with pytest.raises(TimeoutError if "sleep" in program else RuntimeError):
         CodebaseTools(tmp_path).search_code("needle")
 
 
@@ -214,3 +217,70 @@ def test_read_file_line_bounds_and_file_changes(tmp_path):
 def test_long_lines_are_clipped(tmp_path):
     (tmp_path / "long.py").write_text("needle " + "x" * 700)
     assert CodebaseTools(tmp_path).search_code("needle")[0]["text"] == "needle " + "x" * 493
+
+
+def test_glob_semantics_match_exhaustive_path_matching(tmp_path, monkeypatch):
+    from compass.insights_generation import codebase
+
+    names = [
+        "root.py",
+        "tools/one.py",
+        "fixture/tools/two.py",
+        "src/a.py",
+        "src/nested/b.py",
+        ".hidden/c.py",
+        "ignored/d.py",
+    ]
+    for name in names:
+        p = tmp_path / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("needle")
+    (tmp_path / ".gitignore").write_text("ignored/\n")
+    monkeypatch.setattr(codebase, "_MAX_LISTED_FILES", 10000)
+    tools = CodebaseTools(tmp_path)
+    for pattern in ["*.py", "**/*.py", "tools/*.py", "src/**/*.py", "**/one.py"]:
+        expected = {name for name in names if Path(name).match(pattern)}
+        assert set(tools.list_files(pattern)) == expected
+
+
+@pytest.mark.parametrize("operation", ["list_files", "search_code"])
+def test_timeout_discards_partial_results_and_reaps_child(tmp_path, monkeypatch, operation):
+    import json
+    import os
+    import time
+
+    from compass.insights_generation import codebase
+
+    (tmp_path / "source.py").write_text("needle")
+    pid_file = tmp_path / "child.pid"
+    event = (
+        json.dumps(
+            {
+                "type": "match",
+                "data": {
+                    "path": {"text": "source.py"},
+                    "line_number": 1,
+                    "lines": {"text": "needle\n"},
+                },
+            }
+        )
+        + "\n"
+    )
+    output = "source.py\0" if operation == "list_files" else event
+    program = f"import os,time,sys; open({str(pid_file)!r},'w').write(str(os.getpid())); sys.stdout.write({output!r}); sys.stdout.flush(); time.sleep(5)"
+    execute = codebase.subprocess.run
+    monkeypatch.setattr(codebase.shutil, "which", lambda _: sys.executable)
+    monkeypatch.setattr(
+        codebase.subprocess,
+        "run",
+        lambda _command, **kwargs: execute([sys.executable, "-c", program], **kwargs),
+    )
+    monkeypatch.setattr(codebase, "_SEARCH_TIMEOUT_SECONDS", 1)
+    start = time.monotonic()
+    with pytest.raises(TimeoutError, match="results discarded"):
+        getattr(CodebaseTools(tmp_path), operation)(
+            *(() if operation == "list_files" else ("needle",))
+        )
+    assert time.monotonic() - start < 4
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid_file.read_text()), 0)

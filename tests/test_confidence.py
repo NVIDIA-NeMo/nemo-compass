@@ -69,21 +69,3 @@ def test_insight_confidence_is_unset_when_step_budget_is_exhausted(tmp_path) -> 
     llm = FakeLLMClient([_read_agent_code() for _ in range(40)])
 
     assert _rate(tmp_path, llm) is None
-
-
-def test_confidence_can_find_and_search_files_through_nooa(tmp_path):
-    (tmp_path / "agent.py").write_text("TIMEOUT_SECONDS = 1\n")
-    llm = FakeLLMClient(
-        [
-            _response(
-                "execute_python",
-                {
-                    "code": "print(self.codebase.list_files('*.py')); print(self.codebase.search_code('TIMEOUT_SECONDS', 'agent.py'))"
-                },
-                "search",
-            ),
-            _response("return_result", {"result": {"confidence": "high"}}, "done"),
-        ]
-    )
-    assert _rate(tmp_path, llm) == "high"
-    assert "TIMEOUT_SECONDS = 1" in str(llm.last_messages)

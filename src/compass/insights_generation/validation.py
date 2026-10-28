@@ -145,18 +145,6 @@ class _ValidationAgent(Agent):
         deployment issues leave uncertainty. Batch reads and searches; aim for eight
         steps, with a maximum of 25 iterations.
 
-        Start with file paths named by the trace or insight. Use a narrow filename
-        glob to locate code before searching contents; search the relevant file or
-        directory before expanding to the repository. Queries are literal, not regexes.
-        Directory searches use ripgrep, which can search files in parallel internally.
-        Batch independent lookups and short reads in one Python step to reduce model
-        round trips. Batching does not make Python calls parallel; do not await these
-        synchronous tools or create threads, subagents, or shell commands yourself.
-        If 200 paths or 100 matching lines return, narrow the query. An incomplete
-        listing or one unsuccessful search does not establish that code is absent.
-        Stop when the claim is supported, contradicted, or remains uncertain; avoid
-        exploring unrelated code. Preserve uncertainty when relevant evidence is missing.
-
         Return supported=true when evidence establishes the problem, false only when
         concrete evidence invalidates its actual claim, and null when evidence is
         missing, ambiguous, conflicting, or insufficient. Unresolved problems are retained.
