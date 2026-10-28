@@ -578,6 +578,19 @@ def test_without_an_llm_the_signal_stays_deterministic(monkeypatch):
     assert calls == []
 
 
+def test_llm_review_can_be_turned_off(monkeypatch):
+    calls = review_with(monkeypatch, ())
+    signal = CostEfficiencyCompassSignal(
+        CostEfficiencyConfig(llm_review=False), llm=FakeLLMClient()
+    )
+    result = asyncio.run(
+        signal.analyze(TraceSnapshot([tool_change_session(i) for i in range(1, 5)]))
+    )
+    assert len(result.problems) == 1
+    assert result.artifacts.review is None
+    assert calls == []
+
+
 def test_registration_requires_an_llm_factory():
     with pytest.raises(ValueError, match="cost-efficiency requires an LLM client factory"):
         registered_builtin_signals(cost_efficiency=CostEfficiencyConfig())

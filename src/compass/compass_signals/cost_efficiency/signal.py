@@ -7,8 +7,8 @@ Detection is deterministic: no LLM call, no network, and no prompt content in
 any output. Each detector returns Findings; each rule's ``RuleSpec`` words the Problem
 of each of its kinds.
 
-When an LLM is set, ``review.py`` then confirms each Problem against its
-supporting traces; its confirmed trace IDs are kept in ``artifacts.review``.
+When an LLM is set and ``llm_review`` is on, ``review.py`` then confirms each Problem
+against its supporting traces; its confirmed trace IDs are kept in ``artifacts.review``.
 """
 
 from __future__ import annotations
@@ -44,6 +44,9 @@ class CostEfficiencyConfig(BaseModel):
     """Typed configuration owned by cost-efficiency analysis."""
 
     minimum_independent_traces: int = Field(default=3, ge=1)
+    llm_review: bool = Field(
+        default=True, description="Have an LLM confirm each Problem against its traces"
+    )
 
 
 @dataclass(frozen=True)
@@ -74,7 +77,7 @@ class CostEfficiencyCompassSignal:
 
     async def analyze(self, snapshot: TraceSnapshot) -> CompassSignalResult:
         result = await asyncio.to_thread(self.analyze_snapshot, snapshot)
-        if self.llm is None or not result.problems:
+        if self.llm is None or not self.config.llm_review or not result.problems:
             return result
         artifacts = result.artifacts
         assert isinstance(artifacts, CostEfficiencyArtifacts)
