@@ -273,7 +273,7 @@ def test_intake_loader_returns_canonical_snapshot_without_writing_files(tmp_path
     assert trace.root_spans[0].start_time is not None
     assert trace.root_spans[0].start_time.tzinfo == timezone.utc
     assert trace.attributes["task_text"] == {"messages": [{"role": "user", "content": "find it"}]}
-    assert trace.attributes["logical_case_id"] == "case-a"
+    assert trace.case_id == "case-a"
     assert "tool_catalog" not in trace.attributes
     assert tool_catalog(trace) == {
         "search": {
@@ -306,7 +306,7 @@ def test_intake_loader_returns_canonical_snapshot_without_writing_files(tmp_path
     assert loader.describe()["source"].startswith("intake:https://")
     assert loader.describe()["span_count"] == 2
     assert loader.describe()["call_count"] == 1
-    assert loader.describe()["distinct_logical_cases"] == 1
+    assert loader.describe()["distinct_cases"] == 1
 
 
 @pytest.mark.parametrize("source", ["atif", "otel"])
@@ -751,7 +751,7 @@ def test_intake_failed_load_does_not_cache_partial_snapshot_and_can_retry():
     assert loader.load() is snapshot
     description = loader.describe()
     assert description["trace_count"] == description["span_count"] == 2
-    assert description["distinct_logical_cases"] == 1
+    assert description["distinct_cases"] == 1
     description["query"].clear()
     assert loader.describe()["query"] == _query().describe()
 

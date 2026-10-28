@@ -147,7 +147,7 @@ def test_file_loader_reads_native_mlflow_search_json_without_conversion(tmp_path
     normalized = next(iter(loader.load()))
 
     assert normalized.id == "tr-9df8a4c934051e916458d472ac87ee2a"
-    assert "logical_case_id" not in normalized.attributes
+    assert normalized.session_id is None and normalized.session_basis is None
     assert normalized.root_spans[0].kind is SpanKind.TOOL
     assert normalized.root_spans[0].input == {"query": "why did the agent retry?"}
     assert normalized.root_spans[0].output == {"answer": "The upstream timed out."}
@@ -317,7 +317,10 @@ def test_loader_normalizes_mlflow_spans_without_flattening_payloads():
     )
 
     assert normalized.root_spans[0].input == {"messages": [{"role": "user", "content": "find it"}]}
-    assert normalized.attributes["logical_case_id"] == "session-7"
+    assert (normalized.session_id, normalized.session_basis) == (
+        "session-7",
+        "mlflow.trace.session",
+    )
     assert normalized.aggregate.latency_ms == 4000.0
     assert [item.id for item in normalized.root_spans] == ["root"]
     assert [item.id for item in normalized.root_spans[0].children] == ["llm", "tool"]
@@ -385,7 +388,7 @@ def test_normalized_mlflow_trace_flows_through_both_compass_signals():
     assert anomaly_and_patterns.calls[0].call_id == "tool"
     assert anomaly_and_patterns.calls[0].error == "timeout"
     assert anomaly_and_patterns.calls[0].source_pointer["span_id"] == "tool"
-    assert tool_issue_trace.logical_case_id == "session-7"
+    assert tool_issue_trace.case_id == "session-7"
     assert tool_issue_trace.calls[0].result is MISSING
     assert tool_issue_trace.calls[0].explicit_error is True
     assert tool_issue_trace.calls[0].outcome_marker == "timeout"
@@ -478,7 +481,8 @@ def test_unresolved_parents_are_detached_but_remain_visible_in_provenance_and_de
         "source": "mlflow:http://mlflow.test#experiment/17",
         "trace_count": 1,
         "call_count": 1,
-        "distinct_logical_cases": 1,
+        "distinct_cases": 1,
+        "distinct_sessions": 1,
         "span_count": 1,
         "unresolved_parent_count": 1,
         "experiment_name": "partial-traces",

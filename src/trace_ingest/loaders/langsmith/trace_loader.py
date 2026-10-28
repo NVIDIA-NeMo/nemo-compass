@@ -23,7 +23,7 @@ from trace_ingest.loaders.langsmith._normalization import (
     walk_spans,
 )
 from trace_ingest.loaders.trace_loaders import TraceDescription
-from trace_ingest.models import SpanKind, Trace, TraceSnapshot
+from trace_ingest.models import SpanKind, Trace, TraceSnapshot, case_key
 from trace_ingest.source_links import http_source_url
 
 if TYPE_CHECKING:
@@ -114,7 +114,8 @@ class LangSmithTraceLoader:
     _project_id: str | None = field(default=None, init=False, repr=False)
     _resolved_api_url: str | None = field(default=None, init=False, repr=False)
     _call_count: int = field(default=0, init=False, repr=False)
-    _logical_case_count: int = field(default=0, init=False, repr=False)
+    _case_count: int = field(default=0, init=False, repr=False)
+    _session_count: int = field(default=0, init=False, repr=False)
 
     def load(self) -> TraceSnapshot:
         """Fetch and normalize the configured LangSmith corpus."""
@@ -141,7 +142,8 @@ class LangSmithTraceLoader:
         unresolved_parent_count = 0
         run_count = 0
         call_count = 0
-        logical_cases: set[str] = set()
+        cases: set[str] = set()
+        sessions: set[str] = set()
 
         def traces() -> Iterator[Trace]:
             nonlocal unresolved_parent_count, run_count, call_count
@@ -170,7 +172,9 @@ class LangSmithTraceLoader:
                 call_count += sum(
                     span.kind is SpanKind.TOOL for span in walk_spans(trace.root_spans)
                 )
-                logical_cases.add(str(trace.attributes.get("logical_case_id") or trace.id))
+                cases.add(case_key(trace))
+                if trace.session_id:
+                    sessions.add(trace.session_id)
                 yield trace
 
         snapshot = TraceSnapshot(traces())
@@ -179,7 +183,8 @@ class LangSmithTraceLoader:
         self._project_id = project_id
         self._resolved_api_url = api_url
         self._call_count = call_count
-        self._logical_case_count = len(logical_cases)
+        self._case_count = len(cases)
+        self._session_count = len(sessions)
         self.report = LangSmithTraceLoadReport(
             trace_count=snapshot.trace_count,
             run_count=run_count,
@@ -229,7 +234,8 @@ class LangSmithTraceLoader:
             "source": _source_label(api_url, project_id),
             "trace_count": self.report.trace_count,
             "call_count": self._call_count,
-            "distinct_logical_cases": self._logical_case_count,
+            "distinct_cases": self._case_count,
+            "distinct_sessions": self._session_count,
             "run_count": self.report.run_count,
             "unresolved_parent_count": self.report.unresolved_parent_count,
             "project_name": self.config.project_name,

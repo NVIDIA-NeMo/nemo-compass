@@ -29,7 +29,7 @@ def test_signals_keep_all_candidates_and_limit_review_examples(signal, preview_s
         findings = [
             {
                 "trace_id": trace_id,
-                "logical_case_id": trace_id if i <= preview_size else expected[0],
+                "case_id": trace_id if i <= preview_size else expected[0],
                 "issue_type": "missing_tool_result",
                 "mechanism_key": "missing-result",
                 "call_id": f"call-{i}",

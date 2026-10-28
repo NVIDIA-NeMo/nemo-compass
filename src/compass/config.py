@@ -170,7 +170,7 @@ class TraceConfig(ConfigModel):
     max_traces: int | None = Field(
         default=None,
         ge=1,
-        description="Maximum complete traces loaded by a provider source",
+        description="Maximum traces (conversations) loaded by a provider source",
     )
     filesystem: FilesystemConfig | None = Field(
         default=None,

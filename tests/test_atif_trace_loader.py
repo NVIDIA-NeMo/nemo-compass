@@ -119,7 +119,8 @@ def test_exact_normalization_and_description(tmp_path):
             )
         ],
         aggregate=TraceAggregate(),
-        attributes={"logical_case_id": "run"},
+        session_id="run",
+        session_basis="atif.session_id",
     )
     snapshot = loader.load()
     assert list(snapshot) == [expected]
@@ -130,7 +131,8 @@ def test_exact_normalization_and_description(tmp_path):
         "path": str(loader.config.path.resolve()),
         "trace_count": 1,
         "call_count": 0,
-        "distinct_logical_cases": 1,
+        "distinct_cases": 1,
+        "distinct_sessions": 1,
     }
 
 
@@ -140,7 +142,8 @@ def test_maximal_fixture_maps_each_field_to_its_typed_place():
     spans = spans_by_id(trace)
 
     # The case key is the session id; ATIF metadata is not copied into attributes.
-    assert trace.attributes == {"logical_case_id": "max-session"}
+    assert (trace.session_id, trace.session_basis) == ("max-session", "atif.session_id")
+    assert trace.attributes == {}
     for span in spans.values():
         expected = {"explicit_error": False} if span.id == "trajectory/step/3/tool/0" else {}
         assert span.attributes == expected, span.id
@@ -641,7 +644,7 @@ def test_realistic_nested_trajectory_and_signal_readers():
     # Coverage counts the prior user text the loader records on each call.
     presence = corpus_coverage(loader)["field_presence"]
     assert presence["prior_user_text"] >= 4
-    assert presence["logical_case_id"] == len(list(loader.load()))
+    assert presence["case_id"] == len(list(loader.load()))
 
 
 @pytest.mark.parametrize(
@@ -769,8 +772,8 @@ def test_loads_all_records_and_rejects_duplicates(tmp_path):
     second = {**source, "trajectory_id": "another"}
     loader = loader_for(tmp_path, source, second)
     assert [trace.id for trace in loader.load()] == ["run", "another"]
-    assert loader.describe()["distinct_logical_cases"] == 1
-    assert {to_tool_issue_trace(trace).logical_case_id for trace in loader.load()} == {"run"}
+    assert loader.describe()["distinct_cases"] == 1
+    assert {to_tool_issue_trace(trace).case_id for trace in loader.load()} == {"run"}
 
 
 @pytest.mark.parametrize(

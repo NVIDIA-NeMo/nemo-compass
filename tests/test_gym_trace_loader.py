@@ -121,7 +121,7 @@ def test_native_gym_mapping_and_cached_description(tmp_path):
     snapshot = loader.load()
     trace = next(iter(snapshot))
     assert trace.id == "rollout-1"
-    assert trace.attributes["logical_case_id"] == "task-1"
+    assert trace.case_id == "task-1"
     assert trace.attributes["gym"] == source
     assert trace.evaluator_results == {"gym.reward": 0, "gym.reward_components": {"correctness": 0}}
     assert trace.aggregate.token_counts is None  # no invented rollout accounting
@@ -152,7 +152,8 @@ def test_native_gym_mapping_and_cached_description(tmp_path):
         "format": "jsonl",
         "trace_count": 1,
         "call_count": 1,
-        "distinct_logical_cases": 1,
+        "distinct_cases": 1,
+        "distinct_sessions": 0,
         "gap_count": 1,
     }
     loader.config.path.unlink()
@@ -165,7 +166,7 @@ def test_corpus_records_stay_separate_and_share_logical_task(tmp_path):
     second["ng_trajectory"]["turns"][0]["rollout_id"] = "rollout-2"
     loader = loader_for(tmp_path, first, second)
     assert [trace.id for trace in loader.load()] == ["rollout-1", "rollout-2"]
-    assert loader.describe()["distinct_logical_cases"] == 1
+    assert loader.describe()["distinct_cases"] == 1
     assert len(loader_for(tmp_path, first, format="json").load()) == 1
 
 
@@ -358,7 +359,7 @@ def test_upstream_opencode_producer_and_collector_fixtures(producer, case):
     loader = GymTraceLoader(GymTraceConfig(path=path, format="json"))
     trace = next(iter(loader.load()))
     assert trace.id == source["rollout_id"] == "0-0"
-    assert trace.attributes["logical_case_id"] == source["task_id"] == "0"
+    assert trace.case_id == source["task_id"] == "0"
     assert trace.attributes["gym"] == record
     assert trace.attributes["gym_loader_gaps"] == []
     assert loader.describe()["gap_count"] == len(source["gaps"])
@@ -511,7 +512,7 @@ def test_responses_envelope_maps_root_llm_and_paired_tools(tmp_path):
     assert trace.id == "gym-" + hashlib.sha256(line.strip()).hexdigest()[:16]
     assert trace.attributes["gym"] == source
     assert trace.attributes["gym_source_shape"] == "rollout_envelope"
-    assert trace.attributes["logical_case_id"] == "gym-task-index-3"
+    assert trace.case_id == "gym-task-index-3"
     assert trace.evaluator_results == {"gym.reward": 1}
     assert loader.describe()["gap_count"] == 2
     assert trace.attributes["gym_loader_gaps"] == [
@@ -558,7 +559,7 @@ def test_standalone_responses_object_and_null_attachment(tmp_path):
     trace = next(iter(loader_for(tmp_path, response, format="json").load()))
     (root,) = trace.root_spans
     assert trace.attributes["gym_source_shape"] == "responses_object"
-    assert "logical_case_id" not in trace.attributes
+    assert trace.case_id is None
     assert root.input is UNSET and root.output == "14 bolts."
     assert root.children[0].input is UNSET
     # A standalone response has no ``response`` wrapper; paths point into the record itself.

@@ -86,7 +86,8 @@ def test_normalized_tree_and_description_are_deterministic(rows, root_scores):
         "span_count": 4,
         "trace_count": 1,
         "call_count": 2,
-        "distinct_logical_cases": 1,
+        "distinct_cases": 1,
+        "distinct_sessions": 0,
     }
     with client_for(list(reversed(rows))) as client:
         repeated = BraintrustTraceLoader(config(), client=client).load()

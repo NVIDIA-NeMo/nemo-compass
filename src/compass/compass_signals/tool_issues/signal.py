@@ -160,7 +160,7 @@ class CallRecord:
 class TraceRecord:
     trace_id: str
     calls: Sequence[CallRecord]
-    logical_case_id: str | None = None
+    case_id: str | None = None
     tool_catalog: Mapping[str, Mapping[str, Any] | bool | None] | None = None
     orphan_results: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
     complete_provenance_context: bool = False
@@ -264,7 +264,7 @@ def _finding(
         raise ValueError(f"unknown TID finding type: {issue_type}")
     payload = {
         "trace_id": trace.trace_id,
-        "logical_case_id": trace.logical_case_id or trace.trace_id,
+        "case_id": trace.case_id or trace.trace_id,
         "call_index": call.call_index,
         "call_id": call.call_id,
         "tool_name": call.tool_name,
@@ -591,11 +591,11 @@ def build_cards(
         )
     cards: list[ToolIssueCard] = []
     for (issue_type, mechanism), members in sorted(groups.items()):
-        logical_cases = sorted({str(member["logical_case_id"]) for member in members})
+        cases = sorted({str(member["case_id"]) for member in members})
         representatives: dict[str, Mapping[str, Any]] = {}
         for member in members:
-            representatives.setdefault(str(member["logical_case_id"]), member)
-        eligible = len(logical_cases) >= minimum_independent_cases
+            representatives.setdefault(str(member["case_id"]), member)
+        eligible = len(cases) >= minimum_independent_cases
         examples = [
             {
                 "trace_id": member["trace_id"],
@@ -614,7 +614,7 @@ def build_cards(
                 issue_family=FAMILY[issue_type],
                 mechanism_key=mechanism,
                 finding_count=len(members),
-                independent_case_count=len(logical_cases),
+                independent_case_count=len(cases),
                 eligible_for_insights=eligible,
                 trace_ids=tuple(dict.fromkeys(str(member["trace_id"]) for member in members)),
                 representative_evidence=tuple(examples),
@@ -757,11 +757,7 @@ def to_tool_issue_trace(trace: Trace) -> TraceRecord:
     return TraceRecord(
         trace_id=trace.id,
         calls=tuple(calls),
-        logical_case_id=(
-            str(trace.attributes["logical_case_id"])
-            if trace.attributes.get("logical_case_id") is not None
-            else None
-        ),
+        case_id=trace.case_id or trace.session_id,
         tool_catalog={
             name: dict(schema)
             if isinstance(schema, Mapping)

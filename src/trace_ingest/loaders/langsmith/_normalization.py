@@ -152,16 +152,16 @@ def normalize_trace(
             normalized_by_id[parent_id].children.append(normalized)
 
     cost = _trace_cost_usd(runs, trace_id)
-    logical_case_id = _logical_case_id(root)
+    session = _session_key(root)
     attributes: dict[str, JsonValue] = {
         "source_pointer": base_pointer,
         "langsmith": dict(langsmith_attributes),
     }
-    if logical_case_id is not None:
-        attributes["logical_case_id"] = logical_case_id
     return (
         Trace(
             id=trace_id,
+            session_id=session[0] if session is not None else None,
+            session_basis=session[1] if session is not None else None,
             root_spans=root_spans,
             aggregate=TraceAggregate(
                 cost_usd=cost,
@@ -408,7 +408,7 @@ def _trace_latency_ms(runs: Sequence[_LangSmithRun]) -> float | None:
     return (max(ends) - min(starts)).total_seconds() * 1_000
 
 
-def _logical_case_id(root: _LangSmithRun) -> str | None:
+def _session_key(root: _LangSmithRun) -> tuple[str, str] | None:
     extra = getattr(root, "extra", None)
     if not isinstance(extra, Mapping):
         return None
@@ -418,7 +418,7 @@ def _logical_case_id(root: _LangSmithRun) -> str | None:
     for key in ("thread_id", "session_id", "conversation_id"):
         value = metadata.get(key)
         if value not in (None, ""):
-            return str(value)
+            return str(value), f"langsmith.metadata.{key}"
     return None
 
 

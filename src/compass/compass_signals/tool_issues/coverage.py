@@ -24,6 +24,7 @@ from compass.compass_signals.tool_issues.signal import FINDING_TYPES
 from compass.trace_loaders.trace_loaders import TraceLoader
 from compass.traces import UNSET, SpanKind, Trace
 from trace_ingest.catalog import tool_catalog
+from trace_ingest.models import case_key
 
 __all__ = ["RULE_REQUIREMENTS", "corpus_coverage", "format_coverage"]
 
@@ -165,7 +166,7 @@ def _field_presence(traces: Sequence[Trace]) -> dict[str, int]:
     counts = {
         "tool_catalog": 0,
         "steps": 0,
-        "logical_case_id": 0,
+        "case_id": 0,
         "source_pointer": 0,
         "observed_verdict": 0,
         "cost": 0,
@@ -196,8 +197,9 @@ def _field_presence(traces: Sequence[Trace]) -> dict[str, int]:
     for trace in traces:
         if tool_catalog(trace) is not None:
             counts["tool_catalog"] += 1
+        if trace.case_id or trace.session_id:
+            counts["case_id"] += 1
         for key in (
-            "logical_case_id",
             "source_pointer",
             "observed_verdict",
             "metrics",
@@ -335,9 +337,7 @@ def corpus_coverage(
     evaluable = [r for r in rules if r["evaluable"]]
 
     trace_count = len(traces)
-    distinct_cases = len(
-        {str(trace.attributes.get("logical_case_id") or trace.id) for trace in traces}
-    )
+    distinct_cases = len({case_key(trace) for trace in traces})
 
     notes: list[str] = []
 
@@ -348,12 +348,12 @@ def corpus_coverage(
         )
     if distinct_cases < 3:
         notes.append(
-            f"Only {distinct_cases} distinct logical case(s): the tool-issue signal promotes a card at three "
+            f"Only {distinct_cases} distinct case(s): the tool-issue signal promotes a card at three "
             "independent cases, so no cards qualify for insight compilation."
         )
-    if trace_count and distinct_cases == trace_count and presence["logical_case_id"] == 0:
+    if trace_count and distinct_cases == trace_count and presence["case_id"] == 0:
         notes.append(
-            "No record sets logical_case_id, so every trace counts as its own independent "
+            "No trace sets case_id or session_id, so every trace counts as its own independent "
             "case. If several traces are retries of the same task, card eligibility is "
             "currently overstated."
         )
@@ -396,10 +396,10 @@ def corpus_coverage(
         "trace_count": trace_count,
         "call_count": presence["total_calls"],
         "step_count": presence["total_steps"],
-        "distinct_logical_cases": distinct_cases,
+        "distinct_cases": distinct_cases,
         # Without the field the count is derived from trace_id, which looks
         # identical to a populated corpus unless we say so.
-        "logical_case_id_populated": presence["logical_case_id"] > 0,
+        "case_id_populated": presence["case_id"] > 0,
         "tool_catalog": {
             "records_with_catalog": presence["tool_catalog"],
         },
@@ -419,11 +419,11 @@ def format_coverage(report: Mapping[str, Any], *, verbose: bool = False) -> str:
 
     lines: list[str] = []
     lines.append(f"Corpus: {report['source']}")
-    derived = "" if report.get("logical_case_id_populated", True) else " (defaulted from trace_id)"
+    derived = "" if report.get("case_id_populated", True) else " (defaulted from trace id)"
     lines.append(
         f"  {report['trace_count']} traces, {report['call_count']} calls, "
         f"{report['step_count']} steps, "
-        f"{report['distinct_logical_cases']} distinct logical cases{derived}"
+        f"{report['distinct_cases']} distinct cases{derived}"
     )
 
     rules = report["rules"]
