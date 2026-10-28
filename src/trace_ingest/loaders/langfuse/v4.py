@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from trace_ingest.loaders.helper.merge import Record, assemble
 from trace_ingest.loaders.langfuse.config import (
     LangfuseTraceConfig,
     LangfuseTraceDescription,
@@ -17,12 +18,13 @@ from trace_ingest.loaders.langfuse.config import (
     _describe_live_source,
 )
 from trace_ingest.loaders.langfuse.filters import _bounded_filter
-from trace_ingest.loaders.langfuse.normalization import _normalize_v4_trace, _started_at
-from trace_ingest.loaders.langfuse.v4_records import _group_observations, _group_scores
-from trace_ingest.models import (
-    Trace,
-    TraceSnapshot,
+from trace_ingest.loaders.langfuse.normalization import (
+    _ORCHESTRATION,
+    _normalize_v4_trace,
+    _started_at,
 )
+from trace_ingest.loaders.langfuse.v4_records import _group_observations, _group_scores
+from trace_ingest.models import TraceSnapshot
 
 if TYPE_CHECKING:
     from langfuse import Langfuse
@@ -47,10 +49,12 @@ class LangfuseV4TraceLoader:
     )
 
     def load(self) -> TraceSnapshot:
-        """Reconstruct bounded traces from observations and separately fetched scores."""
+        """Reconstruct bounded traces from observations and scores, merged by session."""
         client = self.client
         base_url = self.base_url
         selected: dict[str, datetime] = {}
+        group_keys: set[str] = set()
+        capped = False
         cursor: str | None = None
         seen_cursors: set[str] = set()
         bounded_filter = _bounded_filter(
@@ -59,10 +63,10 @@ class LangfuseV4TraceLoader:
             to_timestamp=self.config.to_timestamp,
             time_column="startTime",
         )
-        while len(selected) < self.config.max_traces:
+        while True:
             response = client.api.observations.get_many(
                 limit=_API_PAGE_SIZE,
-                fields="core",
+                fields="core,basic",
                 from_start_time=self.config.from_timestamp,
                 to_start_time=self.config.to_timestamp,
                 filter=bounded_filter,
@@ -71,10 +75,15 @@ class LangfuseV4TraceLoader:
             for observation in response.data:
                 if not observation.trace_id:
                     raise LangfuseTraceLoadError("Langfuse returned an observation without traceId")
-                selected.setdefault(observation.trace_id, _started_at(observation))
-                if len(selected) == self.config.max_traces:
+                if observation.trace_id in selected:
+                    continue
+                group = observation.session_id or observation.trace_id
+                if group not in group_keys and len(group_keys) == self.config.max_traces:
+                    capped = True
                     break
-            if len(selected) == self.config.max_traces:
+                group_keys.add(group)
+                selected[observation.trace_id] = _started_at(observation)
+            if capped:
                 break
             cursor = _next_cursor(response.meta.cursor, seen_cursors, bool(response.data))
             if cursor is None:
@@ -108,7 +117,7 @@ class LangfuseV4TraceLoader:
                 if cursor is None:
                     break
         by_trace, _ = _group_scores(groups, scores)
-        traces: list[Trace] = []
+        records: list[Record] = []
         for trace_id in trace_ids:
             trace = _normalize_v4_trace(trace_id, groups[trace_id], by_trace[trace_id], base_url)
             trace.attributes["observation_window"] = {
@@ -116,7 +125,13 @@ class LangfuseV4TraceLoader:
                 "to_timestamp": self.config.to_timestamp.isoformat(),
                 "may_exclude_trace_steps": True,
             }
-            traces.append(trace)
+            langfuse = trace.attributes["langfuse"]
+            assert isinstance(langfuse, dict)
+            records.append(Record(trace, langfuse.get("input"), langfuse.get("output")))
+        try:
+            traces = assemble(records, orchestration_subtypes=_ORCHESTRATION, capped=capped)
+        except ValueError as error:
+            raise LangfuseTraceLoadError(str(error)) from error
         self._snapshot = TraceSnapshot(traces)
         return self._snapshot
 

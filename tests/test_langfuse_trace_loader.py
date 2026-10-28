@@ -90,11 +90,13 @@ def test_native_export_matches_live_normalization(tmp_path, monkeypatch, envelop
 
 
 def test_export_directory_limits_and_ordering(tmp_path):
-    (tmp_path / "b.json").write_text(
-        provider_trace("old", timestamp=START).json(exclude_unset=True)
-    )
+    def native(trace_id, timestamp):
+        step = observation("step", trace_id=trace_id, start_time=timestamp)
+        return provider_trace(trace_id, timestamp=timestamp, observations=[step])
+
+    (tmp_path / "b.json").write_text(native("old", START).json(exclude_unset=True))
     (tmp_path / "a.jsonl").write_text(
-        "\n".join(provider_trace(id, timestamp=END).json(exclude_unset=True) for id in ("z", "a"))
+        "\n".join(native(id, END).json(exclude_unset=True) for id in ("z", "a"))
     )
     loader = LangfuseV3FileTraceLoader(LangfuseFileTraceConfig(tmp_path, max_traces=2))
     assert [t.id for t in loader.load()] == ["a", "z"]
@@ -224,39 +226,203 @@ def test_corpus_reports_count_only_selected_traces(tmp_path, offline):
     newest = provider_trace(
         "newest",
         timestamp=END,
-        session_id=None,
-        observations=[observation("tool", trace_id="newest", observation_type="TOOL")],
+        observations=[
+            observation("tool", trace_id="newest", observation_type="TOOL", start_time=END)
+        ],
     )
-    middle = provider_trace("middle", timestamp=START, session_id="shared")
+    # Two records of one session count as one conversation toward max_traces.
+    middle = provider_trace(
+        "middle",
+        timestamp=START,
+        session_id="shared",
+        observations=[observation("span", trace_id="middle", start_time=START)],
+    )
+    later = provider_trace(
+        "later",
+        timestamp=START + timedelta(seconds=1),
+        session_id="shared",
+        observations=[
+            observation("span", trace_id="later", start_time=START + timedelta(seconds=1))
+        ],
+    )
     oldest = provider_trace(
         "oldest",
         timestamp=START - timedelta(seconds=1),
         session_id="excluded",
-        observations=[observation("span", trace_id="oldest")],
+        observations=[
+            observation("span", trace_id="oldest", start_time=START - timedelta(seconds=1))
+        ],
     )
     if offline:
         export_path = tmp_path / "traces.jsonl"
         export_path.write_text(
-            "\n".join(t.json(exclude_unset=True) for t in (newest, oldest, middle))
+            "\n".join(t.json(exclude_unset=True) for t in (newest, oldest, later, middle))
         )
         loader = LangfuseV3FileTraceLoader(LangfuseFileTraceConfig(export_path, max_traces=2))
     else:
+        selected = (newest, later, middle)
         loader = LangfuseV3TraceLoader(
             LangfuseTraceConfig(
                 START, END + timedelta(seconds=1), base_url="https://example.test", max_traces=2
             ),
-            client=FakeClient([([newest, middle], 1)], {t.id: t for t in (newest, middle)}),
+            client=FakeClient([([*selected, oldest], 1)], {t.id: t for t in selected}),
         )
-    assert [t.id for t in loader.load()] == ["middle", "newest"]
+    traces = list(loader.load())
+    assert [t.id for t in traces] == ["session:shared", "newest"]
+    records = traces[0].attributes["records"]
+    assert isinstance(records, list)
+    assert [record["trace_id"] for record in records if isinstance(record, dict)] == [
+        "middle",
+        "later",
+    ]
+    assert [loss.code for trace in traces for loss in trace.losses] == (
+        [] if offline else ["merge_incomplete"]
+    )
     description = loader.describe()
     expected = {
         "trace_count": 2,
         "call_count": 1,
-        "observation_count": 1,
+        "observation_count": 3,
         "distinct_cases": 2,
+        "distinct_sessions": 1,
         "unresolved_parent_count": 0,
     }
     assert {key: value for key, value in description.items() if key in expected} == expected
+    if isinstance(loader, LangfuseV3FileTraceLoader):
+        file_description = loader.describe()
+        assert file_description["export_trace_count"] == 4
+        assert file_description["truncated"] is True
+
+
+@pytest.mark.parametrize("offline", [False, True])
+def test_export_keeps_the_conversations_live_selection_keeps(tmp_path, offline):
+    # Live lists traces by timestamp; a trace without observations is still newest.
+    newer = provider_trace("newer-no-obs", timestamp=START + timedelta(seconds=100))
+    older = provider_trace(
+        "older",
+        timestamp=START,
+        observations=[
+            observation("span", trace_id="older", start_time=START + timedelta(seconds=200))
+        ],
+    )
+    if offline:
+        export_path = tmp_path / "traces.jsonl"
+        export_path.write_text("\n".join(t.json(exclude_unset=True) for t in (older, newer)))
+        loader = LangfuseV3FileTraceLoader(LangfuseFileTraceConfig(export_path, max_traces=1))
+    else:
+        loader = LangfuseV3TraceLoader(
+            LangfuseTraceConfig(START, END, base_url="https://example.test", max_traces=1),
+            client=FakeClient([([newer, older], 1)], {newer.id: newer}),
+        )
+    assert [t.id for t in loader.load()] == ["newer-no-obs"]
+
+
+def load_live(*traces: TraceWithFullDetails) -> list:
+    loader = LangfuseV3TraceLoader(
+        LangfuseTraceConfig(START, END, base_url="https://langfuse.test"),
+        client=FakeClient([(list(traces), 1)], {t.id: t for t in traces}),
+    )
+    return list(loader.load())
+
+
+def conversation(trace_id, *, root_type, offset, messages, reply, session_id=None):
+    start = START + timedelta(seconds=offset)
+    return provider_trace(
+        trace_id,
+        timestamp=start,
+        session_id=session_id,
+        input_value={"messages": messages},
+        output_value=reply,
+        observations=[
+            observation("root", trace_id=trace_id, observation_type=root_type, start_time=start),
+            observation(
+                "llm",
+                trace_id=trace_id,
+                parent_id="root",
+                observation_type="GENERATION",
+                start_time=start + timedelta(milliseconds=1),
+                output_value=reply,
+            ),
+        ],
+    )
+
+
+def test_v3_traces_sharing_a_session_merge_into_one_conversation():
+    first = conversation(
+        "t1",
+        root_type="AGENT",
+        offset=0,
+        messages=[{"role": "user", "content": "find it"}],
+        reply="found",
+        session_id="session-7",
+    )
+    second = conversation(
+        "t2",
+        root_type="AGENT",
+        offset=1,
+        messages=[
+            {"role": "user", "content": "find it"},
+            {"role": "assistant", "content": "found"},
+            {"role": "user", "content": "thanks"},
+        ],
+        reply="welcome",
+        session_id="session-7",
+    )
+
+    (trace,) = load_live(second, first)
+
+    assert trace.id == "session:session-7"
+    assert (trace.session_id, trace.session_basis) == ("session-7", "langfuse.sessionId")
+    assert trace.losses == []
+    (root,) = trace.root_spans
+    assert [(span.id, span.kind, span.attributes["subtype"]) for span in root.children] == [
+        ("t1/root", SpanKind.CHAIN, "AGENT"),
+        ("t2/root", SpanKind.CHAIN, "AGENT"),
+    ]
+    assert [span.source_url for span in root.children] == [
+        "https://langfuse.test/project/project-1/traces/t1",
+        "https://langfuse.test/project/project-1/traces/t2",
+    ]
+    # The second input re-sends the first exchange; only its new message is kept.
+    assert [(turn.role.value, turn.content, turn.llm_span_ids) for turn in root.turns] == [
+        ("user", "find it", []),
+        ("agent", "found", ["t1/llm"]),
+        ("user", "thanks", []),
+        ("agent", "welcome", ["t2/llm"]),
+    ]
+
+
+def test_v3_span_root_without_session_owns_its_turns():
+    (trace,) = load_live(
+        conversation(
+            "t1",
+            root_type="SPAN",
+            offset=0,
+            messages=[{"role": "user", "content": "find it"}],
+            reply="found",
+        )
+    )
+
+    assert trace.id == "t1" and trace.session_id is None
+    (root,) = trace.root_spans
+    assert (root.kind, root.attributes["subtype"]) == (SpanKind.AGENT, "SPAN")
+    assert [(turn.id, turn.role.value, turn.content, turn.llm_span_ids) for turn in root.turns] == [
+        ("root/turn/1", "user", "find it", []),
+        ("root/turn/2", "agent", "found", ["llm"]),
+    ]
+
+
+def test_v3_generation_root_without_session_is_not_a_run():
+    native = provider_trace(
+        "t1",
+        observations=[observation("llm", trace_id="t1", observation_type="GENERATION")],
+    )
+
+    (trace,) = load_live(native)
+
+    (root,) = trace.root_spans
+    assert root.kind is SpanKind.LLM
+    assert root.turns is UNSET
 
 
 def test_live_order_uses_query_summary_timestamps():
@@ -453,16 +619,18 @@ def provider_trace(
     *,
     timestamp: datetime = START,
     observations: list[ObservationsView] | None = None,
-    session_id: str | None = "session-7",
+    session_id: str | None = None,
     latency: float = 5.0,
     total_cost: float = 0.03,
+    input_value: object = None,
+    output_value: object = None,
 ) -> TraceWithFullDetails:
     return TraceWithFullDetails(
         id=trace_id,
         timestamp=timestamp,
         name="support-agent",
-        input={"messages": [{"role": "user", "content": "find it"}]},
-        output={"answer": "done"},
+        input=input_value or {"messages": [{"role": "user", "content": "find it"}]},
+        output=output_value or {"answer": "done"},
         session_id=session_id,
         release="2026.08",
         version="v2",
@@ -526,7 +694,7 @@ def test_loader_selects_then_fetches_complete_v3_traces() -> None:
     assert client.trace.list_calls == [
         {
             "page": 1,
-            "limit": 2,
+            "limit": 100,
             "from_timestamp": START - timedelta(days=1),
             "to_timestamp": END,
             "order_by": "timestamp.desc",
@@ -536,7 +704,7 @@ def test_loader_selects_then_fetches_complete_v3_traces() -> None:
     ]
     assert client.trace.get_calls == ["trace-1"]
     assert normalized.id == "trace-1"
-    assert (normalized.session_id, normalized.session_basis) == ("session-7", "langfuse.sessionId")
+    assert normalized.session_id is None
     assert normalized.aggregate.cost_usd == 0.03
     assert normalized.aggregate.latency_ms == 5_000
     assert [span.id for span in normalized.root_spans] == ["root"]
@@ -1187,7 +1355,7 @@ def test_relay_spans_become_canonical_llm_calls() -> None:
         ),
     )
     normalized = _normalize_trace(
-        provider_trace(observations=[session, llm, count_tokens, turn]),
+        provider_trace(observations=[session, llm, count_tokens, turn], session_id="session-7"),
         source_pointer={"provider": "langfuse"},
     )
 

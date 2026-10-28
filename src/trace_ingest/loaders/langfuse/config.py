@@ -89,9 +89,10 @@ def _describe_corpus(source: str, snapshot: TraceSnapshot) -> _LangfuseCorpusDes
     pending = [span for trace in snapshot for span in trace.root_spans]
     while pending:
         span = pending.pop()
-        observation_count += 1
-        call_count += span.kind is SpanKind.TOOL
         pointer = span.attributes.get("source_pointer")
+        # A merged session's synthesized root is not a Langfuse observation.
+        observation_count += isinstance(pointer, dict)
+        call_count += span.kind is SpanKind.TOOL
         unresolved_parent_count += (
             isinstance(pointer, dict) and "unresolved_parent_observation_id" in pointer
         )

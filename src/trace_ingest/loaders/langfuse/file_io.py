@@ -6,9 +6,14 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
 
+from trace_ingest.loaders.helper.merge import Record, assemble
 from trace_ingest.loaders.langfuse.config import LangfuseTraceLoadError
+from trace_ingest.loaders.langfuse.normalization import _ORCHESTRATION
+from trace_ingest.models import Trace
 
 
 def _parse_trace_export(contents: bytes, path: Path) -> list[dict[str, object]]:
@@ -43,3 +48,26 @@ def _parse_trace_export(contents: bytes, path: Path) -> list[dict[str, object]]:
             )
         records.append(payload)
     return records
+
+
+def _newest_conversations(
+    records: Sequence[tuple[datetime, Record]], max_traces: int
+) -> tuple[list[Trace], int]:
+    """The newest ``max_traces`` merged traces, oldest first, and how many were merged.
+
+    Each record comes with the time live selection ranks it by; as there, a
+    conversation is as new as its newest record.
+    """
+    try:
+        traces = assemble([record for _, record in records], orchestration_subtypes=_ORCHESTRATION)
+    except ValueError as error:
+        raise LangfuseTraceLoadError(str(error)) from error
+    newest: dict[str | int, datetime] = {}
+    for index, (time, record) in enumerate(records):
+        key = record.trace.session_id or index
+        newest[key] = max(time, newest.get(key, time))
+    # assemble returns one trace per key, in order of each key's first record.
+    keyed = sorted(
+        zip(newest.values(), traces, strict=True), key=lambda item: (item[0], item[1].id)
+    )
+    return [trace for _, trace in keyed[-max_traces:]], len(traces)

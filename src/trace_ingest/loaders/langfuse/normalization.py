@@ -17,6 +17,7 @@ from pydantic import JsonValue
 from trace_ingest.loaders.helper import llm_span
 from trace_ingest.loaders.helper.llm_span import SpanData, nemo_relay
 from trace_ingest.loaders.helper.tool_definitions import tool_definitions
+from trace_ingest.loaders.helper.turns import has_input
 from trace_ingest.loaders.langfuse.config import LangfuseTraceLoadError
 from trace_ingest.models import (
     UNSET,
@@ -38,6 +39,9 @@ if TYPE_CHECKING:
     from langfuse.api.scores_v3.types.score_v3 import ScoreV3
 
     LangfuseObservation = ObservationsView | ObservationV2
+
+# A lone SPAN root orchestrates its trace's steps, so it can own the run's turns.
+_ORCHESTRATION = frozenset({"SPAN"})
 
 
 def _trace_id(provider_trace: TraceWithDetails | TraceWithFullDetails) -> str:
@@ -102,6 +106,19 @@ def _normalize_trace(
         attributes=attributes,
         evaluator_results={name: scores for name, scores in scores_by_name.items()},
     )
+
+
+def _conversation_io(provider_trace: TraceWithFullDetails, trace: Trace) -> tuple[object, object]:
+    """The trace's recorded input and output, else those of its lone root observation."""
+    root = trace.root_spans[0] if len(trace.root_spans) == 1 else None
+    values: list[object] = []
+    for recorded, fallback in (
+        (provider_trace.input, root.input if root else UNSET),
+        (provider_trace.output, root.output if root else UNSET),
+    ):
+        value = _io_value(recorded)
+        values.append(value if has_input(value) else fallback)
+    return values[0], values[1]
 
 
 def _normalize_tree(
