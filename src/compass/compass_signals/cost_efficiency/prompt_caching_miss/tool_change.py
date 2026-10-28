@@ -19,6 +19,7 @@ from typing import Any, Literal, cast
 from compass.compass_signals._hashing import stable_json
 from compass.compass_signals.cost_efficiency.cards import Finding, RuleSpec, names
 from compass.traces import UNSET, Span
+from trace_ingest.models import ToolDefinition
 
 RULE = "cache_miss_after_tool_change"
 ToolChangeKind = Literal["set_changed", "definition_changed", "other"]
@@ -63,44 +64,42 @@ def check(call: Span, reference: Span) -> ToolChange | None:
     return None
 
 
-def _sent(span: Span) -> list[Any] | None:
+def _sent(span: Span) -> list[ToolDefinition] | None:
     """The tool list as the request sent it; None when the span records none."""
 
     if span.tool_definitions is UNSET:
         return None
-    return [definition.raw for definition in span.tool_definitions]
+    return span.tool_definitions
 
 
-def _by_name(tools: list[Any]) -> dict[str, Any]:
+def _by_name(definitions: list[ToolDefinition]) -> dict[str, Any]:
     """Tool name -> definition, in sent order, without breakpoint markers the model never sees."""
 
     return {
-        _tool_name(tool, position): (
-            {key: value for key, value in tool.items() if key != "cache_control"}
-            if isinstance(tool, Mapping)
-            else tool
+        _tool_name(definition, position): (
+            {key: value for key, value in definition.raw.items() if key != "cache_control"}
+            if isinstance(definition.raw, Mapping)
+            else definition.raw
         )
-        for position, tool in enumerate(tools)
+        for position, definition in enumerate(definitions)
     }
 
 
-def _tool_name(tool: object, position: int) -> str:
-    if isinstance(tool, Mapping):
-        function = tool.get("function")
-        for candidate in (
-            tool.get("name"),
-            function.get("name") if isinstance(function, Mapping) else None,
-            tool.get("type"),
-        ):
-            if isinstance(candidate, str) and candidate:
-                return candidate
-    return f"#{position}"
+def _tool_name(definition: ToolDefinition, position: int) -> str:
+    """The loader's name, else the built-in tool type, else the position."""
+
+    if definition.name:
+        return definition.name
+    raw = definition.raw
+    tool_type = raw.get("type") if isinstance(raw, Mapping) else None
+    return tool_type if isinstance(tool_type, str) and tool_type else f"#{position}"
 
 
-def _raw_json(tools: list[Any]) -> str:
+def _raw_json(definitions: list[ToolDefinition]) -> str:
     """The tool list as sent, key order included."""
 
-    return json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
+    raw = [definition.raw for definition in definitions]
+    return json.dumps(raw, ensure_ascii=False, separators=(",", ":"))
 
 
 def _evidence(finding: Finding) -> str:

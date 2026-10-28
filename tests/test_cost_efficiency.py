@@ -33,7 +33,7 @@ from compass.traces import (
     TraceAggregate,
     TraceSnapshot,
 )
-from trace_ingest.models import ToolDefinition
+from trace_ingest.loaders.helper.tool_definitions import tool_definitions
 
 T0 = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
 MODEL = "claude-sonnet-5-5"
@@ -72,10 +72,9 @@ def call(
             cache_write_tokens=write,
             cache_writes_by_ttl={ttl: write} if ttl is not None and write else None,
         ),
-        tool_definitions=[
-            ToolDefinition(raw=raw)
-            for raw in (tool_defs if tool_defs is not None else [tool(name) for name in tools])
-        ],
+        tool_definitions=tool_definitions(
+            tool_defs if tool_defs is not None else [tool(name) for name in tools]
+        ),
         llm_params=params if params is not None else {"max_tokens": 1000},
     )
 
