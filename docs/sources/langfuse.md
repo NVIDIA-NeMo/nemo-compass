@@ -46,8 +46,19 @@ for help with findings or skipped Compass Signals.
 ## Select the right traces
 
 Your API keys select the project. Both timestamps are required and must include a timezone;
-the start is inclusive and the end is exclusive. The default limit is 100 distinct traces.
-`base_url` overrides `LANGFUSE_BASE_URL` in the environment.
+the start is inclusive and the end is exclusive. `base_url` overrides `LANGFUSE_BASE_URL`
+in the environment.
+
+Compass loads one trace per conversation: selected traces that share a Langfuse `sessionId`
+become one trace, in start order, with spans named `<trace id>/<observation id>` and the
+conversation's turns joined across them. A trace without a session stays on its own; when
+its single root is an agent, chain or span observation, it owns the trace's turns. A merged
+conversation has turns only when every one of its traces has such a root.
+`max_traces` (default 100) counts conversations. Live loads select the newest ones; when
+selection stops at the limit, each merged trace is marked incomplete (`merge_incomplete`)
+because more of its session may exist. Exports keep the newest `max_traces`
+conversations after merging every record, ranked as live loads rank them: by the
+newest trace timestamp (v3) or observation start (v4) in the conversation.
 
 To filter by environment, add this under `trace.langfuse`:
 
