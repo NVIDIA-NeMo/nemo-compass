@@ -47,8 +47,17 @@ for help with findings or skipped Compass Signals.
 Add `filter: "trace.status = 'ERROR'"` under `trace.mlflow_experiment` to select failed traces.
 `tracking_uri` overrides `MLFLOW_TRACKING_URI` in the environment.
 
-Keep an explicit limit for a first run. Without one, the live loader defaults to 10,000 traces,
-fetched in pages of up to 500. Memory use grows with the number and size of traces.
+Keep an explicit limit for a first run. Without one, the live loader defaults to 10,000
+conversations, searching newest first in pages of `max_traces + 1` traces, at most 500.
+Memory use grows with the number and size of traces.
+
+Traces that share a session (`mlflow.trace.session` metadata, else the root span's `session.id`
+attribute) load as one conversation: trace `session:<id>` holds every trace's spans, named
+`<trace id>/<span id>`, under one `conversation` agent span. Its turns join each trace's turns;
+when any trace has none on its own (see [Conversation turns](#conversation-turns)), the
+conversation has none. `max_traces` counts conversations. When the live search stops at the limit
+with traces left, each merged conversation records a `merge_incomplete` loss, because older
+traces of the session may not have been loaded.
 
 ## Use an export
 
@@ -71,7 +80,10 @@ trace:
 Rerun the same analysis command. Local loading needs inference credentials only.
 Exports must include spans. The loader accepts native trace objects, arrays, JSONL,
 `mlflow traces get` output, and `Trace.to_json()` or `Trace.to_dict()` output.
-It validates the entire file before applying the limit; export continuation tokens are not followed.
+It validates the entire file before applying the limit, keeping the first `max_traces`
+conversations in file order; export continuation tokens are not followed. An export with a
+`next_page_token` is one page of a capped search, so each merged conversation in it records
+a `merge_incomplete` loss.
 
 The extra installs `mlflow-skinny` SDK `>=3.6,<4`. Exports must be readable by that SDK;
 tracking-server compatibility depends on your deployment. Duplicate active assessment names
@@ -85,7 +97,8 @@ stays in `attributes.mlflow.attributes`, and a `CHAIN`, `TASK` or `WORKFLOW` roo
 it in `attributes.subtype`.
 
 1. The trace input, read from the root span (`mlflow.spanInputs`, `input.value` or
-   `gen_ai.input.messages`), else the trace metadata or request preview. A message list
+   `gen_ai.input.messages`), else the trace metadata (unless MLflow truncated it to 250
+   characters) or request preview. A message list
    (OpenAI or LangChain messages, bare, under `messages`, or in a one-item batch) becomes
    one turn per message: `assistant`, `ai`, `agent` and `model` map to agent, `user` and
    `human` to user, and `system` and `developer` to system. A `tool` or `function` message
