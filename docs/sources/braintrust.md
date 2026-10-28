@@ -50,6 +50,10 @@ The default limit is 100 complete traces. Selection follows descending Braintrus
 order. All pages of spans for each selected trace are loaded, including children outside the
 window, and the resulting traces are ordered by root creation time and ID.
 Use a window of completed runs; the loader does not wait for in-flight spans.
+Braintrust has no session key, so each trace is one conversation. A trace whose single root is a
+`task`, `eval` or `function` span loads that root as the agent span, keeping the Braintrust type as
+its subtype, with conversation turns: the root input, one model turn per LLM span with the tool
+calls that follow it, and a closing turn for the root output when it differs from the last reply.
 
 For a single run:
 
