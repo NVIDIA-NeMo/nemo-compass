@@ -251,11 +251,12 @@ def test_loader_resolves_experiment_and_pages_complete_traces_through_search():
     snapshot = loader.load()
 
     assert [item.id for item in snapshot] == ["tr-0", "tr-1", "tr-2"]
+    # Pages hold one trace past max_traces, enough to see the next conversation.
     assert client.search_calls == [
         {
             "locations": ["17"],
             "filter_string": "trace.status = 'OK'",
-            "max_results": 3,
+            "max_results": 4,
             "order_by": ["timestamp_ms DESC", "request_id ASC"],
             "page_token": None,
             "include_spans": True,
@@ -263,7 +264,7 @@ def test_loader_resolves_experiment_and_pages_complete_traces_through_search():
         {
             "locations": ["17"],
             "filter_string": "trace.status = 'OK'",
-            "max_results": 1,
+            "max_results": 4,
             "order_by": ["timestamp_ms DESC", "request_id ASC"],
             "page_token": "next",
             "include_spans": True,
@@ -306,7 +307,6 @@ def test_loader_normalizes_mlflow_spans_without_flattening_payloads():
         "tr-1",
         # Deliberately shuffled: the normalized contract requires canonical order.
         [tool, root, llm],
-        metadata={"mlflow.trace.session": "session-7"},
     )
     client = FakeClient(pages=[FakePage([full])])
 
@@ -319,10 +319,7 @@ def test_loader_normalizes_mlflow_spans_without_flattening_payloads():
     )
 
     assert normalized.root_spans[0].input == {"messages": [{"role": "user", "content": "find it"}]}
-    assert (normalized.session_id, normalized.session_basis) == (
-        "session-7",
-        "mlflow.trace.session",
-    )
+    assert (normalized.session_id, normalized.session_basis) == (None, None)
     assert normalized.aggregate.latency_ms == 4000.0
     assert [item.id for item in normalized.root_spans] == ["root"]
     assert [item.id for item in normalized.root_spans[0].children] == ["llm", "tool"]
@@ -472,10 +469,14 @@ def test_unresolved_parents_are_detached_but_remain_visible_in_provenance_and_de
 
     normalized = next(iter(loader.load()))
 
-    span_pointer = normalized.root_spans[0].attributes["source_pointer"]
+    assert normalized.id == "session:session-1"
+    (record_root,) = normalized.root_spans[0].children
+    span_pointer = record_root.attributes["source_pointer"]
     assert isinstance(span_pointer, dict)
     assert span_pointer["unresolved_parent_span_id"] == "outside"
-    trace_pointer = normalized.attributes["source_pointer"]
+    (record,) = provenance(normalized)
+    assert isinstance(record["attributes"], dict)
+    trace_pointer = record["attributes"]["source_pointer"]
     assert isinstance(trace_pointer, dict)
     assert trace_pointer["tracking_uri"] == "http://mlflow.test"
     assert span_pointer["span_id"] == "child"
@@ -493,6 +494,193 @@ def test_unresolved_parents_are_detached_but_remain_visible_in_provenance_and_de
         "filter": None,
         "max_traces": 10_000,
     }
+
+
+def provenance(merged):
+    """The merged trace's per-record provenance entries."""
+    entries = merged.attributes["records"]
+    assert isinstance(entries, list)
+    return [entry for entry in entries if isinstance(entry, dict)]
+
+
+def session_trace(trace_id, request_time, session, *, question, answer):
+    """A provider trace whose AGENT root asks ``question`` and whose model replies ``answer``."""
+    second = 1_000_000_000
+    start = request_time * second
+    return trace(
+        trace_id,
+        [
+            span(
+                "root",
+                span_type="AGENT",
+                start_time_ns=start,
+                end_time_ns=start + 2 * second,
+                inputs={"messages": question},
+            ),
+            span(
+                "llm",
+                parent_id="root",
+                span_type="CHAT_MODEL",
+                start_time_ns=start + second,
+                end_time_ns=start + 2 * second,
+                outputs=answer,
+            ),
+        ],
+        request_time=request_time,
+        metadata={"mlflow.trace.session": session},
+    )
+
+
+def test_live_traces_sharing_a_session_merge_into_one_conversation():
+    first = [{"role": "user", "content": "weather?"}]
+    second = [
+        *first,
+        {"role": "assistant", "content": "Sunny."},
+        {"role": "user", "content": "and?"},
+    ]
+    client = FakeClient(
+        pages=[
+            FakePage(
+                [
+                    session_trace("tr-2", 20, "s", question=second, answer="Rain."),
+                    session_trace("tr-1", 10, "s", question=first, answer="Sunny."),
+                ]
+            )
+        ]
+    )
+    loader = MLflowTraceLoader(MLflowTraceConfig(experiment_name="agent-traces"), client=client)
+
+    (merged,) = loader.load()
+
+    assert (merged.id, merged.session_id, merged.session_basis) == (
+        "session:s",
+        "s",
+        "mlflow.trace.session",
+    )
+    (session,) = merged.root_spans
+    assert [child.id for child in session.children] == ["tr-1/root", "tr-2/root"]
+    assert session.turns is not UNSET
+    assert [turn.content for turn in session.turns] == ["weather?", "Sunny.", "and?", "Rain."]
+    assert merged.losses == []
+    assert loader.describe()["trace_count"] == 1
+
+
+def test_truncated_trace_inputs_metadata_is_not_conversation_input():
+    first = [{"role": "user", "content": "weather?"}]
+    history = [
+        *first,
+        {"role": "assistant", "content": "Sunny."},
+        {"role": "user", "content": "x" * 300},
+    ]
+    # MLflow cuts mlflow.traceInputs to 250 characters, ending in "...".
+    truncated = json.dumps({"messages": history})[:247] + "..."
+    second = trace(
+        "tr-2",
+        [
+            span("detached", parent_id="remote", span_type="CHAT_MODEL", outputs="Rain."),
+            span("other", span_type="CHAT_MODEL", outputs="Rain."),
+        ],
+        request_time=20,
+        metadata={"mlflow.trace.session": "s", "mlflow.traceInputs": truncated},
+    )
+    client = FakeClient(
+        pages=[FakePage([second, session_trace("tr-1", 10, "s", question=first, answer="Sunny.")])]
+    )
+
+    (merged,) = MLflowTraceLoader(
+        MLflowTraceConfig(experiment_name="agent-traces"), client=client
+    ).load()
+
+    (session,) = merged.root_spans
+    # tr-2 records no input but the cut-off metadata, so the conversation has no turns
+    # instead of a user turn holding the truncated JSON.
+    assert session.turns is UNSET
+
+
+def test_root_span_session_attribute_is_the_fallback_session_key():
+    root = span("root", span_type="CHAIN", attributes={"session.id": "s"})
+    client = FakeClient(pages=[FakePage([trace("tr-1", [root])])])
+
+    (merged,) = MLflowTraceLoader(
+        MLflowTraceConfig(experiment_name="agent-traces"), client=client
+    ).load()
+
+    assert (merged.id, merged.session_basis) == ("session:s", "mlflow.span.session.id")
+
+
+def test_live_selection_stops_at_max_traces_conversations_and_marks_them_partial():
+    turn = [{"role": "user", "content": "hi"}]
+    client = FakeClient(
+        pages=[
+            FakePage(
+                [
+                    session_trace("tr-3", 30, "s1", question=turn, answer="a"),
+                    session_trace("tr-2", 20, "s1", question=turn, answer="b"),
+                ],
+                token="next",
+            ),
+            FakePage([session_trace("tr-1", 10, "s2", question=turn, answer="c")]),
+        ]
+    )
+    loader = MLflowTraceLoader(
+        MLflowTraceConfig(experiment_name="agent-traces", max_traces=1), client=client
+    )
+
+    (merged,) = loader.load()
+
+    assert merged.id == "session:s1"
+    assert [record["trace_id"] for record in provenance(merged)] == ["tr-2", "tr-3"]
+    assert merged.losses == [
+        Loss(
+            code="merge_incomplete",
+            detail={"reason": "max_traces", "loaded_record_count": 2},
+            span_id="session:s1",
+        )
+    ]
+    assert len(client.search_calls) == 2
+
+
+def test_file_loader_keeps_whole_conversations_up_to_the_bound(tmp_path):
+    records = []
+    for trace_id, session in (("1", "a"), ("2", "b"), ("3", "a")):
+        record = native_trace_dict(f"tr-{trace_id * 32}")
+        record["info"]["trace_metadata"] = {"mlflow.trace.session": session}
+        records.append(record)
+    path = tmp_path / "sessions.json"
+    path.write_text(json.dumps(records), encoding="utf-8")
+    loader = MLflowFileTraceLoader(MLflowFileTraceConfig(path=path, max_traces=1))
+
+    (merged,) = loader.load()
+
+    assert merged.id == "session:a"
+    assert [record["trace_id"] for record in provenance(merged)] == [
+        f"tr-{'1' * 32}",
+        f"tr-{'3' * 32}",
+    ]
+    assert merged.losses == []
+    assert loader.describe()["export_trace_count"] == 3
+    assert loader.describe()["truncated"] is True
+
+
+def test_file_export_with_a_continuation_token_marks_sessions_partial(tmp_path):
+    records = []
+    for trace_id in ("1", "2"):
+        record = native_trace_dict(f"tr-{trace_id * 32}")
+        record["info"]["trace_metadata"] = {"mlflow.trace.session": "a"}
+        records.append(record)
+    path = tmp_path / "page.json"
+    path.write_text(json.dumps({"traces": records, "next_page_token": "more"}), encoding="utf-8")
+
+    (merged,) = MLflowFileTraceLoader(MLflowFileTraceConfig(path=path)).load()
+
+    # Older traces of the session may be on the export's later pages.
+    assert merged.losses == [
+        Loss(
+            code="merge_incomplete",
+            detail={"reason": "max_traces", "loaded_record_count": 2},
+            span_id="session:a",
+        )
+    ]
 
 
 def test_unknown_provider_type_is_not_promoted_to_a_known_kind():
