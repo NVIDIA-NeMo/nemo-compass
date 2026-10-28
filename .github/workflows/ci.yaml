@@ -97,10 +97,12 @@ jobs:
           uv venv "$smoke_env"
           uv pip install --no-config --no-sources --python "$smoke_env/bin/python" \
             dist/nemo_compass-*.whl
+          uv pip install --python "$smoke_env/bin/python" pytest
+          cp tests/test_startup.py "$smoke_env/test_startup.py"
           cd "$smoke_env"
           "$smoke_env/bin/python" -I -c 'from compass.traces import Trace; from trace_ingest import Trace as SharedTrace; assert Trace is SharedTrace'
           "$smoke_env/bin/compass" --help
-          "$smoke_env/bin/python" -I "$GITHUB_WORKSPACE/tools/check_startup.py"
+          "$smoke_env/bin/python" -I -m pytest --import-mode=importlib test_startup.py
 
       - name: Validate release identity and checksum artifacts
         id: release
