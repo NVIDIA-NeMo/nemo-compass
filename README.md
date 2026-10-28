@@ -115,3 +115,15 @@ This project is licensed under the [Apache License, Version 2.0](LICENSE). See
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for human-readable dependency license
 disclosures, and [third_party/licenses.jsonl](third_party/licenses.jsonl) for the machine-readable
 inventory.
+
+### Source-code search prerequisite
+
+When `code_base` is enabled, install [ripgrep](https://github.com/BurntSushi/ripgrep)
+and make `rg` available on `PATH` (for example, `brew install ripgrep` on macOS
+or `apt-get install ripgrep` on Debian/Ubuntu). No search executable is needed
+when source-code access is disabled. Compass includes hidden and gitignored
+source files but retains its exclusions for credentials and generated directories.
+Discovery skips symlinks; an explicit file read/search must resolve inside the repository.
+Search uses ripgrep Unicode case matching, which does not expand `ß` to `ss` as
+Python `casefold()` did. Results are capped at 200 paths / 100 matching lines;
+when capped, the subset can vary with parallel traversal. Narrow the scope for more.

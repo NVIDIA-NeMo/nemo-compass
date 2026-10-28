@@ -3,8 +3,15 @@
 
 """Read-only, repository-confined tools for code-aware Problem validation."""
 
-import os
+import base64
+import json
+import shutil
+import subprocess
+import tempfile
+from collections.abc import Iterator
+from contextlib import closing
 from pathlib import Path
+from threading import Timer
 from typing import Annotated
 
 from nooa.agentdoc import hidden, spec
@@ -33,6 +40,7 @@ _MAX_FILE_BYTES = 1_000_000
 _MAX_LISTED_FILES = 200
 _MAX_MATCHES = 100
 _MAX_READ_LINES = 400
+_SEARCH_TIMEOUT_SECONDS = 30
 
 
 class CodebaseTools(Skill):
@@ -69,35 +77,69 @@ class CodebaseTools(Skill):
         return resolved
 
     @hidden
-    def _iter_files(self, start: Path) -> list[Path]:
-        if start.is_file():
-            return [start]
-        if not start.is_dir():
-            raise FileNotFoundError(f"path does not exist: {start.relative_to(self._root)}")
-
-        files: list[Path] = []
-        for directory, directory_names, file_names in os.walk(start, followlinks=False):
-            current = Path(directory)
-            directory_names[:] = sorted(
-                name
-                for name in directory_names
-                if name not in _BLOCKED_DIRECTORIES and not (current / name).is_symlink()
-            )
-            for name in sorted(file_names):
-                path = current / name
-                try:
-                    resolved = path.resolve()
-                except OSError:
-                    continue
-                if not resolved.is_relative_to(self._root) or self._is_blocked(resolved):
-                    continue
-                files.append(resolved)
-        return files
+    def _run_rg(self, args: list[str], scope: str = ".") -> Iterator[bytes]:
+        executable = shutil.which("rg")
+        if executable is None:
+            raise RuntimeError("Code search requires ripgrep (rg) on PATH; install ripgrep.")
+        exclusions = [
+            arg for name in sorted(_BLOCKED_DIRECTORIES) for arg in ("--glob", f"!**/{name}/**")
+        ]
+        for name in [
+            ".env",
+            ".env.*",
+            *sorted(_BLOCKED_FILENAMES),
+            *(f"*{suffix}" for suffix in sorted(_BLOCKED_SUFFIXES)),
+        ]:
+            exclusions.extend(("--iglob", f"!**/{name}"))
+        # Ignore repository/user ignore files deliberately: preserve Compass coverage.
+        command = [
+            executable,
+            "--no-config",
+            "--hidden",
+            "--no-ignore",
+            *args,
+            *exclusions,
+            "--",
+            scope,
+        ]
+        with (
+            tempfile.TemporaryFile() as errors,
+            subprocess.Popen(
+                command, cwd=self._root, stdout=subprocess.PIPE, stderr=errors
+            ) as process,
+        ):
+            timer = Timer(_SEARCH_TIMEOUT_SECONDS, process.kill)
+            timer.start()
+            try:
+                assert process.stdout is not None
+                stream = process.stdout
+                pending = b""
+                separator = b"\0" if "--null" in args else b"\n"
+                for block in iter(lambda: stream.read(65536), b""):
+                    pieces = (pending + block).split(separator)
+                    pending = pieces.pop()
+                    yield from pieces
+                if pending:
+                    yield pending
+                if process.wait() not in (0, 1):
+                    errors.seek(0)
+                    raise RuntimeError(
+                        "ripgrep failed or exceeded 30 seconds: "
+                        + errors.read(2000).decode("utf-8", errors="replace")
+                    )
+            finally:
+                timer.cancel()
+                if process.poll() is None:
+                    process.kill()
+                process.wait()
 
     @hidden
     def _read_text(self, path: Path) -> str | None:
         try:
-            data = path.read_bytes()
+            if path.stat().st_size > _MAX_FILE_BYTES:
+                return None
+            with path.open("rb") as source:
+                data = source.read(_MAX_FILE_BYTES + 1)
         except OSError:
             return None
         if len(data) > _MAX_FILE_BYTES or b"\0" in data:
@@ -114,14 +156,22 @@ class CodebaseTools(Skill):
             spec(description="Optional repository-relative glob, such as src/**/*.py"),
         ] = "**/*",
     ) -> list[str]:
-        """List matching readable files, relative to the codebase root."""
+        """List up to 200 paths; narrow the glob if 200 return. Discovery skips symlinks."""
 
-        matches = [
-            str(path.relative_to(self._root))
-            for path in self._iter_files(self._root)
-            if pattern == "**/*" or path.relative_to(self._root).match(pattern)
-        ]
-        return matches[:_MAX_LISTED_FILES]
+        if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
+            raise ValueError("pattern must stay inside the codebase")
+        matches = []
+        with closing(self._run_rg(["--files", "--null", "--glob", pattern])) as lines:
+            for line in lines:
+                path = line.decode("utf-8", errors="surrogateescape")
+                try:
+                    resolved = self._resolve(path)
+                except ValueError:
+                    continue
+                matches.append(str(resolved.relative_to(self._root)))
+                if len(matches) == _MAX_LISTED_FILES:
+                    break
+        return sorted(matches)
 
     def search_code(
         self,
@@ -131,29 +181,66 @@ class CodebaseTools(Skill):
             spec(description="Repository-relative file or directory to search"),
         ] = ".",
     ) -> list[dict[str, str | int]]:
-        """Search readable UTF-8 code for literal text, case-insensitively."""
+        """Search UTF-8 files with ripgrep's case-insensitive literal matching.
+
+        Scope to a known file/directory first. At most 100 matching lines return;
+        narrow the path/query if the limit is reached. Ignored/hidden source is included.
+        Regex syntax is literal. Each directory search can use ripgrep worker threads.
+        """
 
         if not query:
             raise ValueError("query must not be empty")
-        needle = query.casefold()
+        if query.splitlines() != [query]:
+            return []
+        scope = self._resolve(path)
+        if not scope.exists():
+            raise FileNotFoundError(path)
+        if scope.is_file() and scope.stat().st_size > _MAX_FILE_BYTES:
+            return []
         matches: list[dict[str, str | int]] = []
-        for file_path in self._iter_files(self._resolve(path)):
-            text = self._read_text(file_path)
-            if text is None:
-                continue
-            for line_number, line in enumerate(text.splitlines(), start=1):
-                if needle not in line.casefold():
+        checked: dict[str, bool] = {}
+        args = [
+            "--json",
+            "--fixed-strings",
+            "--ignore-case",
+            "--encoding",
+            "utf-8",
+            "--max-filesize",
+            str(_MAX_FILE_BYTES),
+            "--regexp",
+            query,
+        ]
+        with closing(self._run_rg(args, str(scope.relative_to(self._root)))) as lines:
+            for line in lines:
+                event = json.loads(line)
+                if event["type"] != "match":
+                    continue
+                data = event["data"]
+                name = data["path"].get("text")
+                if name is None:
+                    name = base64.b64decode(data["path"]["bytes"]).decode(
+                        "utf-8", errors="surrogateescape"
+                    )
+                if name not in checked:
+                    try:
+                        checked[name] = self._read_text(self._resolve(name)) is not None
+                    except ValueError:
+                        checked[name] = False
+                if not checked[name]:
+                    continue
+                text = data["lines"].get("text")
+                if text is None:
                     continue
                 matches.append(
                     {
-                        "path": str(file_path.relative_to(self._root)),
-                        "line": line_number,
-                        "text": line[:500],
+                        "path": str(Path(name)),
+                        "line": data["line_number"],
+                        "text": text.rstrip("\r\n")[:500],
                     }
                 )
                 if len(matches) == _MAX_MATCHES:
-                    return matches
-        return matches
+                    break
+        return sorted(matches, key=lambda item: (item["path"], item["line"]))
 
     def read_file(
         self,
