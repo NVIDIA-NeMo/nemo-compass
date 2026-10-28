@@ -19,6 +19,7 @@ from urllib.parse import quote, urlencode
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
+from trace_ingest.loaders.helper.turns import with_run_root_turns
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
     UNSET,
@@ -353,7 +354,7 @@ def _normalize_trace(
         starts = [s.start_time for s in normalized.values() if s.start_time is not None]
         ends = [s.end_time for s in normalized.values() if s.end_time is not None]
         root = by_id[root_id]
-        return Trace(
+        trace = Trace(
             id=trace_id,
             root_spans=[normalized[root_id]],
             aggregate=TraceAggregate(
@@ -363,6 +364,9 @@ def _normalize_trace(
             ),
             evaluator_results=dict(root.scores or {}),
             attributes={"source_pointer": pointer},
+        )
+        return with_run_root_turns(
+            trace, conversation_input=root.input, conversation_output=root.output
         )
     except (ValidationError, ValueError, OverflowError) as error:
         raise BraintrustTraceLoadError(f"Invalid Braintrust trace {trace_id!r}: {error}") from error
