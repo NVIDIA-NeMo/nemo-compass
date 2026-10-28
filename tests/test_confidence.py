@@ -69,3 +69,53 @@ def test_insight_confidence_is_unset_when_step_budget_is_exhausted(tmp_path) -> 
     llm = FakeLLMClient([_read_agent_code() for _ in range(40)])
 
     assert _rate(tmp_path, llm) is None
+
+
+def test_validation_and_confidence_reuse_source_through_nooa(tmp_path):
+    from compass.compass_signals.compass_signals import Problem
+    from compass.insights_generation.codebase import CodebaseTools
+    from compass.insights_generation.validation import CandidateProblemValidator
+
+    (tmp_path / "agent.py").write_text("TIMEOUT_SECONDS = 1\n")
+    tools = CodebaseTools(tmp_path)
+    llm = FakeLLMClient(
+        [
+            _read_agent_code(),
+            _response(
+                "return_result",
+                {"result": {"supported": True, "explanation": "Too short"}},
+                "valid",
+            ),
+            _read_agent_code(),
+            _response("return_result", {"result": {"confidence": "high"}}, "rated"),
+        ]
+    )
+
+    async def review():
+        decision = await CandidateProblemValidator(tmp_path, llm, codebase=tools).validate(
+            Problem(description="Timeout", supporting_trace_ids=("t1",)), ()
+        )
+        assert decision._source_paths == ("agent.py",)
+        assert "_source_paths" not in decision.model_dump()
+        read_bytes = tools._cache_stats["bytes_read"]
+        assert await InsightConfidence(tmp_path, llm, codebase=tools).rate(_insight(), ()) == "high"
+        assert tools._cache_stats["bytes_read"] == read_bytes
+        assert tools._cache_stats["hits"] > 0
+
+    asyncio.run(review())
+
+
+def test_confidence_can_contradict_a_prior_assessment(tmp_path):
+    (tmp_path / "agent.py").write_text("TIMEOUT_SECONDS = 60\n")
+    llm = FakeLLMClient(
+        [
+            _read_agent_code(),
+            _response("return_result", {"result": {"confidence": "low"}}, "done"),
+        ]
+    )
+    rating = asyncio.run(
+        InsightConfidence(tmp_path, llm).rate(_insight(), (), source_paths='["agent.py"]')
+    )
+    assert rating == "low"
+    assert "agent.py" in str(llm.last_messages)
+    assert "TIMEOUT_SECONDS = 60" in str(llm.last_messages)

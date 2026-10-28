@@ -231,10 +231,10 @@ def test_confidence_rating_preserves_compiled_severity(tmp_path, monkeypatch) ->
     received = []
 
     class FakeRater:
-        def __init__(self, code_base_path, llm, ethos=None):
+        def __init__(self, code_base_path, llm, ethos=None, *, codebase=None):
             assert code_base_path == tmp_path.resolve()
 
-        async def rate(self, insight, supporting_traces):
+        async def rate(self, insight, supporting_traces, *, source_paths=""):
             received.append((insight, supporting_traces))
             return "high"
 
@@ -401,7 +401,7 @@ def test_candidates_share_both_contexts_and_run_concurrently(
     calls = []
 
     class Validator:
-        def __init__(self, code_base, llm, ethos):
+        def __init__(self, code_base, llm, ethos, *, codebase=None):
             assert code_base == (tmp_path if code_enabled else None)
             assert ethos == ("Explicit permission." if ethos_enabled else None)
 
@@ -469,7 +469,7 @@ def test_ethos_only_validation_filters_with_signal_disabled(tmp_path, monkeypatc
     compilation = AsyncMock()
 
     class Validator:
-        def __init__(self, code_base, llm, ethos):
+        def __init__(self, code_base, llm, ethos, *, codebase=None):
             assert ethos == "Require approval."
 
         async def validate(self, *args):

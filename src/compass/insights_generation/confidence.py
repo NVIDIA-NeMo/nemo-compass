@@ -47,7 +47,9 @@ class _ConfidenceAgent(Agent):
 
     @no_trace  # The Compass confidence.insight span owns this operation.
     @strategy(CodeActStrategy(config=CodeActConfig(max_iterations=_MAX_ITERATIONS)))
-    async def rate(self, insight: Insight, supporting_traces: str) -> _Confidence:  # ty: ignore[empty-body] -- Nooa implements the ellipsis method.
+    async def rate(
+        self, insight: Insight, supporting_traces: str, source_paths: str
+    ) -> _Confidence:  # ty: ignore[empty-body] -- Nooa implements the ellipsis method.
         """Score the provided insight on confidence. The insight is derived from the
         agent's runtime traces.
 
@@ -56,6 +58,15 @@ class _ConfidenceAgent(Agent):
         cause claimed by the insight and shown in the supporting traces. Review every
         relevant source of the behavior, including prompts, configuration, guards,
         retries, and any other involved code path.
+
+        source_paths contains optional file paths read during validation of candidates
+        with overlapping trace evidence. They are navigation hints, not judgments.
+        Check the final insight independently: compilation may have changed its claim,
+        scope, cause, or remediation. Shared trace IDs do not establish the same cause.
+
+        Start with verified source_paths and inspect short
+        excerpts there. Search a known file/directory before expanding scope. Queries
+        are literal text, not regexes. Narrow the glob if a listing returns 200 paths.
 
         After completing the investigation, assign a confidence score based on how much
         of the insight's claim is supported across the agent's behavior, root cause,
@@ -80,15 +91,23 @@ class _ConfidenceAgent(Agent):
 class InsightConfidence:
     """Rate compiled Insights for confidence using confined, read-only codebase access."""
 
-    def __init__(self, code_base_path: Path, llm: UnifiedLLM) -> None:
-        self._codebase = CodebaseTools(code_base_path)
+    def __init__(
+        self, code_base_path: Path, llm: UnifiedLLM, *, codebase: CodebaseTools | None = None
+    ) -> None:
+        self._codebase = codebase or CodebaseTools(code_base_path)
+        if self._codebase._root != code_base_path.expanduser().resolve():
+            raise ValueError("Source tools must match code_base")
         self._llm = llm
 
-    async def rate(self, insight: Insight, supporting_traces: tuple[Trace, ...]) -> Rating | None:
+    async def rate(
+        self, insight: Insight, supporting_traces: tuple[Trace, ...], *, source_paths: str = ""
+    ) -> Rating | None:
         # One agent per call: concurrent ratings must not share a REPL session.
         agent = _ConfidenceAgent(self._codebase, self._llm)
         try:
-            return (await agent.rate(insight, _trace_context(supporting_traces))).confidence
+            return (
+                await agent.rate(insight, _trace_context(supporting_traces), source_paths)
+            ).confidence
         except GenerationAborted:
             raise
         except GenerationError:

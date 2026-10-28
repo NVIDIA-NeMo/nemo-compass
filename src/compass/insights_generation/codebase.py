@@ -4,11 +4,18 @@
 """Read-only, repository-confined tools for code-aware Problem validation."""
 
 import os
+import sys
+from collections import OrderedDict
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Annotated
 
 from nooa.agentdoc import hidden, spec
 from nooa.skill import Skill
+
+from compass.telemetry_phases import codebase_operation
 
 _BLOCKED_DIRECTORIES = frozenset(
     {
@@ -33,6 +40,8 @@ _MAX_FILE_BYTES = 1_000_000
 _MAX_LISTED_FILES = 200
 _MAX_MATCHES = 100
 _MAX_READ_LINES = 400
+_MAX_CACHE_BYTES = 64 * 1024 * 1024
+_READ_PATHS: ContextVar[set[str] | None] = ContextVar("codebase_read_paths", default=None)
 
 
 class CodebaseTools(Skill):
@@ -42,6 +51,25 @@ class CodebaseTools(Skill):
         self._root = root.expanduser().resolve()
         if not self._root.is_dir():
             raise ValueError(f"code_base must be an existing directory: {root}")
+        self._texts: OrderedDict[Path, tuple[tuple[int, ...], str]] = OrderedDict()
+        self._listings: dict[Path, tuple[dict[Path, tuple[int, ...]], list[Path]]] = {}
+        self._cache_stats = dict(hits=0, bytes_read=0, cache_bytes=0)
+
+    @hidden
+    def _stamp(self, path: Path) -> tuple[int, ...]:
+        stat = path.stat()
+        return stat.st_dev, stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
+
+    @hidden
+    @contextmanager
+    def capture_reads(self) -> Iterator[set[str]]:
+        """Associate successful source reads with one concurrent investigation."""
+        paths: set[str] = set()
+        token = _READ_PATHS.set(paths)
+        try:
+            yield paths
+        finally:
+            _READ_PATHS.reset(token)
 
     @hidden
     def _is_blocked(self, path: Path) -> bool:
@@ -75,9 +103,20 @@ class CodebaseTools(Skill):
         if not start.is_dir():
             raise FileNotFoundError(f"path does not exist: {start.relative_to(self._root)}")
 
+        if start in self._listings:
+            directories, files = self._listings[start]
+            try:
+                if all(self._stamp(path) == stamp for path, stamp in directories.items()):
+                    self._cache_stats["hits"] += 1
+                    return files
+            except OSError:
+                pass
+
         files: list[Path] = []
+        directories = {}
         for directory, directory_names, file_names in os.walk(start, followlinks=False):
             current = Path(directory)
+            directories[current] = self._stamp(current)
             directory_names[:] = sorted(
                 name
                 for name in directory_names
@@ -92,21 +131,46 @@ class CodebaseTools(Skill):
                 if not resolved.is_relative_to(self._root) or self._is_blocked(resolved):
                     continue
                 files.append(resolved)
+        if len(self._listings) >= 8:
+            self._listings.clear()
+        self._listings[start] = directories, files
         return files
 
     @hidden
     def _read_text(self, path: Path) -> str | None:
         try:
-            data = path.read_bytes()
-        except OSError:
+            path = self._resolve(str(path))
+            stamp = self._stamp(path)
+            cached = self._texts.pop(path, None)
+            if cached:
+                self._cache_stats["cache_bytes"] -= sys.getsizeof(cached[1])
+                if cached[0] == stamp:
+                    self._texts[path] = cached
+                    self._cache_stats["cache_bytes"] += sys.getsizeof(cached[1])
+                    self._cache_stats["hits"] += 1
+                    return cached[1]
+            if stamp[-1] > _MAX_FILE_BYTES:
+                return None
+            with path.open("rb") as source:
+                data = source.read(_MAX_FILE_BYTES + 1)
+            self._cache_stats["bytes_read"] += len(data)
+        except (OSError, ValueError):
             return None
         if len(data) > _MAX_FILE_BYTES or b"\0" in data:
             return None
         try:
-            return data.decode("utf-8")
+            text = data.decode("utf-8")
         except UnicodeDecodeError:
             return None
+        size = sys.getsizeof(text)
+        while self._texts and self._cache_stats["cache_bytes"] + size > _MAX_CACHE_BYTES:
+            self._cache_stats["cache_bytes"] -= sys.getsizeof(self._texts.popitem(last=False)[1][1])
+        if size <= _MAX_CACHE_BYTES:
+            self._texts[path] = stamp, text
+            self._cache_stats["cache_bytes"] += size
+        return text
 
+    @codebase_operation
     def list_files(
         self,
         pattern: Annotated[
@@ -114,7 +178,10 @@ class CodebaseTools(Skill):
             spec(description="Optional repository-relative glob, such as src/**/*.py"),
         ] = "**/*",
     ) -> list[str]:
-        """List matching readable files, relative to the codebase root."""
+        """List the first 200 matching paths. If 200 return, narrow the glob for more.
+
+        Prefer a relevant directory or filename pattern over a repository-wide list.
+        """
 
         matches = [
             str(path.relative_to(self._root))
@@ -123,6 +190,7 @@ class CodebaseTools(Skill):
         ]
         return matches[:_MAX_LISTED_FILES]
 
+    @codebase_operation
     def search_code(
         self,
         query: Annotated[str, spec(description="Literal text to search for")],
@@ -131,7 +199,10 @@ class CodebaseTools(Skill):
             spec(description="Repository-relative file or directory to search"),
         ] = ".",
     ) -> list[dict[str, str | int]]:
-        """Search readable UTF-8 code for literal text, case-insensitively."""
+        """Search UTF-8 code for a case-insensitive literal, not a regex.
+
+        Search a known file or directory first; expand path only if needed.
+        """
 
         if not query:
             raise ValueError("query must not be empty")
@@ -155,6 +226,7 @@ class CodebaseTools(Skill):
                     return matches
         return matches
 
+    @codebase_operation
     def read_file(
         self,
         path: Annotated[str, spec(description="Repository-relative file path")],
@@ -177,6 +249,8 @@ class CodebaseTools(Skill):
         text = self._read_text(file_path)
         if text is None:
             raise ValueError(f"file is binary, non-UTF-8, or larger than {_MAX_FILE_BYTES} bytes")
+        if (paths := _READ_PATHS.get()) is not None:
+            paths.add(str(file_path.relative_to(self._root)))
         lines = text.splitlines()
         final_line = min(end_line or start_line + _MAX_READ_LINES - 1, len(lines))
         final_line = min(final_line, start_line + _MAX_READ_LINES - 1)
