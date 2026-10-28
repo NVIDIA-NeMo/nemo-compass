@@ -168,10 +168,8 @@ def test_worked_example_end_to_end():
         "20% of traces with token counts; 4 sessions, 20% of sessions with token counts), 4 calls (2.2% of LLM calls with token counts). The "
         "previous call left 41,500 cached tokens; this call read 0 after the tool list "
         "changed. (166,000 input tokens not read from cache.) Tools added: jira_lookup. "
-        "Suggested fix: Register every tool before the first call, for example by waiting "
-        "for MCP servers to connect; load tools that can only arrive later through the "
-        "provider's deferred tool loading, which leaves the tool list unchanged. Figures "
-        "cover only the observed calls."
+        "Suggested fix: Check whether added tools were available earlier. If so, consider "
+        "registering them before the first call. Figures cover only the observed calls."
     )
     assert problem.supporting_trace_ids == ("t1", "t2", "t3", "t4")
     assert problem.candidate_trace_ids == ("t1", "t2", "t3", "t4")
@@ -200,12 +198,10 @@ def test_each_tool_change_kind_is_its_own_problem():
         result.problems, key=lambda p: "(tools added" not in p.description
     )
     assert "(tools added or removed) in 3 traces" in added.description
-    assert "Suggested fix: Register every tool" in added.description
-    assert "Make tool descriptions" not in added.description
+    assert "Suggested fix: Check whether added tools" in added.description
+    assert "Avoid changes" not in added.description
     assert "(tool definitions changed) in 3 traces" in edited_problem.description
-    assert (
-        "Suggested fix: Make tool descriptions and schemas identical" in edited_problem.description
-    )
+    assert "Suggested fix: Avoid changes that do not change" in edited_problem.description
 
 
 def test_below_minimum_traces_stays_audit_only():

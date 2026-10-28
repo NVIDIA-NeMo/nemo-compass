@@ -129,14 +129,13 @@ SPEC = RuleSpec(
     kinds={
         "set_changed": (
             "tools added or removed",
-            "Register every tool before the first call, for example by waiting for MCP "
-            "servers to connect; load tools that can only arrive later through the "
-            "provider's deferred tool loading, which leaves the tool list unchanged.",
+            "Check whether added tools were available earlier. If so, consider registering "
+            "them before the first call.",
         ),
         "definition_changed": (
             "tool definitions changed",
-            "Make tool descriptions and schemas identical across calls; move per-request "
-            "values out of tool definitions.",
+            "Avoid changes that do not change the tool's meaning; keep changes needed for "
+            "correct tool use.",
         ),
         "other": ("tool list changed otherwise", "Send a byte-identical tool list on every call."),
     },
