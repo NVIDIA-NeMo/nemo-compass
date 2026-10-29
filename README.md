@@ -51,6 +51,10 @@ Install from PyPI as [`nemo-compass`](https://pypi.org/project/nemo-compass/); t
 If `compass` is not found after installation, run `uv tool update-shell`
 and restart your terminal.
 
+Code analysis (`code_base`) also requires [ripgrep](https://github.com/BurntSushi/ripgrep)
+on `PATH`. Install it separately with `brew install ripgrep` on macOS or
+`sudo apt-get install ripgrep` on Debian/Ubuntu; the Python package does not install it.
+
 ## After your first run
 
 - [Read your results](docs/results.md) — understand insights, skipped Compass Signals, and saved output.

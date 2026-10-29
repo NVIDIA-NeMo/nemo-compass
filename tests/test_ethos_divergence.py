@@ -155,6 +155,7 @@ def test_no_ethos_path_skips_default_detector(tmp_path, monkeypatch):
         compass_signals={
             "anomaly_and_patterns": False,
             "tool_issues": False,
+            "cost_efficiency": False,
             "grader_failure_patterns": False,
             "user_sentiment": False,
         },
