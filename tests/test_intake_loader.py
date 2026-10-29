@@ -326,7 +326,8 @@ def test_intake_loader_returns_canonical_snapshot_without_writing_files(tmp_path
     assert dumped["root_spans"][0]["children"][0]["children"][0]["id"] == f"{TRACE_ID}/tool"
     assert list(tmp_path.iterdir()) == []
     assert loader.describe()["source"].startswith("intake:https://")
-    assert loader.describe()["span_count"] == 3
+    # The Intake root and tool spans, not the merged conversation root.
+    assert loader.describe()["span_count"] == 2
     assert loader.describe()["call_count"] == 1
     assert loader.describe()["distinct_cases"] == 1
     assert loader.describe()["distinct_sessions"] == 1
@@ -457,8 +458,7 @@ def test_intake_max_traces_stops_before_requesting_another_page():
     loader.transport = _mock_transport(handler)
 
     assert [trace.id for trace in loader.load()] == ["session:session-1"]
-    # Page 2 shows session-1 ended; page 3 is never requested.
-    assert selection_pages == [1, 2]
+    assert selection_pages == [1]
     (session_request,) = session_requests
     assert session_request["filter[session_id]"] == "session-1"
     assert session_request["filter[started_at][gte]"] == "2026-08-28T18:40:00+00:00"
@@ -480,8 +480,7 @@ def test_intake_loader_rejects_duplicate_trace_ids():
         transport=_mock_transport(handler),
     )
 
-    # Both records namespace their spans by the shared trace id, which collides.
-    with pytest.raises(IntakeLoadError, match="session 'session-1' could not be merged"):
+    with pytest.raises(IntakeLoadError, match="duplicate trace id"):
         loader.load()
 
 
@@ -559,11 +558,9 @@ def test_intake_session_traces_merge_into_one_conversation():
         ("user", "thanks", []),
         ("agent", "you're welcome", ["trace-2/llm"]),
     ]
+    # Selection read the whole window, so the session is not fetched again.
     trace_requests = [r for r in requests if r.url.path.endswith("/traces")]
-    session_request = trace_requests[-1].url.params
-    assert session_request["filter[session_id]"] == "session-1"
-    assert session_request["filter[started_at][gte]"] == "2026-08-28T18:40:00+00:00"
-    assert session_request["filter[started_at][lte]"] == "2026-08-28T18:42:00+00:00"
+    assert [r.url.params.get("filter[session_id]") for r in trace_requests] == [None]
     # Evaluator results are per session, so they are fetched once for both traces.
     evaluator_requests = [r for r in requests if r.url.path.endswith("/evaluator-results")]
     assert [r.url.params["filter[session_id]"] for r in evaluator_requests] == ["session-1"]
@@ -614,8 +611,7 @@ def test_intake_optional_auth_is_sent_on_every_page_without_persisting_token(mon
 
     loader = IntakeTraceLoader(config=_config(), transport=httpx.MockTransport(handler))
     loader.load()
-    # Trace selection, the session's traces, its evaluator results, and two span pages.
-    assert len(requests) == 5
+    assert len(requests) == 4
     if token:
         assert token not in repr(loader.config)
         assert token not in json.dumps(loader.describe())
@@ -879,8 +875,8 @@ def test_intake_failed_load_does_not_cache_partial_snapshot_and_can_retry():
     assert loader.load() is snapshot
     description = loader.describe()
     assert description["trace_count"] == 1
-    # The merged root and both records' root spans.
-    assert description["span_count"] == 3
+    # Both records' root spans; the merged conversation root is not an Intake span.
+    assert description["span_count"] == 2
     assert description["distinct_cases"] == 1
     description["query"].clear()
     assert loader.describe()["query"] == _query().describe()
@@ -971,8 +967,7 @@ def test_experiment_selection_pages_evaluations_and_merges_traces_before_limit(s
     assert [trace.id for trace in snapshot] == (
         ["session:b4", "session:a3"] if sort.startswith("-") else ["session:a1", "session:b2"]
     )
-    # Selection reads one trace past the second session to see that it is a third.
-    assert len(trace_pages) == 4
+    assert len(trace_pages) == 3
     assert len([r for r in requests if r.url.path.endswith("/spans")]) == 2
     assert loader.describe()["query"]["experiment_id"] == "experiment-1"
     assert loader.load() is snapshot
@@ -1018,8 +1013,7 @@ def test_experiment_selection_intersects_evaluation_name_and_never_falls_back(
     )
     if has_evaluations and evaluation_name != "outside-experiment":
         assert loader.load().trace_count == 1
-        # The session selection, then the selected session's traces.
-        assert len(trace_requests) == 2
+        assert len(trace_requests) == 1
     else:
         with pytest.raises(IntakeLoadError, match="returned no traces"):
             loader.load()

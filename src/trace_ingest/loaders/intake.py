@@ -90,7 +90,7 @@ class _EvaluationContext(_WireModel):
 class _IntakeTrace(_WireModel):
     id: str
     root_span_id: str | None = None
-    session_id: str
+    session_id: str = Field(min_length=1)
     workspace: str
     name: str | None = None
     input: str | None = None
@@ -188,7 +188,9 @@ class IntakeTraceQuery(_StrictModel):
     test_case_name: str | None = None
     session_id: str | None = None
     status: IntakeStatus | None = None
-    max_traces: int | None = Field(default=None, ge=1, description="Maximum sessions loaded")
+    max_traces: int | None = Field(
+        default=None, ge=1, description="Maximum traces loaded, one per session_id"
+    )
     sort: Literal["started_at", "-started_at"] = "started_at"
 
     @field_validator("started_at_gte", "started_at_lte")
@@ -436,25 +438,31 @@ class IntakeTraceLoader:
 
     def _traces(self, client: _IntakeClient) -> list[Trace]:
         query = self.config.query
-        # Select sessions from trace records only; stop before another page is requested.
-        sessions: dict[str, None] = {}
+        # Select session_ids from trace records; stop as soon as the limit is reached.
+        sessions: dict[str, list[_IntakeTrace]] = {}
+        capped = False
         for intake_trace in client.traces(query):
-            if intake_trace.session_id in sessions:
-                continue
+            sessions.setdefault(intake_trace.session_id, []).append(intake_trace)
             if len(sessions) == query.max_traces:
+                capped = True
                 break
-            sessions[intake_trace.session_id] = None
 
         records: list[Record] = []
-        for session_id in sessions:
-            selection = query.model_copy(update={"session_id": session_id, "max_traces": None})
-            session_traces = list(client.traces(selection))
+        seen: set[str] = set()
+        for session_id, session_traces in sessions.items():
+            if capped:
+                # Selection stopped early, so it may not have read every trace with this key.
+                selection = query.model_copy(update={"session_id": session_id, "max_traces": None})
+                session_traces = list(client.traces(selection))
             raw_results = [
                 result
                 for result_page in client.evaluator_result_pages(session_id)
                 for result in result_page.data
             ]
             for intake_trace in session_traces:
+                if intake_trace.id in seen:
+                    raise IntakeLoadError(f"Intake returned duplicate trace id {intake_trace.id!r}")
+                seen.add(intake_trace.id)
                 raw_spans = [
                     span
                     for span_page in client.span_pages(intake_trace.id)
@@ -481,7 +489,7 @@ class IntakeTraceLoader:
                         conversation_output=intake.get("output"),
                     )
                 )
-        # Every selected session is fetched completely within the window, so none is partial.
+        # Each selected session_id is complete within the window; traces outside it are not loaded.
         return assemble(records)
 
     def describe(self) -> IntakeTraceDescription:
@@ -489,7 +497,8 @@ class IntakeTraceLoader:
         traces = self._snapshot or ()
         span_count = call_count = 0
         for trace in traces:
-            pending = list(trace.root_spans)
+            # Count Intake spans only, not the conversation root that merging adds.
+            pending = [child for root in trace.root_spans for child in root.children]
             while pending:
                 span = pending.pop()
                 span_count += 1
@@ -612,8 +621,8 @@ def _normalize_trace(
 
     return Trace(
         id=raw.id,
-        session_id=raw.session_id or None,
-        session_basis="intake.session_id" if raw.session_id else None,
+        session_id=raw.session_id,
+        session_basis="intake.session_id",
         case_id=(
             raw.evaluation_context.test_case_name or None
             if raw.evaluation_context is not None
