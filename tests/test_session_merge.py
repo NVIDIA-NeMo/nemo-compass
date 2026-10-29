@@ -13,6 +13,7 @@ from trace_ingest import (
     Loss,
     Span,
     SpanKind,
+    TokenCounts,
     ToolDefinition,
     Trace,
     TraceAggregate,
@@ -132,11 +133,30 @@ def test_agent_root_tools_move_to_the_session_root():
     (root,) = prepared.root_spans
     assert (root.id, root.kind, root.tool_definitions) == ("r/a", SpanKind.CHAIN, UNSET)
     assert definitions == [definition]
+    changed = ToolDefinition(name="search", raw={"name": "search", "v": 2})
     merged = merge_session(
-        [prepared], session_id="s", session_basis="b", definitions=definitions * 2
+        [prepared], session_id="s", session_basis="b", definitions=[*definitions * 2, changed]
     )
-    assert merged.root_spans[0].tool_definitions == [definition]
+    assert merged.root_spans[0].tool_definitions == [definition, changed]
     assert merged.root_spans[0].turns is UNSET
+
+
+def test_session_totals_are_unknown_when_any_record_does_not_report_them():
+    r1, r2 = two_records()
+    reported = TraceAggregate(
+        cost_usd=0.4, token_counts=TokenCounts(input_total=10, output_tokens=2)
+    )
+    partial = TraceAggregate(token_counts=TokenCounts(input_total=5))
+    merged = merge_two(
+        [
+            r1.model_copy(update={"aggregate": reported}),
+            r2.model_copy(update={"aggregate": partial}),
+        ]
+    )
+
+    counts = merged.aggregate.token_counts
+    assert merged.aggregate.cost_usd is None
+    assert (counts.input_total, counts.output_tokens) == (15, None)
 
 
 def test_record_root_that_owns_a_run_is_rejected():
