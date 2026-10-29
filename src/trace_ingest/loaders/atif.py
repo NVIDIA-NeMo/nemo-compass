@@ -64,7 +64,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
-from trace_ingest.loaders.helper.llm_span.token_usage import token_counts as _token_counts
+from trace_ingest.loaders.helper.token_counts import token_counts as _token_counts
 from trace_ingest.loaders.helper.tool_definitions import tool_definitions
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (

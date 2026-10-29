@@ -216,3 +216,35 @@ support and a practical remedy.
 ---
 
 For configuration and prerequisites, see [Compass Signals](compass-signals.md).
+
+
+## Evidence extraction
+
+Cost efficiency uses a shared, schema-driven evidence stage between ingestion and
+analysis. Loaders retain source-native payloads. Nooa inspects the snapshot and
+writes one Python extraction function, which runs over every source span. The
+shared stage accepts an analysis-owned Pydantic schema and instructions; it has no
+provider, tracing backend, SDK, or telemetry-schema dispatch table.
+
+The cost contract contains operation kind, session and agent identity, timestamps,
+error, model, token accounting (uncached input, cache reads, cache writes, output,
+inclusive input total, and writes by TTL), and the ordered tool definitions sent
+on the call. Host code attaches trace/span references and checks types and basic
+accounting consistency. Missing evidence stays unknown, distinct from zero or an
+explicitly empty tool list. Extraction errors fail the signal; they do not become
+an empty successful result.
+
+Extracted values populate a private detector view. Cache-miss detection, findings,
+and Problems remain deterministic; compilation and other signals receive the
+original snapshot. There is no extra LLM review pass. Python callers with already
+normalized evidence can still use `analyze_snapshot` directly; the registered
+cost signal now requires an LLM client factory.
+
+Langfuse no longer interprets Relay, OpenInference, or SDK-specific usage during
+ingestion. Gym Responses usage remains in its native envelope. Existing canonical
+fields and explicit source-format mappings such as ATIF remain readable by the
+extractor. This enables new layouts without adding shared adapters, but does not
+guarantee correct interpretation of every layout or recover fields absent from
+the source. Extraction uses Nooa's existing CodeAct environment and adds a model
+session per analysis run, followed by a Python scan; it does not call a model for
+each trace.

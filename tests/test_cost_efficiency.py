@@ -3,14 +3,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from compass.cli.artifacts import dump_json
-from compass.compass_signals.builtins import registered_builtin_signals
 from compass.compass_signals.compass_signals import CompassSignalResult
 from compass.compass_signals.cost_efficiency.prompt_caching_miss.sequences import (
     build_sequences,
@@ -131,7 +129,7 @@ def run(traces: list[Trace], **config: object) -> CompassSignalResult:
     signal = CostEfficiencyCompassSignal(CostEfficiencyConfig.model_validate(config))
     snapshot = TraceSnapshot(traces)
     assert signal.check_prerequisites(snapshot) is None
-    result = asyncio.run(signal.analyze(snapshot))
+    result = signal.analyze_snapshot(snapshot)
     assert isinstance(result.artifacts, CostEfficiencyArtifacts)
     return result
 
@@ -143,8 +141,7 @@ def kinds(result: CompassSignalResult) -> list[tuple[str, str]]:
 def test_worked_example_end_to_end():
     traces = [tool_change_session(i) for i in range(1, 5)]
     traces += [quiet_session(i, 11 if i < 8 else 10) for i in range(16)]
-    registry = registered_builtin_signals(cost_efficiency=CostEfficiencyConfig())
-    result = asyncio.run(registry.analyze("cost-efficiency", TraceSnapshot(traces)))
+    result = run(traces)
 
     assert sum(len(list(t.root_spans[0].children)) for t in traces) == 180
     assert kinds(result) == [(f"t{i}", "tools_added") for i in range(1, 5)]
@@ -477,14 +474,11 @@ def test_outputs_never_contain_request_content():
     assert json.loads(dump_json(result.artifacts))["findings"][0]["kind"] == "definition_changed"
 
 
-def test_no_token_counts_skips_the_signal():
+def test_native_fields_are_not_gated_before_extraction():
     snapshot = TraceSnapshot(
         [Trace(id="none", root_spans=[Span(id="s", kind=SpanKind.LLM)], aggregate=TraceAggregate())]
     )
-    assert (
-        CostEfficiencyCompassSignal().check_prerequisites(snapshot)
-        == "No LLM spans with token counts"
-    )
+    assert CostEfficiencyCompassSignal().check_prerequisites(snapshot) is None
 
 
 def skipped_miss(reason: str) -> list[Span]:

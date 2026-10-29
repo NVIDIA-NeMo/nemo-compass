@@ -243,8 +243,7 @@ class TokenCounts(_TraceModel):
     source: str | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
-        description="Where the counts were read, such as nemo_relay (the provider's usage), "
-        "openinference or langfuse_sdk.",
+        description="Source location of the recorded counts.",
     )
 
 

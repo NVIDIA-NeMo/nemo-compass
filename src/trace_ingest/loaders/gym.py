@@ -72,7 +72,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from trace_ingest.loaders.helper.llm_span.token_usage import openai
 from trace_ingest.loaders.helper.tool_definitions import tool_definitions
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
@@ -445,8 +444,6 @@ def _normalize_responses(record: dict[str, Any], raw: bytes) -> Trace:
         ),
         None,
     )
-    usage = response.get("usage")
-    token_counts = openai.token_counts(_object(usage)) if usage is not None else None
     model = response.get("model") or request.get("model")
     # Responses failures carry ``error: {code, message}``; status covers the rest.
     error = response.get("error")
@@ -459,7 +456,6 @@ def _normalize_responses(record: dict[str, Any], raw: bytes) -> Trace:
         input=request if shape == "rollout_envelope" else UNSET,
         output=response["output"],
         model=model if isinstance(model, str) and model else None,
-        token_counts=token_counts,
         error=error or _error(response),
         attributes={
             "gym_response_id": response.get("id"),

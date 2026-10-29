@@ -821,7 +821,7 @@
             }
           ],
           "default": null,
-          "description": "Where the counts were read, such as nemo_relay (the provider's usage), openinference or langfuse_sdk.",
+          "description": "Source location of the recorded counts.",
           "title": "Source"
         }
       },

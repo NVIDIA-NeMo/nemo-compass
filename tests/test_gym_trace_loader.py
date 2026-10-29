@@ -528,9 +528,8 @@ def test_responses_envelope_maps_root_llm_and_paired_tools(tmp_path):
     assert tool_catalog(trace) == {"lookup": {"type": "object"}, "audit": {"type": "object"}}
     model, paired, unpaired = root.children
     assert model.kind is SpanKind.LLM and model.model == "test-model"
-    assert model.token_counts == TokenCounts(
-        input_total=30, cached_input_tokens=10, output_tokens=7
-    )
+    assert model.token_counts is None
+    assert trace.attributes["gym"]["response"]["usage"] == source["response"]["usage"]
     assert model.output == source["response"]["output"]
     assert model.start_time is None and model.end_time is None
     assert paired.input == {"sku": 1} and paired.output == "14"
@@ -580,8 +579,8 @@ def test_responses_keep_missing_and_explicitly_empty_values_apart(tmp_path):
     source["response"]["output"][-1]["content"] = [{"type": "output_text", "text": ""}]
     (root,) = next(iter(loader_for(tmp_path, source).load())).root_spans
     assert root.input == [] and root.output == ""
-    # Missing cache details leave only the cache counts unknown.
-    assert root.children[0].token_counts == TokenCounts(input_total=900, output_tokens=5)
+    # Native usage is interpreted by evidence extraction, not ingestion.
+    assert root.children[0].token_counts is None
 
 
 def test_responses_final_output_keeps_refusal_text(tmp_path):
