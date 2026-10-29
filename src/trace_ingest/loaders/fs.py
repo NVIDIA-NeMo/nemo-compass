@@ -32,7 +32,7 @@ def _spans(trace: Trace) -> Iterator[Span]:
 
 def _parse_trace(raw: str | bytes, *, path: Path, line_number: int) -> Trace:
     try:
-        return Trace.model_validate_json(raw)
+        trace = Trace.model_validate_json(raw)
     except ValidationError as error:
         problem = (
             "malformed JSON"
@@ -40,6 +40,14 @@ def _parse_trace(raw: str | bytes, *, path: Path, line_number: int) -> Trace:
             else "invalid trace"
         )
         raise FSDataLoadError(f"{path}:{line_number}: {problem}: {error}") from error
+    # Schema version 2 kept the case key here; read silently, its traces would each count
+    # as their own case.
+    if "logical_case_id" in trace.attributes:
+        raise FSDataLoadError(
+            f"{path}:{line_number}: attributes.logical_case_id is the schema version 2 case key;"
+            " move its value to the trace's case_id field"
+        )
+    return trace
 
 
 @dataclass

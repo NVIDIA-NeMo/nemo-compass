@@ -13,7 +13,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, Field, TypeAdapter
 
-from compass.traces import TraceSnapshot
+from compass.traces import Trace, TraceSnapshot
 from trace_ingest.source_links import SourceURL
 
 Rating = Literal["low", "med", "high"]
@@ -68,6 +68,18 @@ class Insight(BaseModel):
     )
 
 
+def _trace_url(trace: Trace) -> str | None:
+    """The trace's link; a merged session trace has none, so use its first linked record's."""
+    if trace.source_url is not None:
+        return trace.source_url
+    records = trace.attributes.get("records")
+    for record in records if isinstance(records, list) else ():
+        url = record.get("source_url") if isinstance(record, dict) else None
+        if isinstance(url, str):
+            return url
+    return None
+
+
 def resolve_trace_links(
     insights: Sequence[Insight], snapshot: TraceSnapshot, existing: Sequence[Insight] = ()
 ) -> list[Insight]:
@@ -91,7 +103,7 @@ def resolve_trace_links(
                 url = known_urls.get(item.trace_id)
                 available = known_spans.get(item.trace_id, {})
             else:
-                url = trace.source_url
+                url = _trace_url(trace)
                 available = {}
                 pending = list(trace.root_spans)
                 while pending:

@@ -30,6 +30,7 @@ from compass.traces import (
     TraceAggregate,
     TraceSnapshot,
 )
+from trace_ingest.loaders.helper.merge import merge_records, prepare_record
 from trace_ingest.loaders.helper.tool_definitions import tool_definitions
 
 T0 = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
@@ -323,6 +324,27 @@ def test_a_call_with_its_own_agent_id_joins_that_agent():
     keys = {visit.span.id: key for key, visit in sequence_keys(one)}
     assert keys["s1"] == "agent_id:sub"
     assert keys["m1"] == f"agent_id:{PLANNER}"
+
+
+def test_merged_records_keep_their_agents_apart():
+    """One session's records run by different agents stay separate sequences once merged."""
+
+    records = [
+        prepare_record(
+            trace(
+                f"t{n}",
+                "s",
+                [call(f"c{n}", 10 * n, 10 * n + 2, uncached=10, read=0, write=5000, tools=(name,))],
+                agent=agent,
+            )
+        )[0]
+        for n, (agent, name) in enumerate((("triage-agent", "route"), ("billing-agent", "refund")))
+    ]
+    merged = merge_records(records, session_id="s", session_basis="test.session")
+
+    assert run([merged]).finding_count == 0
+    keys = {key for key, _ in sequence_keys(merged)}
+    assert keys == {"agent_id:triage-agent", "agent_id:billing-agent"}
 
 
 def tool_change_pair(case: str) -> list[Span]:
