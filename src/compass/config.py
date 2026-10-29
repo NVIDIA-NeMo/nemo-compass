@@ -258,7 +258,7 @@ class ToolIssueSignalConfig(ToolIssueConfig):
 
 
 class CostEfficiencySignalConfig(CostEfficiencyConfig):
-    """Strict YAML settings for deterministic cost-efficiency analysis."""
+    """Strict YAML settings for deterministic cost-efficiency evidence."""
 
     model_config = ConfigDict(extra="forbid")
 

@@ -821,7 +821,7 @@
             }
           ],
           "default": null,
-          "description": "Source location of the recorded counts.",
+          "description": "Where the counts were read, such as nemo_relay (the provider's usage), openinference or langfuse_sdk.",
           "title": "Source"
         }
       },
@@ -1264,7 +1264,7 @@
   "additionalProperties": {
     "$ref": "#/$defs/JsonValue"
   },
-  "description": "Canonical representation of one complete end-to-end agent run.\n\nSource loaders deterministically preserve structure and recorded fields\nbefore any Compass Signal runs. Analysis may interpret retained native\npayloads in a private evidence view without changing the original trace.",
+  "description": "Canonical representation of one complete end-to-end agent run.\n\nSource loaders deterministically construct this model before any Compass\nSignal runs. Provider-specific parsing or compatibility logic does not\nbelong downstream of this boundary.",
   "properties": {
     "aggregate": {
       "$ref": "#/$defs/TraceAggregate",

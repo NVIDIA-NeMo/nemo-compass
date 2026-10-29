@@ -243,7 +243,8 @@ class TokenCounts(_TraceModel):
     source: str | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
-        description="Source location of the recorded counts.",
+        description="Where the counts were read, such as nemo_relay (the provider's usage), "
+        "openinference or langfuse_sdk.",
     )
 
 
@@ -571,9 +572,9 @@ class TraceAggregate(_TraceModel):
 class Trace(_TraceModel):
     """Canonical representation of one complete end-to-end agent run.
 
-    Source loaders deterministically preserve structure and recorded fields
-    before any Compass Signal runs. Analysis may interpret retained native
-    payloads in a private evidence view without changing the original trace.
+    Source loaders deterministically construct this model before any Compass
+    Signal runs. Provider-specific parsing or compatibility logic does not
+    belong downstream of this boundary.
     """
 
     id: str = Field(
