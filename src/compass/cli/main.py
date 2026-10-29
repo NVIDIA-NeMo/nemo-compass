@@ -460,12 +460,13 @@ async def _compile_evidence(
         if not any(item.problems for item in signal_results):
             return result.existing_insights
         output.activity = "Compiling candidate problems into insights"
-        with telemetry.compilation(signal_results, result.existing_insights) as record:
+        with telemetry.compilation(signal_results, result.existing_insights, ethos=ethos) as record:
             insights = await InsightCompilation(llm=llm).compile_insights(
                 signal_results,
                 snapshot,
                 result.existing_insights,
                 run_timestamp,
+                ethos=ethos,
             )
             telemetry.record_insights(record, insights)
             return insights

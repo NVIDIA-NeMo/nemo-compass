@@ -137,7 +137,7 @@ def record_candidate_problem_validation(
 
 
 def compilation(
-    evidence: list[CompassSignalResult], existing: list[Insight]
+    evidence: list[CompassSignalResult], existing: list[Insight], ethos: str | None = None
 ) -> AbstractContextManager[OpenInferenceSpan]:
     return _phase(
         "compilation",
@@ -151,6 +151,7 @@ def compilation(
                 for item in evidence
             ],
             "existing_insights": [item.model_dump(mode="json") for item in existing],
+            "ethos": ethos,
         },
     )
 
