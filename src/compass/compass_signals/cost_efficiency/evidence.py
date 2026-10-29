@@ -65,28 +65,12 @@ class CacheEvidence(BaseModel):
         return self
 
 
-INSTRUCTIONS = """Extract the evidence needed to compare consecutive LLM requests.
-Identify actual model calls from the recorded operation, including generic spans.
-Do not count agent/turn summaries, tool invocations or token-counting requests as
-model calls merely because they contain copied usage. Return kind for recognized
-non-LLM operations too, so agent boundaries remain available.
-Canonical recorded evidence is reused by the host. Extract only missing cost
-fields from the source-native payloads; do not reconstruct or override known fields.
-Return None when no missing evidence can be recovered. Never move tools from an
-AGENT declaration to a child LLM call. Preserve per-call ownership.
-Inspect the actual native payloads. Token field names alone do not establish their accounting semantics.
-input_total includes ALL input; input_tokens excludes cache reads AND cache writes.
-Inspect nested usage details before classifying counts. Keep cache reads and writes
-separate; missing buckets stay unknown. Do not subtract an unknown write count as
-if it were zero. TTL write maps contain observed writes by lifetime in seconds;
-never infer expiration from a model name or an assumed default. Partial TTL maps
-cannot establish the shortest lifetime of all writes: leave the map unknown when
-a positive write bucket has an unknown lifetime. Do not estimate usage from text.
-Tool definitions must be the list sent on that exact call, not executed tool calls,
-an ancestor's catalog or an application's current registry. Preserve tool order,
-raw JSON key order, cache-control markers, definitions and an explicitly empty list.
-Do not infer a tool-change cause, avoidability, savings or a cache miss.
-Leave unsupported fields null. Session and agent IDs must be recorded, not invented for grouping.
+INSTRUCTIONS = """Identify model calls and extract their missing cost evidence:
+usage, tools, timing, and identity. Existing canonical fields are reused.
+Interpret native fields according to the schema; leave uncertain values unknown.
+Keep evidence with the call that owns it, and preserve tool definitions verbatim
+and in order. Only report cache lifetimes when all writes are accounted for.
+Extract facts, not diagnoses.
 """
 
 
