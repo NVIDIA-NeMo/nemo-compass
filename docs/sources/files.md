@@ -38,9 +38,11 @@ This small example shows a recorded tool failure and evaluation score:
 ```
 
 Preserve stable trace and span IDs, nested spans, tool inputs and results, user messages,
-and recorded evaluation signals. Omit values that were not recorded; `null` means the source
-explicitly recorded null. Output links back to this file and its physical line number;
-whether the viewer jumps to that line depends on its support for URL fragments. Repeated problems need supporting evidence across multiple traces.
+and recorded evaluation signals. Record a conversation as ordered `turns` on its AGENT
+span, pointing at the LLM and TOOL spans each turn produced. Omit values that were not
+recorded; `null` means the source explicitly recorded null. Output links back to this file
+and its physical line number; whether the viewer jumps to that line depends on its support
+for URL fragments. Repeated problems need supporting evidence across multiple traces.
 
 Put `tool_definitions` on the owning AGENT span or the LLM span offered those tools.
 Keep every entry in order, with its original value in `raw`. Add `name` and `input_schema`
@@ -53,11 +55,19 @@ still work when no span declares definitions.
 
 ## ATIF
 
-Each nonblank line must contain one complete ATIF trajectory. The loader accepts schema
-versions `ATIF-v1.0` through `ATIF-v1.8`. Keep tool calls, observations, and nested subagent
-trajectories in the exported record. `agent.tool_definitions` enable tool-schema checks, and an
-observation result with `is_error: true` (on the result or in its `extra`) marks the tool call
-as failed.
+Each nonblank line must contain one complete ATIF trajectory with a `trajectory_id` or
+`session_id`. The loader accepts Harbor's `Trajectory` fields for schema versions `ATIF-v1.0`
+through `ATIF-v1.8`, validated strictly: values are not coerced, and unknown keys are rejected.
+
+ATIF steps become ordered conversation turns linked to recorded model and tool calls. Include
+subagent trajectories in the export; external trajectory files are not read. Missing
+references and other known gaps are recorded in `Trace.losses`. The
+[loader](../../src/trace_ingest/loaders/atif.py) documents the exact mapping, and
+[`Loss`](../../src/trace_ingest/models.py) the loss fields.
+
+The `session_id` is the trace's logical case. Include `agent.tool_definitions` to enable
+tool-schema checks; an observation result with `is_error: true` (on the result or in its
+`extra`) marks the tool call as failed.
 
 ## A different trace system
 

@@ -1,0 +1,22 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "session_id": "long-run",
+  "trajectory_id": "long-run-part-1",
+  "agent": {
+    "name": "agent",
+    "version": "1"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": "Start a long task."
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "message": "Context window full; continuing."
+    }
+  ],
+  "continued_trajectory_ref": "long-run-part-2.json"
+}

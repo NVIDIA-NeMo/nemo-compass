@@ -1,0 +1,72 @@
+{
+  "schema_version": "ATIF-v1.6",
+  "trajectory_id": "images",
+  "agent": {
+    "name": "agent",
+    "version": "1"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": [
+        {
+          "type": "image",
+          "source": {
+            "media_type": "image/png",
+            "path": "screenshots/1.png"
+          }
+        }
+      ]
+    },
+    {
+      "step_id": 2,
+      "source": "user",
+      "message": [
+        {
+          "type": "text",
+          "text": "What is shown?"
+        },
+        {
+          "type": "image",
+          "source": {
+            "media_type": "image/webp",
+            "path": "https://example.com/2.webp"
+          }
+        },
+        {
+          "type": "text",
+          "text": "Be brief."
+        }
+      ]
+    },
+    {
+      "step_id": 3,
+      "source": "agent",
+      "message": "A chart.",
+      "tool_calls": [
+        {
+          "tool_call_id": "shot",
+          "function_name": "screenshot",
+          "arguments": {}
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "shot",
+            "content": [
+              {
+                "type": "image",
+                "source": {
+                  "media_type": "image/gif",
+                  "path": "shots/3.gif"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

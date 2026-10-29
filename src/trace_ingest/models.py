@@ -12,7 +12,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 from pydantic.experimental.missing_sentinel import MISSING
@@ -45,6 +45,79 @@ class SpanKind(str, Enum):
     EVALUATOR = "EVALUATOR"
     GUARDRAIL = "GUARDRAIL"
     UNKNOWN = "UNKNOWN"
+
+
+class TurnRole(str, Enum):
+    """Who a conversation turn is attributed to in the source."""
+
+    USER = "user"
+    SYSTEM = "system"
+    AGENT = "agent"
+
+
+class Authorship(str, Enum):
+    """Who actually wrote a turn's content, when the source says so."""
+
+    HUMAN = "human"
+    HARNESS = "harness"
+    COPIED_CONTEXT = "copied_context"
+    MODEL = "model"
+    UNKNOWN = "unknown"
+
+
+class Initiator(str, Enum):
+    """What issued a tool call."""
+
+    MODEL = "model"
+    HARNESS = "harness"
+    USER = "user"
+    ENVIRONMENT = "environment"
+
+
+class SubagentRef(_TraceModel):
+    """A tool result's reference to a delegated subagent run."""
+
+    span_id: str | None = Field(
+        default=None,
+        description="The AGENT span holding the subagent run; null when it could not be resolved.",
+    )
+    trajectory_id: str | None = Field(default=None, description="Referenced run identifier.")
+    session_id: str | None = Field(
+        default=None,
+        description="Informational session identifier.",
+    )
+    trajectory_path: str | None = Field(
+        default=None,
+        description="Referenced external file or URL, verbatim.",
+    )
+    extra: dict[str, JsonValue] = Field(
+        default_factory=dict, description="Source extension fields of the reference."
+    )
+
+
+class ToolResult(_TraceModel):
+    """One source result returned for a tool invocation."""
+
+    content: JsonValue | UNSET = Field(
+        default=UNSET,
+        description="Raw recorded result content. Omit when absent; explicit JSON null remains null.",
+    )
+    is_error: bool | None = Field(
+        default=None,
+        description="Source-recorded error flag; null when the source did not record a usable flag.",
+    )
+    subagent_refs: list[SubagentRef] = Field(
+        default_factory=list,
+        description="Subagent runs this result delegated to, in source order.",
+    )
+    extra: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        description="Source extension fields of the result, minus flags that were interpreted.",
+    )
+    attributes: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        description="Additional lossless result metadata not represented by a typed field.",
+    )
 
 
 class ToolCall(_TraceModel):
@@ -91,29 +164,23 @@ class ToolCall(_TraceModel):
             "before schema version 2."
         ),
     )
+    server: str | None = Field(
+        default=None,
+        description="Explicit tool scope such as an MCP server; never inferred from the name.",
+    )
+    initiator: Initiator | None = Field(
+        default=None, description="What issued this call; null when the source does not say."
+    )
+    extra: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        description="Source extension fields of the call, minus values moved into typed fields.",
+    )
 
     @model_validator(mode="after")
     def results_match_count(self) -> ToolCall:
         if self.results is not UNSET and len(self.results) != self.result_count:
             raise ValueError("result_count must equal len(results)")
         return self
-
-
-class ToolResult(_TraceModel):
-    """One source result returned for a tool invocation."""
-
-    content: JsonValue | UNSET = Field(
-        default=UNSET,
-        description="Raw recorded result content. Omit when absent; explicit JSON null remains null.",
-    )
-    is_error: bool | None = Field(
-        default=None,
-        description="Source-recorded error flag; null when the source did not record a usable flag.",
-    )
-    attributes: dict[str, JsonValue] = Field(
-        default_factory=dict,
-        description="Additional lossless result metadata not represented by a typed field.",
-    )
 
 
 class ToolDefinition(_TraceModel):
@@ -181,6 +248,156 @@ class TokenCounts(_TraceModel):
     )
 
 
+class TextPart(_TraceModel):
+    """A text part of a multimodal message."""
+
+    type: Literal["text"] = "text"
+    text: str
+
+
+class ImagePart(_TraceModel):
+    """An image part of a multimodal message, referenced by location."""
+
+    type: Literal["image"] = "image"
+    media_type: str = Field(description="Image MIME type, such as image/png.")
+    path: str = Field(description="Relative or absolute file path, or a URL, verbatim.")
+
+
+class AudioPart(_TraceModel):
+    """An audio part of a multimodal message, referenced by location."""
+
+    type: Literal["audio"] = "audio"
+    media_type: str = Field(description="Audio MIME type, such as audio/wav.")
+    path: str = Field(description="Relative or absolute file path, or a URL, verbatim.")
+    duration_sec: float | None = Field(default=None, ge=0, description="Duration, when recorded.")
+
+
+ContentPart = Annotated[TextPart | ImagePart | AudioPart, Field(discriminator="type")]
+
+
+class Turn(_TraceModel):
+    """One message of an agent's conversation, as recorded by the source.
+
+    Turns are a view over spans: per-call detail such as model, tokens, and cost
+    stays on the LLM spans the turn references. Turn order is defined only within
+    one AGENT span, not across agents.
+    """
+
+    id: str = Field(
+        min_length=1,
+        description='Stable identifier, "<agent span id>/turn/<index>" for source loaders.',
+    )
+    index: int = Field(ge=1, description="Position within the agent span, contiguous.")
+    role: TurnRole
+    authorship: Authorship = Authorship.UNKNOWN
+    content: str | list[ContentPart] | UNSET = Field(
+        default=UNSET, description="Message as recorded: a string or ordered parts."
+    )
+    reasoning: str | UNSET = Field(default=UNSET, description="Recorded reasoning text.")
+    timestamp: str | UNSET = Field(
+        default=UNSET,
+        description="ISO 8601 timestamp exactly as recorded; it may lack a timezone.",
+    )
+    llm_span_ids: list[str] = Field(
+        default_factory=list,
+        description="LLM spans that produced this turn, in order.",
+    )
+    dispatch_span_id: str | None = Field(
+        default=None,
+        description="CHAIN span of an agent step that made no model call, if any.",
+    )
+    tool_call_span_ids: list[str] = Field(
+        default_factory=list,
+        description="TOOL spans issued in this turn, in call order.",
+    )
+    unlinked_results: list[ToolResult] = Field(
+        default_factory=list,
+        description="Results observed in this turn that name no tool call, in source order.",
+    )
+    extra: dict[str, JsonValue] = Field(
+        default_factory=dict, description="Source extension fields of the turn, verbatim."
+    )
+
+
+class AgentInfo(_TraceModel):
+    """Identity of the agent that an AGENT span ran."""
+
+    name: str
+    version: str | None = None
+    model_name: str | None = Field(default=None, description="Default model of the agent.")
+    extra: dict[str, JsonValue] = Field(
+        default_factory=dict, description="Source extension fields of the agent, verbatim."
+    )
+
+
+class RunInfo(_TraceModel):
+    """Source run metadata recorded for one AGENT span."""
+
+    schema_version: str | None = Field(
+        default=None, description="Source format version, such as ATIF-v1.7."
+    )
+    session_id: str | None = Field(
+        default=None,
+        description="Source session identifier of the run.",
+    )
+    trajectory_id: str | None = Field(
+        default=None,
+        description="Source identifier of the run's trajectory.",
+    )
+    notes: str | None = None
+    continued_trajectory_ref: str | None = Field(
+        default=None,
+        description="Reference to the run's continuation, verbatim; not followed.",
+    )
+    total_steps: int | None = Field(
+        default=None, ge=0, description="Step count the source reported for the run."
+    )
+    final_metrics_extra: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        description="Source extension fields of the run's totals, verbatim. The totals "
+        "themselves are the AGENT span's cost_usd and token_counts.",
+    )
+    extra: dict[str, JsonValue] = Field(
+        default_factory=dict, description="Source extension fields of the run, verbatim."
+    )
+
+
+class LLMCallInfo(_TraceModel):
+    """Per-call model detail beyond the Span's model, token_counts, and cost_usd."""
+
+    call_count: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Model calls the source recorded for this span; >1 means calls were merged, "
+            "0 a dispatch without a model call; null when unrecorded."
+        ),
+    )
+    prompt_token_ids: list[int] | None = None
+    completion_token_ids: list[int] | None = None
+    logprobs: list[float] | None = None
+    metrics_extra: dict[str, JsonValue] = Field(
+        default_factory=dict, description="Source extension fields of the call metrics."
+    )
+
+
+class Loss(_TraceModel):
+    """Information the source lacked or the loader could not represent."""
+
+    code: str = Field(min_length=1)
+    detail: dict[str, JsonValue] = Field(
+        default_factory=dict,
+        description=(
+            "Structured loss data, never an encoded string. Keys by code: "
+            "unresolved_subagent_ref has ref (the reference as written); "
+            "continued_trajectory_not_followed has continued_trajectory_ref; "
+            "llm_calls_aggregated has llm_call_count."
+        ),
+    )
+    span_id: str | None = Field(default=None, description="Span the loss concerns.")
+    turn_id: str | None = Field(default=None, description="Turn the loss concerns.")
+
+
 class Span(_TraceModel):
     """One canonical, recursively nested unit of work in an agent trace."""
 
@@ -188,7 +405,11 @@ class Span(_TraceModel):
         min_length=1,
         description="Stable span identifier, unique within its containing trace.",
     )
-    source_url: SourceURL | None = Field(default=None, exclude_if=lambda value: value is None)
+    source_url: SourceURL | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Link to this span in its source, when the loader can resolve one.",
+    )
     kind: SpanKind = Field(description="Normalized span category represented by this source span.")
     children: list[Span] = Field(
         default_factory=list,
@@ -266,6 +487,26 @@ class Span(_TraceModel):
             "Omitted when unknown; an empty list means the source listed no tools."
         ),
     )
+    agent: AgentInfo | UNSET = Field(
+        default=UNSET, description="Agent identity; valid only for an AGENT span."
+    )
+    run: RunInfo | UNSET = Field(
+        default=UNSET, description="Source run metadata; valid only for an AGENT span."
+    )
+    turns: list[Turn] | UNSET = Field(
+        default=UNSET,
+        description=(
+            "The agent's conversation in order; valid only for an AGENT span. Omitted when "
+            "the source did not record one. The order is within this agent only, not "
+            "relative to turns of other AGENT spans."
+        ),
+    )
+    llm_call: LLMCallInfo | UNSET = Field(
+        default=UNSET,
+        description=(
+            "Per-call model detail; valid for an LLM span, or a CHAIN span whose call_count is 0."
+        ),
+    )
 
     @field_validator("start_time", "end_time")
     @classmethod
@@ -288,6 +529,19 @@ class Span(_TraceModel):
             raise ValueError("tool_definitions require kind=AGENT or kind=LLM")
         if self.llm_params is not None and self.kind is not SpanKind.LLM:
             raise ValueError("llm_params requires kind=LLM")
+        if self.kind is not SpanKind.AGENT and any(
+            value is not UNSET for value in (self.agent, self.run, self.turns)
+        ):
+            raise ValueError("agent, run, and turns require kind=AGENT")
+        if self.llm_call is not UNSET and not (
+            self.kind is SpanKind.LLM
+            or (self.kind is SpanKind.CHAIN and self.llm_call.call_count == 0)
+        ):
+            raise ValueError("llm_call requires kind=LLM, or kind=CHAIN with call_count=0")
+        if self.turns is not UNSET:
+            indexes = [turn.index for turn in self.turns]
+            if indexes and indexes != list(range(indexes[0], indexes[0] + len(indexes))):
+                raise ValueError(f"span {self.id!r} turn indexes must be contiguous")
         return self
 
 
@@ -350,17 +604,66 @@ class Trace(_TraceModel):
         default_factory=dict,
         description="Additional lossless trace-level source metadata; do not invent values.",
     )
+    losses: list[Loss] = Field(
+        default_factory=list,
+        description="Information the source lacked or the loader could not represent.",
+    )
 
     @model_validator(mode="after")
-    def span_ids_are_unique(self) -> Trace:
-        seen: set[str] = set()
-        pending = list(reversed(self.root_spans))
+    def validate_references(self) -> Trace:
+        # span id -> (span, nearest AGENT ancestor id)
+        spans: dict[str, tuple[Span, str | None]] = {}
+        pending: list[tuple[Span, str | None]] = [
+            (span, None) for span in reversed(self.root_spans)
+        ]
         while pending:
-            span = pending.pop()
-            if span.id in seen:
+            span, owner = pending.pop()
+            if span.id in spans:
                 raise ValueError(f"trace {self.id!r} contains duplicate span id {span.id!r}")
-            seen.add(span.id)
-            pending.extend(reversed(span.children))
+            spans[span.id] = (span, owner)
+            inner = span.id if span.kind is SpanKind.AGENT else owner
+            pending.extend((child, inner) for child in reversed(span.children))
+
+        turn_ids: set[str] = set()
+        claimed: dict[str, str] = {}
+        refs: list[SubagentRef] = []
+        for span, _ in spans.values():
+            if span.tool_call is not None and span.tool_call.results is not UNSET:
+                refs.extend(
+                    ref for result in span.tool_call.results for ref in result.subagent_refs
+                )
+            if span.turns is UNSET:
+                continue
+            for turn in span.turns:
+                if turn.id in turn_ids:
+                    raise ValueError(f"trace {self.id!r} contains duplicate turn id {turn.id!r}")
+                turn_ids.add(turn.id)
+                refs.extend(ref for result in turn.unlinked_results for ref in result.subagent_refs)
+                for kind, ids in (
+                    (SpanKind.LLM, turn.llm_span_ids),
+                    (SpanKind.TOOL, turn.tool_call_span_ids),
+                    (SpanKind.CHAIN, [turn.dispatch_span_id] if turn.dispatch_span_id else []),
+                ):
+                    for span_id in ids:
+                        target, owner = spans.get(span_id, (None, None))
+                        if target is None or target.kind is not kind or owner != span.id:
+                            raise ValueError(
+                                f"turn {turn.id!r} must reference a {kind.value} span under "
+                                f"agent {span.id!r}; got {span_id!r}"
+                            )
+                for span_id in turn.tool_call_span_ids:
+                    if claimed.setdefault(span_id, turn.id) != turn.id:
+                        raise ValueError(f"TOOL span {span_id!r} belongs to more than one turn")
+        for ref in refs:
+            if ref.span_id is not None and (
+                ref.span_id not in spans or spans[ref.span_id][0].kind is not SpanKind.AGENT
+            ):
+                raise ValueError(f"subagent reference {ref.span_id!r} is not an AGENT span")
+        for loss in self.losses:
+            if loss.span_id is not None and loss.span_id not in spans:
+                raise ValueError(f"loss references unknown span {loss.span_id!r}")
+            if loss.turn_id is not None and loss.turn_id not in turn_ids:
+                raise ValueError(f"loss references unknown turn {loss.turn_id!r}")
         return self
 
 
@@ -449,8 +752,19 @@ class TraceSnapshot:
 
 
 __all__ = [
+    "AgentInfo",
+    "AudioPart",
+    "Authorship",
+    "ContentPart",
+    "ImagePart",
+    "Initiator",
+    "LLMCallInfo",
+    "Loss",
+    "RunInfo",
     "SpanKind",
     "Span",
+    "SubagentRef",
+    "TextPart",
     "TokenCounts",
     "TRACE_SCHEMA_VERSION",
     "ToolDefinition",
@@ -459,5 +773,7 @@ __all__ = [
     "TraceSnapshot",
     "Trace",
     "ToolCall",
+    "Turn",
+    "TurnRole",
     "UNSET",
 ]
