@@ -121,7 +121,7 @@ def test_missing_prerequisites_skip_analysis_without_llm_calls(monkeypatch):
     progress = []
     results = asyncio.run(
         _run_compass_signals(
-            CompassSignalsConfig(cost_efficiency=True), snapshot, lambda: llm, progress.append
+            CompassSignalsConfig(), snapshot, lambda: llm, progress.append
         )
     )
     assert {item.signal_name for item in results if item.skip_reason} == {

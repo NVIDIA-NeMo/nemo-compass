@@ -275,8 +275,8 @@ class CompassSignalsConfig(ConfigModel):
         description="Deterministic tool-issue evidence",
     )
     cost_efficiency: CostEfficiencySignalConfig | None = Field(
-        default=None,
-        description="Deterministic prompt-cache and token-efficiency evidence (opt-in)",
+        default_factory=CostEfficiencySignalConfig,
+        description="Deterministic prompt-cache and token-efficiency evidence",
     )
     grader_failure_patterns: GraderFailurePatternsConfig | None = Field(
         default_factory=GraderFailurePatternsConfig,
