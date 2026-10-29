@@ -26,7 +26,9 @@ from compass.compass_signals._hashing import digest, stable_json
 from compass.compass_signals._trace import walk_spans
 from compass.compass_signals.compass_signals import CompassSignalResult, Problem
 from compass.traces import UNSET, SpanKind, Trace, TraceSnapshot
-from trace_ingest.catalog import tool_catalog as trace_tool_catalog
+from trace_ingest.catalog import record_tool_catalogs
+
+ToolCatalog = Mapping[str, Mapping[str, Any] | bool | None]
 
 DETECTOR_VERSION = "tid-v1"
 CARD_MINIMUM_CASES = 3
@@ -154,6 +156,7 @@ class CallRecord:
     outcome_marker: str | None = None
     instrumentation_alias_of: str | None = None
     prior_user_text: str = ""
+    tool_catalog: ToolCatalog | None = None
 
 
 @dataclass(frozen=True)
@@ -161,14 +164,11 @@ class TraceRecord:
     trace_id: str
     calls: Sequence[CallRecord]
     case_id: str | None = None
-    tool_catalog: Mapping[str, Mapping[str, Any] | bool | None] | None = None
     orphan_results: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
     complete_provenance_context: bool = False
 
 
-def schema_errors(
-    catalog: Mapping[str, Mapping[str, Any] | bool | None], tool_name: str, arguments: object
-) -> list[dict[str, Any]]:
+def schema_errors(catalog: ToolCatalog, tool_name: str, arguments: object) -> list[dict[str, Any]]:
     """Apply the active catalog/JSON Schema without coercing evidence."""
 
     if tool_name not in catalog:
@@ -310,8 +310,8 @@ def detect_trace(
     for call in sorted(trace.calls, key=lambda item: (item.call_index, item.call_id)):
         arguments = call.arguments if isinstance(call.arguments, Mapping) else {}
         contract_root = False
-        if trace.tool_catalog is not None:
-            for error in schema_errors(trace.tool_catalog, call.tool_name, call.arguments):
+        if call.tool_catalog is not None:
+            for error in schema_errors(call.tool_catalog, call.tool_name, call.arguments):
                 contract_root = True
                 findings.append(
                     _finding(
@@ -706,6 +706,26 @@ def _input_text(value: object) -> str:
 def to_tool_issue_trace(trace: Trace) -> TraceRecord:
     """Project one normalized trace into the tool-issue analysis model."""
 
+    catalogs: dict[str, ToolCatalog | None] = {}
+    for roots, catalog in record_tool_catalogs(trace):
+        schemas = (
+            {
+                name: dict(schema)
+                if isinstance(schema, Mapping)
+                else schema
+                if isinstance(schema, bool)
+                else None
+                for name, schema in catalog.items()
+            }
+            if catalog is not None
+            else None
+        )
+        pending = list(roots)
+        while pending:
+            span = pending.pop()
+            pending.extend(span.children)
+            catalogs[span.id] = schemas
+
     calls: list[CallRecord] = []
     prior_user_text = _input_text(trace.attributes.get("task_text"))
     for visit in walk_spans(trace):
@@ -749,25 +769,15 @@ def to_tool_issue_trace(trace: Trace) -> TraceRecord:
                     details.instrumentation_alias_of if details is not None else None
                 ),
                 prior_user_text=str(call_user_text or prior_user_text),
+                tool_catalog=catalogs.get(span.id),
             )
         )
 
-    tool_catalog = trace_tool_catalog(trace)
     orphan_results = trace.attributes.get("orphan_results")
     return TraceRecord(
         trace_id=trace.id,
         calls=tuple(calls),
         case_id=trace.case_id,
-        tool_catalog={
-            name: dict(schema)
-            if isinstance(schema, Mapping)
-            else schema
-            if isinstance(schema, bool)
-            else None
-            for name, schema in tool_catalog.items()
-        }
-        if tool_catalog is not None
-        else None,
         orphan_results=tuple(dict(item) for item in orphan_results if isinstance(item, Mapping))
         if isinstance(orphan_results, Sequence)
         else (),
@@ -812,11 +822,11 @@ class ToolIssueCompassSignal:
             )
             if missing_results:
                 limited.append(f"{missing_results} of {len(calls)} tool calls lack usable results")
-            missing_catalogs = sum(trace.tool_catalog is None for trace in traces)
+            missing_catalogs = sum(call.tool_catalog is None for call in calls)
             if missing_catalogs:
-                scope = "all" if missing_catalogs == len(traces) else f"{missing_catalogs} of"
+                scope = "all" if missing_catalogs == len(calls) else f"{missing_catalogs} of"
                 limited.append(
-                    f"tool schemas missing in {scope} {len(traces)} trace{'s' if len(traces) != 1 else ''}"
+                    f"tool schemas missing for {scope} {len(calls)} tool call{'s' if len(calls) != 1 else ''}"
                 )
         return CompassSignalResult(
             signal_name=self.name,

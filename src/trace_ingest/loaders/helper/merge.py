@@ -4,8 +4,8 @@
 """Merge provider records that share a session key into one conversation trace.
 
 Each record's spans are namespaced as ``<record trace id>/<span id>`` and hung under
-a synthesized session-root AGENT span that owns the conversation's turns. Record
-root AGENT spans are demoted to CHAIN so the session root is their nearest agent.
+a synthesized root AGENT span that owns the conversation's turns. Record root AGENT
+spans are demoted to CHAIN so the trace's root is their nearest agent.
 """
 
 from __future__ import annotations
@@ -40,8 +40,8 @@ _SUMMED_TOKEN_FIELDS = (
 )
 
 
-def session_root_id(session_id: str) -> str:
-    """Id shared by a merged session's ``Trace`` and its session-root span."""
+def merged_trace_id(session_id: str) -> str:
+    """Id shared by a merged ``Trace`` and its root span."""
     return f"session:{session_id}"
 
 
@@ -64,11 +64,24 @@ def _refs(spans: Sequence[Span]) -> Iterator[SubagentRef]:
                     yield from result.subagent_refs
 
 
+def _own_calls(spans: Sequence[Span]) -> Iterator[Span]:
+    """LLM spans under ``spans`` that no nested AGENT span owns."""
+    pending = list(spans)
+    while pending:
+        span = pending.pop()
+        if span.kind is SpanKind.AGENT:
+            continue
+        if span.kind is SpanKind.LLM:
+            yield span
+        pending.extend(span.children)
+
+
 def prepare_record(record: Trace) -> tuple[Trace, list[ToolDefinition]]:
-    """Copy ``record`` with namespaced ids and demoted roots, ready for ``merge_session``.
+    """Copy ``record`` with namespaced ids and demoted roots, ready for ``merge_records``.
 
     Returns the copy and the tool definitions moved off its demoted AGENT roots,
-    because CHAIN spans may not declare tools.
+    because CHAIN spans may not declare tools. A demoted root's ``agent_id`` is copied
+    to the LLM calls it owns that record none, so they keep the agent they ran under.
     """
     prepared = record.model_copy(deep=True)
     definitions: list[ToolDefinition] = []
@@ -80,6 +93,9 @@ def prepare_record(record: Trace) -> tuple[Trace, list[ToolDefinition]]:
         if root.tool_definitions is not UNSET:
             definitions.extend(root.tool_definitions)
             root.tool_definitions = UNSET
+        if root.agent_id is not None:
+            for call in _own_calls(root.children):
+                call.agent_id = call.agent_id or root.agent_id
         root.kind = SpanKind.CHAIN
         root.attributes["subtype"] = root.attributes.get("subtype") or SpanKind.AGENT.value
 
@@ -111,17 +127,32 @@ def prepare_record(record: Trace) -> tuple[Trace, list[ToolDefinition]]:
 
 
 def join_turns(records: Sequence[Sequence[Turn]]) -> list[Turn]:
-    """Join per-record conversations by position.
+    """Join per-record conversations in record order, keeping each record's turn order.
 
-    A record's copied-context turns re-send earlier history; only those beyond
-    the turns already joined are kept, followed by the record's own turns.
+    A record's copied-context turns re-send earlier history. They are matched in
+    order, by role and content, against the turns already joined; copies up to the
+    last match are dropped and later ones kept. When none match, only the copies
+    beyond the number of turns already joined are kept.
     """
     turns: list[Turn] = []
     for record in records:
-        copies = [turn for turn in record if turn.authorship is Authorship.COPIED_CONTEXT]
-        own = [turn for turn in record if turn.authorship is not Authorship.COPIED_CONTEXT]
-        turns += copies[len(turns) :]
-        turns += own
+        copies = [
+            i for i, turn in enumerate(record) if turn.authorship is Authorship.COPIED_CONTEXT
+        ]
+        start, last = 0, None
+        for i in copies:
+            match = next(
+                (
+                    j
+                    for j in range(start, len(turns))
+                    if (turns[j].role, turns[j].content) == (record[i].role, record[i].content)
+                ),
+                None,
+            )
+            if match is not None:
+                start, last = match + 1, i
+        dropped = set(copies[: len(turns)]) if last is None else {i for i in copies if i <= last}
+        turns += [turn for i, turn in enumerate(record) if i not in dropped]
     return turns
 
 
@@ -174,7 +205,7 @@ def _tool_definitions(definitions: Sequence[ToolDefinition]) -> list[ToolDefinit
     return union
 
 
-def merge_session(
+def merge_records(
     records: Sequence[Trace],
     *,
     session_id: str,
@@ -184,10 +215,11 @@ def merge_session(
     turn_losses: Sequence[Loss] = (),
     partial_reason: Literal["max_traces"] | None = None,
 ) -> Trace:
-    """Merge records prepared by ``prepare_record`` into one session trace.
+    """Merge records prepared by ``prepare_record`` into one trace.
 
-    ``record_turns`` is aligned with ``records``; ``None`` leaves the session
-    root without turns.
+    ``record_turns`` is aligned with ``records``; ``None`` leaves the trace's
+    root without turns. Recorded tool-call indexes continue across records in
+    conversation order, so each record's calls follow the previous record's.
     """
     if not records:
         raise ValueError(f"session {session_id!r} has no records")
@@ -195,14 +227,21 @@ def merge_session(
         raise ValueError("record_turns must align with records")
     order = sorted(range(len(records)), key=lambda i: (_earliest_start(records[i]), records[i].id))
     ordered = [records[i] for i in order]
-    root_id = session_root_id(session_id)
+    root_id = merged_trace_id(session_id)
 
     children: list[Span] = []
+    offset = 0
     for record in ordered:
         for root in record.root_spans:
             if root.source_url is None:
                 root.source_url = record.source_url
             children.append(root)
+        indexes: list[int] = []
+        for span in _walk(record.root_spans):
+            if span.tool_call is not None and span.tool_call.index is not None:
+                span.tool_call.index += offset
+                indexes.append(span.tool_call.index)
+        offset = max(indexes) + 1 if indexes else offset
 
     start, end = _span_window(children)
 
@@ -223,7 +262,7 @@ def merge_session(
         run=RunInfo(session_id=session_id),
         tool_definitions=tools if tools else UNSET,
         turns=turns,
-        attributes={"name": "session", "subtype": "session"},
+        attributes={"name": "conversation", "subtype": "conversation"},
     )
 
     costs = [
@@ -247,7 +286,7 @@ def merge_session(
     if partial_reason is not None:
         losses.append(
             Loss(
-                code="session_partial",
+                code="merge_incomplete",
                 detail={"reason": partial_reason, "loaded_record_count": len(ordered)},
                 span_id=root_id,
             )
@@ -290,4 +329,4 @@ def merge_session(
     )
 
 
-__all__ = ["join_turns", "merge_session", "prepare_record", "session_root_id"]
+__all__ = ["join_turns", "merge_records", "merged_trace_id", "prepare_record"]

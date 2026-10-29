@@ -45,9 +45,11 @@ and its physical line number; whether the viewer jumps to that line depends on i
 for URL fragments. Repeated problems need supporting evidence across multiple traces.
 
 One trace is one conversation. Set `case_id` when several traces are attempts at the same
-task, so they count as one independent case; without it, each trace is its own case. Set
-`session_id` with `session_basis` (the source field it came from, as `<source>.<field>`,
-e.g. `atif.session_id`) when the trace carries a provider conversation key.
+task, so they count as one independent case; without it, each trace is its own case. Files
+written before schema version 3 kept this key in `attributes.logical_case_id`; the loader
+rejects them until you move that value to `case_id`. Set `session_id` with `session_basis`
+(the source field it came from, as `<source>.<field>`, e.g. `atif.session_id`) when the
+trace carries a provider conversation key.
 
 Put `tool_definitions` on the owning AGENT span or the LLM span offered those tools.
 Keep every entry in order, with its original value in `raw`. Add `name` and `input_schema`

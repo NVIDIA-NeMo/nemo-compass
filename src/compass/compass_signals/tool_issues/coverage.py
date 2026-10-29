@@ -23,7 +23,7 @@ from compass.compass_signals._trace import walk_spans
 from compass.compass_signals.tool_issues.signal import FINDING_TYPES
 from compass.trace_loaders.trace_loaders import TraceLoader
 from compass.traces import UNSET, SpanKind, Trace
-from trace_ingest.catalog import tool_catalog
+from trace_ingest.catalog import record_tool_catalogs
 from trace_ingest.models import case_key
 
 __all__ = ["RULE_REQUIREMENTS", "corpus_coverage", "format_coverage"]
@@ -195,7 +195,7 @@ def _field_presence(traces: Sequence[Trace]) -> dict[str, int]:
     }
 
     for trace in traces:
-        if tool_catalog(trace) is not None:
+        if any(catalog is not None for _, catalog in record_tool_catalogs(trace)):
             counts["tool_catalog"] += 1
         if trace.case_id:
             counts["case_id"] += 1

@@ -392,7 +392,7 @@ class Loss(_TraceModel):
             "unresolved_subagent_ref has ref (the reference as written); "
             "continued_trajectory_not_followed has continued_trajectory_ref; "
             "llm_calls_aggregated has llm_call_count; "
-            "session_partial has reason and loaded_record_count."
+            "merge_incomplete has reason and loaded_record_count."
         ),
     )
     span_id: str | None = Field(default=None, description="Span the loss concerns.")
