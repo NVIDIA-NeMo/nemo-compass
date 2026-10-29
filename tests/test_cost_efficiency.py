@@ -8,17 +8,14 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from nooa.unifiedllm import FakeLLMClient
 
 from compass.cli.artifacts import dump_json
 from compass.compass_signals.builtins import registered_builtin_signals
-from compass.compass_signals.compass_signals import CompassSignalResult, Problem
-from compass.compass_signals.cost_efficiency import review as cost_review
+from compass.compass_signals.compass_signals import CompassSignalResult
 from compass.compass_signals.cost_efficiency.prompt_caching_miss.sequences import (
     build_sequences,
     sequence_keys,
 )
-from compass.compass_signals.cost_efficiency.review import COST_EFFICIENCY_REVIEW
 from compass.compass_signals.cost_efficiency.signal import (
     CostEfficiencyArtifacts,
     CostEfficiencyCompassSignal,
@@ -146,7 +143,8 @@ def kinds(result: CompassSignalResult) -> list[tuple[str, str]]:
 def test_worked_example_end_to_end():
     traces = [tool_change_session(i) for i in range(1, 5)]
     traces += [quiet_session(i, 11 if i < 8 else 10) for i in range(16)]
-    result = run(traces)
+    registry = registered_builtin_signals(cost_efficiency=CostEfficiencyConfig())
+    result = asyncio.run(registry.analyze("cost-efficiency", TraceSnapshot(traces)))
 
     assert sum(len(list(t.root_spans[0].children)) for t in traces) == 180
     assert kinds(result) == [(f"t{i}", "tools_added") for i in range(1, 5)]
@@ -524,121 +522,3 @@ def test_a_tool_change_is_found_even_when_the_model_also_changed():
         call("c2", 3, 5, uncached=10, read=0, write=20100, tools=("search",), model="other"),
     ]
     assert kinds(run([trace("m", "m", calls)])) == [("m", "tools_removed")]
-
-
-def review_with(monkeypatch, cited: tuple[str, ...]) -> list[tuple[tuple[str, ...], str]]:
-    """Fake IssueDetector citing ``cited``; returns the (trace IDs, problem) of each call."""
-
-    calls = []
-
-    class FakeDetector:
-        def __init__(self, *, llm):
-            self.llm = llm
-
-        async def detect_issues(self, traces, description, **extra):
-            assert description == COST_EFFICIENCY_REVIEW
-            assert [c["trace_id"] for c in extra["calls"]] == [t.id for t in traces]
-            calls.append((tuple(t.id for t in traces), extra["problem"]))
-            return [Problem(description="reviewed", supporting_trace_ids=cited)] if cited else []
-
-    monkeypatch.setattr(cost_review, "IssueDetector", FakeDetector)
-    return calls
-
-
-def reviewed_run(traces: list[Trace]) -> CompassSignalResult:
-    signal = CostEfficiencyCompassSignal(CostEfficiencyConfig(), llm=FakeLLMClient())
-    return asyncio.run(signal.analyze(TraceSnapshot(traces)))
-
-
-@pytest.mark.parametrize(
-    ("cited", "confirmed", "kept"),
-    [
-        (("t1", "t3"), ("t1", "t3"), True),
-        (("t2",), ("t2",), False),
-        ((), (), False),
-        (("t1", "elsewhere"), ("t1",), False),  # traces outside the Problem do not count
-    ],
-)
-def test_llm_review_keeps_problems_two_traces_confirm(monkeypatch, cited, confirmed, kept):
-    calls = review_with(monkeypatch, cited)
-    deterministic = run([tool_change_session(i) for i in range(1, 5)])
-    result = reviewed_run([tool_change_session(i) for i in range(1, 5)])
-
-    (problem,) = deterministic.problems
-    assert calls == [(("t1", "t2", "t3", "t4"), problem.description)]
-    assert result.problems == ((problem,) if kept else ())
-    assert result.finding_count == deterministic.finding_count
-    assert result.artifacts.review == {"ce:cache_miss_after_tool_change:tools_added": confirmed}
-
-
-def test_without_an_llm_the_signal_stays_deterministic(monkeypatch):
-    """Tools and tests construct the signal directly; registration always adds an LLM."""
-
-    calls = review_with(monkeypatch, ())
-    result = run([tool_change_session(i) for i in range(1, 5)])
-    assert len(result.problems) == 1
-    assert result.artifacts.review is None
-    assert calls == []
-
-
-def test_llm_review_can_be_turned_off(monkeypatch):
-    calls = review_with(monkeypatch, ())
-    signal = CostEfficiencyCompassSignal(
-        CostEfficiencyConfig(llm_review=False), llm=FakeLLMClient()
-    )
-    result = asyncio.run(
-        signal.analyze(TraceSnapshot([tool_change_session(i) for i in range(1, 5)]))
-    )
-    assert len(result.problems) == 1
-    assert result.artifacts.review is None
-    assert calls == []
-
-
-def test_registration_requires_an_llm_factory():
-    with pytest.raises(ValueError, match="cost-efficiency requires an LLM client factory"):
-        registered_builtin_signals(cost_efficiency=CostEfficiencyConfig())
-    llm = FakeLLMClient()
-    registry = registered_builtin_signals(
-        cost_efficiency=CostEfficiencyConfig(), llm_factory=lambda: llm
-    )
-    signal = registry._signals["cost-efficiency"]
-    assert isinstance(signal, CostEfficiencyCompassSignal)
-    assert signal.llm is llm
-
-
-def test_llm_review_includes_reference_traces(monkeypatch):
-    """A reference call in an earlier trace of the session is sent with the miss."""
-
-    seen = []
-
-    class FakeDetector:
-        def __init__(self, *, llm):
-            pass
-
-        async def detect_issues(self, traces, description, **extra):
-            seen.append(([t.id for t in traces], extra["calls"]))
-            return []
-
-    monkeypatch.setattr(cost_review, "IssueDetector", FakeDetector)
-    traces = []
-    for i in range(1, 4):
-        session = f"s{i}"
-        traces.append(
-            trace(f"a{i}", session, [call("c1", 0, 8, uncached=900, read=0, write=40000)])
-        )
-        traces.append(
-            trace(
-                f"b{i}",
-                session,
-                [call("c2", 10, 16, uncached=900, read=0, write=40000, tools=("search",))],
-            )
-        )
-    reviewed_run(traces)
-
-    ((trace_ids, calls),) = seen
-    assert sorted(trace_ids) == ["a1", "a2", "a3", "b1", "b2", "b3"]
-    assert {(c["trace_id"], c["reference_trace_id"]) for c in calls} == {
-        ("b1", "a1"),
-        ("b2", "a2"),
-        ("b3", "a3"),
-    }

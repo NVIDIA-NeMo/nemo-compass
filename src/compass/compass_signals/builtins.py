@@ -71,9 +71,7 @@ def registered_builtin_signals(
     if tool_issues is not None:
         registry.register(ToolIssueCompassSignal(config=tool_issues))
     if cost_efficiency is not None:
-        if llm_factory is None:
-            raise ValueError("cost-efficiency requires an LLM client factory")
-        registry.register(CostEfficiencyCompassSignal(config=cost_efficiency, llm=llm_factory()))
+        registry.register(CostEfficiencyCompassSignal(config=cost_efficiency))
     if ethos_divergence is not None:
         if llm_factory is None:
             raise ValueError("ethos-divergence requires an LLM client factory")

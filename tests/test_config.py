@@ -145,24 +145,12 @@ def test_signals_default_on_and_false_disables_only_that_signal(tmp_path):
         ]
     )
     assert config.compass_signals.cost_efficiency is not None
-    assert config.compass_signals.cost_efficiency.llm_review
     assert config.compass_signals.ethos_divergence is None
     assert config.compass_signals.user_sentiment is None
     assert config.compass_signals.tool_issues is not None
     assert config.compass_signals.tool_issues.retry_threshold == 5
     assert config.compass_signals.anomaly_and_patterns is not None
     assert config.compass_signals.grader_failure_patterns is not None
-
-
-def test_cost_efficiency_llm_review_can_be_turned_off_in_yaml(tmp_path):
-    path = tmp_path / "config.yaml"
-    path.write_text(
-        "trace:\n  filesystem:\n    path: traces.jsonl\n"
-        "compass_signals:\n  cost_efficiency:\n    llm_review: false\n"
-    )
-    config = RunConfig(_cli_parse_args=["--config", str(path)])
-    assert config.compass_signals.cost_efficiency is not None
-    assert not config.compass_signals.cost_efficiency.llm_review
 
 
 def test_ethos_yaml_and_cli_override_independent_of_signal_selection(tmp_path):
