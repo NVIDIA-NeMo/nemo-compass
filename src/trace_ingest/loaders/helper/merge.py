@@ -17,7 +17,7 @@ from typing import Literal
 
 from pydantic import JsonValue
 
-from trace_ingest.loaders.helper.turns import NoTurns, agent_turns, with_run_root_turns
+from trace_ingest.loaders.helper.turns import NoTurns, agent_turns, run_root, with_run_root_turns
 from trace_ingest.models import (
     UNSET,
     Authorship,
@@ -340,7 +340,9 @@ class Record:
     conversation_output: object = None
 
 
-def _merge_group(group: Sequence[Record], *, capped: bool) -> Trace:
+def _merge_group(
+    group: Sequence[Record], *, orchestration_subtypes: frozenset[str], capped: bool
+) -> Trace:
     first = group[0].trace
     assert first.session_id is not None and first.session_basis is not None
     prepared = [prepare_record(record.trace) for record in group]
@@ -349,8 +351,12 @@ def _merge_group(group: Sequence[Record], *, capped: bool) -> Trace:
     turn_losses: list[Loss] = []
     try:
         for (trace, _), record in zip(prepared, group, strict=True):
+            # A record owns turns only as it would on its own: through a single run root.
+            root = run_root(trace, orchestration_subtypes=orchestration_subtypes)
+            if root is None:
+                raise NoTurns
             turns, losses = agent_turns(
-                trace.root_spans,
+                root.children,
                 owner_id=owner_id,
                 conversation_input=record.conversation_input,
                 conversation_output=record.conversation_output,
@@ -379,11 +385,12 @@ def assemble(
     """One trace per ``session_id``, in order of each key's first record.
 
     Records sharing a ``session_id`` merge into one trace whose turns are built
-    per record and joined; when any record has no recoverable conversation, the
-    merged trace has no turns. A record without a ``session_id`` stays its own
-    trace, with turns on its promoted run root. ``capped`` marks every merged
-    trace incomplete because selection stopped at the loader's limit. Raises
-    ``ValueError`` naming the ``session_id`` when its records cannot be merged.
+    per record and joined; when any record has no single run root (see
+    ``run_root``) or no recoverable conversation, the merged trace has no turns.
+    A record without a ``session_id`` stays its own trace, with turns on its
+    promoted run root. ``capped`` marks every merged trace incomplete because
+    selection stopped at the loader's limit. Raises ``ValueError`` naming the
+    ``session_id`` when its records cannot be merged.
     """
     groups: dict[str | int, list[Record]] = {}
     for index, record in enumerate(records):
@@ -402,7 +409,9 @@ def assemble(
             )
             continue
         try:
-            traces.append(_merge_group(group, capped=capped))
+            traces.append(
+                _merge_group(group, orchestration_subtypes=orchestration_subtypes, capped=capped)
+            )
         except ValueError as error:
             raise ValueError(f"session {key!r} could not be merged: {error}") from error
     return traces
