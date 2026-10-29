@@ -732,8 +732,8 @@ def _normalize(source: _Trajectory) -> Trace:
         id=trace_id,
         root_spans=[root],
         aggregate=TraceAggregate(cost_usd=root.cost_usd, token_counts=root.token_counts),
-        session_id=source.session_id,
-        session_basis=None if source.session_id is None else "atif.session_id",
+        session_id=source.session_id or None,
+        session_basis="atif.session_id" if source.session_id else None,
         losses=losses,
     )
 

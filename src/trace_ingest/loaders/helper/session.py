@@ -142,38 +142,31 @@ def _earliest_start(record: Trace) -> datetime:
 
 
 def _token_counts(records: Sequence[Trace]) -> TokenCounts | None:
-    reported = [
-        record.aggregate.token_counts
-        for record in records
-        if record.aggregate.token_counts is not None
-    ]
-    if not reported:
+    """Session totals; a count any record does not report is None, never a partial sum."""
+    reported = [record.aggregate.token_counts for record in records]
+    if any(count is None for count in reported):
         return None
     values: dict[str, object] = {}
     for field in _SUMMED_TOKEN_FIELDS:
-        counts = [getattr(count, field) for count in reported if getattr(count, field) is not None]
-        values[field] = sum(counts) if counts else None
-    by_ttl = [count.cache_writes_by_ttl for count in reported if count.cache_writes_by_ttl]
-    if by_ttl:
-        merged: dict[int, int] = {}
-        for entry in by_ttl:
-            for ttl, tokens in entry.items():
-                merged[ttl] = merged.get(ttl, 0) + tokens
-        values["cache_writes_by_ttl"] = merged
+        counts = [getattr(count, field) for count in reported]
+        values[field] = None if None in counts else sum(counts)
+    by_ttl = [count.cache_writes_by_ttl for count in reported]
+    if all(by_ttl):
+        ttls = set.intersection(*(set(entry) for entry in by_ttl))
+        values["cache_writes_by_ttl"] = {
+            ttl: sum(entry[ttl] for entry in by_ttl) for ttl in sorted(ttls)
+        } or None
     sources = {count.source for count in reported if count.source is not None}
     values["source"] = sources.pop() if len(sources) == 1 else None
     return TokenCounts.model_validate(values)
 
 
 def _tool_definitions(definitions: Sequence[ToolDefinition]) -> list[ToolDefinition]:
+    """Drop exact repeats only; same-name entries that differ are all kept, in order."""
     union: list[ToolDefinition] = []
-    names: set[str] = set()
     for definition in definitions:
-        if definition.name is not None:
-            if definition.name in names:
-                continue
-            names.add(definition.name)
-        union.append(definition)
+        if definition not in union:
+            union.append(definition)
     return union
 
 
@@ -229,9 +222,7 @@ def merge_session(
         attributes={"name": "session", "subtype": "session"},
     )
 
-    costs = [
-        record.aggregate.cost_usd for record in ordered if record.aggregate.cost_usd is not None
-    ]
+    costs = [record.aggregate.cost_usd for record in ordered]
     latency = (
         (end - start).total_seconds() * 1000 if start is not None and end is not None else None
     )
@@ -283,7 +274,7 @@ def merge_session(
         case_id=case_id,
         root_spans=[root],
         aggregate=TraceAggregate(
-            cost_usd=sum(costs) if costs else None,
+            cost_usd=None if None in costs else sum(costs),
             latency_ms=latency,
             token_counts=_token_counts(ordered),
         ),

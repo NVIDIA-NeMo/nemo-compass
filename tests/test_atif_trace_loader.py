@@ -136,6 +136,12 @@ def test_exact_normalization_and_description(tmp_path):
     }
 
 
+def test_empty_session_id_is_treated_as_absent(tmp_path):
+    (trace,) = loader_for(tmp_path, {**minimal(), "trajectory_id": "t", "session_id": ""}).load()
+
+    assert (trace.id, trace.session_id, trace.session_basis) == ("t", None, None)
+
+
 def test_maximal_fixture_maps_each_field_to_its_typed_place():
     source = json.loads((FIXTURES / "maximal.json").read_text())
     trace = load(FIXTURES / "maximal.json")
