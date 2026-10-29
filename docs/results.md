@@ -10,12 +10,12 @@ An illustrative entry in `insights.yml`:
 
 ```yaml
 - name: Retries repeat an invalid order lookup
-  description: >-
-    After lookup_order reports an unknown order ID, the agent repeats
-    the same request without asking the customer to correct the ID.
   severity: med
   severity_reason: >-
     The agent completes the task only after an unnecessary retry.
+  description: >-
+    After lookup_order reports an unknown order ID, the agent repeats
+    the same request without asking the customer to correct the ID.
   evidence:
     - trace_id: run-12
       url: https://observability.example.com/traces/run-12
