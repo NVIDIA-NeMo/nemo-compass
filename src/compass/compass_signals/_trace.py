@@ -49,11 +49,4 @@ def walk_spans(trace: Trace) -> Iterator[SpanVisit]:
     yield from walk(trace.root_spans, ())
 
 
-def session_of(trace: Trace) -> str | None:
-    """The source-recorded session ID (logical_case_id) of a trace, if any."""
-
-    case = trace.attributes.get("logical_case_id")
-    return str(case) if case is not None else None
-
-
-__all__ = ["SpanVisit", "session_of", "walk_spans"]
+__all__ = ["SpanVisit", "walk_spans"]

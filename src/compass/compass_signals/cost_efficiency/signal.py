@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 
 from pydantic import BaseModel, Field
 
-from compass.compass_signals._trace import session_of, walk_spans
+from compass.compass_signals._trace import walk_spans
 from compass.compass_signals.compass_signals import CompassSignalResult
 from compass.compass_signals.cost_efficiency import prompt_caching_miss
 from compass.compass_signals.cost_efficiency.cards import (
@@ -77,7 +77,7 @@ class CostEfficiencyCompassSignal:
             findings, SPECS, minimum_independent_traces=self.config.minimum_independent_traces
         )
         counted = [  # (trace, session) of each LLM call with token counts
-            (trace.id, session_of(trace) or trace.id)
+            (trace.id, trace.session_id or trace.id)
             for trace in snapshot
             for visit in walk_spans(trace)
             if visit.span.kind is SpanKind.LLM and visit.span.token_counts is not None

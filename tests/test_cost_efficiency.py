@@ -92,7 +92,8 @@ def trace(
         id=trace_id,
         root_spans=roots,
         aggregate=TraceAggregate(),
-        attributes={"logical_case_id": session} if session is not None else {},
+        session_id=session,
+        session_basis="test.session" if session is not None else None,
     )
 
 
@@ -305,7 +306,8 @@ def test_agent_spans_without_ids_are_separate_sequences():
         id="t",
         root_spans=spans,
         aggregate=TraceAggregate(),
-        attributes={"logical_case_id": "s"},
+        session_id="s",
+        session_basis="test.session",
     )
     assert run([one]).finding_count == 0
     keys = {key for key, _ in sequence_keys(one)}
@@ -420,7 +422,7 @@ def test_calls_outside_any_agent_join_the_session_root_sequence():
 
 
 def test_traces_without_a_session_are_never_compared():
-    """Without logical_case_id each trace is its own session; with one, the same calls miss."""
+    """Without a session_id each trace is its own session; with one, the same calls miss."""
 
     alone = [trace("na", None, [REFERENCE]), trace("nb", None, [MISSED])]
     sequences = build_sequences(alone)
