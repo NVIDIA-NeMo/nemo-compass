@@ -247,7 +247,7 @@ def test_enrichment_preserves_recorded_facts_and_tool_ownership(mode):
     a, b, c = agent.children
     assert agent.kind is SpanKind.AGENT and agent.agent_id == parent.agent_id
     assert agent.tool_definitions == parent.tool_definitions
-    assert result.attributes["logical_case_id"] == trace.attributes["logical_case_id"]
+    assert (result.session_id, result.session_basis) == (trace.session_id, trace.session_basis)
     assert c.error == "provider failed"
     assert c.start_time == failed.start_time and c.end_time == failed.end_time
     assert c.model == failed.model
