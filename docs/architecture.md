@@ -218,33 +218,63 @@ support and a practical remedy.
 For configuration and prerequisites, see [Compass Signals](compass-signals.md).
 
 
-## Evidence extraction
+## Cost evidence extraction
 
-Cost efficiency uses a shared, schema-driven evidence stage between ingestion and
-analysis. Loaders retain source-native payloads. Nooa inspects the snapshot and
-writes one Python extraction function, which runs over every source span. The
-shared stage accepts an analysis-owned Pydantic schema and instructions; it has no
-provider, tracing backend, SDK, or telemetry-schema dispatch table.
+Ingestion preserves trace structure, source-native payloads, and the shared trace
+model. Cost efficiency adds a schema-driven Nooa evidence stage after ingestion:
+Nooa inspects representative layouts and writes a Python function, then the host
+applies it to every span. The engine accepts an analysis-owned Pydantic schema and
+instructions, with no provider or instrumentation dispatch table.
 
-The cost contract contains operation kind, session and agent identity, timestamps,
-error, model, token accounting (uncached input, cache reads, cache writes, output,
-inclusive input total, and writes by TTL), and the ordered tool definitions sent
-on the call. Host code attaches trace/span references and checks types and basic
-accounting consistency. Missing evidence stays unknown, distinct from zero or an
-explicitly empty tool list. Extraction errors fail the signal; they do not become
-an empty successful result.
+Existing canonical evidence takes precedence. Extraction fills missing cost
+fields: operation kind, session and agent identity, timestamps, error, model,
+token accounting (uncached input, cache reads, cache writes, output, inclusive
+input total, and writes by TTL), and the ordered tools sent on an LLM call.
+Missing evidence cannot erase recorded facts. Zero counts and explicitly empty
+tool lists remain known values. An agent's declared tools are not evidence of
+the tools sent on a particular model call.
 
-Extracted values populate a private detector view. Cache-miss detection, findings,
-and Problems remain deterministic; compilation and other signals receive the
-original snapshot. There is no extra LLM review pass. Python callers with already
-normalized evidence can still use `analyze_snapshot` directly; the registered
-cost signal now requires an LLM client factory.
+Each inspection record exposes one trace with its span tree and native context.
+The extraction function receives that context and one span, without serializing
+the context again for each span. Extracted records are stored in a temporary
+file; the private cost view is written to the existing disk-backed snapshot one
+trace at a time. Inspection is an iterator, but the agent must still follow the
+instruction to sample rather than accumulate all traces. A single large trace
+still needs to fit in memory; this is not a bounded-memory guarantee for arbitrary
+generated code or for the downstream detector.
 
-Langfuse no longer interprets Relay, OpenInference, or SDK-specific usage during
-ingestion. Gym Responses usage remains in its native envelope. Existing canonical
-fields and explicit source-format mappings such as ATIF remain readable by the
-extractor. This enables new layouts without adding shared adapters, but does not
-guarantee correct interpretation of every layout or recover fields absent from
-the source. Extraction uses Nooa's existing CodeAct environment and adds a model
-session per analysis run, followed by a Python scan; it does not call a model for
-each trace.
+Detection, findings, and Problems remain deterministic. Compilation and other
+signals receive the original snapshot; there is no additional LLM review pass.
+Python callers with canonical evidence can still call `analyze_snapshot`
+directly. The registered cost signal requires an LLM client factory.
+
+### Compatibility
+
+This removes #81's specialized `helper/llm_span` readers and their Langfuse
+integration: Langfuse SDK accounting, Relay embedded request/response metadata,
+OpenInference metadata, Anthropic/OpenAI token accounting, and reader dispatch.
+The shared model remains: optional counts, unknown versus zero, input totals,
+cache writes and TTLs, source information, `llm_params`, `agent_id`, and
+`tool_definitions`.
+
+- **Langfuse/Relay/OpenInference:** native payloads remain available, but ingestion
+  no longer derives those canonical fields or identifies generic LLM spans from
+  this metadata. The original loader output is intentionally different.
+- **Tool issues:** this cost-only migration explicitly gives up the additional
+  schema checks enabled by #81's metadata-derived tool definitions. Checks still
+  work when existing canonical definitions are present, including direct
+  `input.tools`. Cost's extracted definitions are not supplied to tool issues.
+- **Gym Responses:** the OpenAI reader formerly populated canonical token counts.
+  Those counts now remain only in the native envelope until cost extraction.
+  Gym trajectory mappings are unchanged.
+- **ATIF:** defined-format mappings, counts, identities, tools, and turns stay
+  deterministic and unchanged. Its generic count helper is retained.
+- **External consumers:** preserving raw payloads does not preserve canonical
+  field population. Consumers that read `trace_ingest` directly do not receive
+  cost enrichment. Alec's proposed Langfuse turn building and typed session/case
+  changes require separate coordination; this PR does not migrate that work.
+
+Host checks cover types and basic token-accounting consistency, not semantic
+correctness for every source layout. Extraction errors fail the signal rather
+than becoming a successful empty result. Unfamiliar layouts may require new
+generated extraction code; absent source facts cannot be recovered.

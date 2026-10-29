@@ -76,21 +76,16 @@ class CostEfficiencyCompassSignal:
         evidence = await extract_evidence(snapshot, CacheEvidence, INSTRUCTIONS, self.llm)
         view = detector_view(snapshot, evidence)
         result = await asyncio.to_thread(self.analyze_snapshot, view)
-        calls = [
-            visit.span
-            for trace in view
-            for visit in walk_spans(trace)
-            if visit.span.kind is SpanKind.LLM
-        ]
-        missing = sum(span.token_counts is None for span in calls)
+        calls = missing = 0
+        for trace in view:
+            for visit in walk_spans(trace):
+                if visit.span.kind is SpanKind.LLM:
+                    calls += 1
+                    missing += visit.span.token_counts is None
         limitations = []
-        if evidence.unavailable_count:
-            limitations.append(
-                f"No evidence extracted for {evidence.unavailable_count} of {evidence.source_count} source spans."
-            )
         if missing:
             limitations.append(
-                f"Token counts unavailable for {missing} of {len(calls)} recognized LLM calls."
+                f"Token counts unavailable for {missing} of {calls} recognized LLM calls."
             )
         if not calls:
             limitations.append("No LLM calls identified in the extracted evidence.")

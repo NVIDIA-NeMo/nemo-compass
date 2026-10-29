@@ -150,3 +150,13 @@ compass_signals:
 ```
 
 Run `compass --config config.yaml` as above.
+
+
+Native usage, request parameters, and instrumentation metadata are retained under
+span input/output and `attributes.langfuse`. Relay/OpenInference metadata and SDK
+usage are interpreted by cost evidence extraction, not by ingestion. Generic
+spans may therefore remain UNKNOWN in the original trace, and metadata-derived
+token counts, model/agent details, and tools may no longer populate canonical
+fields. Direct `input.tools` declarations are still retained. Tool-issue checks
+that depended on metadata-derived definitions lose that coverage; the cost-only
+extracted view does not change other consumers' traces.

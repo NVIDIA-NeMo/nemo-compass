@@ -8,7 +8,7 @@ from nooa.unifiedllm import FakeLLMClient
 from pydantic import BaseModel, ValidationError
 
 from compass.compass_signals._trace import walk_spans
-from compass.compass_signals.cost_efficiency.evidence import CacheEvidence
+from compass.compass_signals.cost_efficiency.evidence import CacheEvidence, detector_view
 from compass.compass_signals.cost_efficiency.signal import CostEfficiencyCompassSignal
 from compass.evidence import _Extraction
 from compass.traces import UNSET, Span, SpanKind, Trace, TraceAggregate, TraceSnapshot
@@ -37,17 +37,17 @@ def test_neutral_contract_complete_scan_isolated_sources_and_atomic_failure():
     before = trace.model_dump_json()
     extraction = _Extraction(snapshot, DurationEvidence)
 
-    def mapper(source):
-        source["trace"]["attributes"]["native"]["duration_ms"] = 1000
-        return {"seconds": 0.5} if source["span"]["id"] == "child" else None
+    def mapper(context, span):
+        context["attributes"]["native"]["duration_ms"] = 1000
+        return {"seconds": 0.5} if span["id"] == "child" else None
 
     assert extraction.apply(mapper) == {"source_records": 2, "extracted": 1, "unavailable": 1}
     assert extraction.result is not None
-    assert extraction.result.records[0].span_path == (0, 0)
-    assert extraction.result.records[0].value.seconds == 0.5
+    assert list(extraction.result.records)[0].span_path == (0, 0)
+    assert list(extraction.result.records)[0].value.seconds == 0.5
     assert trace.model_dump_json() == before
     with pytest.raises(ValidationError):
-        extraction.apply(lambda source: {"seconds": "invalid"})
+        extraction.apply(lambda context, span: {"seconds": "invalid"})
     assert extraction.result is None
 
 
@@ -77,7 +77,7 @@ def test_cost_pipeline_native_evidence_matches_detector_and_preserves_snapshot(m
     async def extract(snapshot, schema, instructions, llm):
         assert schema is CacheEvidence
         extraction = _Extraction(snapshot, schema)
-        extraction.apply(lambda source: source["span"]["attributes"]["foreign_schema"])
+        extraction.apply(lambda context, span: span["attributes"]["foreign_schema"])
         return extraction.result
 
     monkeypatch.setattr(signal, "extract_evidence", extract)
@@ -131,7 +131,7 @@ def test_nooa_requires_complete_application_before_returning():
             response(
                 "execute_python",
                 {
-                    "code": "assert len(list(self.records())) == 1\nself.apply(lambda source: {'seconds': 0.5})"
+                    "code": "assert len(list(self.records())) == 1\nself.apply(lambda context, span: {'seconds': 0.5})"
                 },
             ),
             response("return_result", {"result": None}),
@@ -149,5 +149,94 @@ def test_nooa_requires_complete_application_before_returning():
     evidence = asyncio.run(extract_evidence(snapshot, DurationEvidence, "Read duration.", llm))
     assert llm.call_count == 3
     assert evidence.source_count == 1
-    assert evidence.records[0].trace_id == "t"
-    assert evidence.records[0].value.seconds == 0.5
+    assert list(evidence.records)[0].trace_id == "t"
+    assert list(evidence.records)[0].value.seconds == 0.5
+
+
+@pytest.mark.parametrize("mode", ["abstain", "missing", "conflicting"])
+def test_enrichment_preserves_recorded_facts_and_tool_ownership(mode):
+    from test_cost_efficiency import tool_change_session
+
+    from compass.traces import TokenCounts
+
+    trace = tool_change_session(1)
+    parent = trace.root_spans[0]
+    first, second, failed = parent.children
+    parent.tool_definitions = first.tool_definitions
+    first.tool_definitions = []  # Explicit no tools, never replaced by native/parent tools.
+    second.tool_definitions = UNSET
+    second.token_counts = TokenCounts(cached_input_tokens=0)
+    failed.error = "provider failed"
+    snapshot = TraceSnapshot([trace])
+    before = snapshot.get_trace_by_id(trace.id).model_dump_json()
+    extraction = _Extraction(snapshot, CacheEvidence)
+
+    def extract(context, span):
+        if mode == "abstain":
+            return None
+        if mode == "missing":
+            return {}
+        return {
+            "kind": "LLM",
+            "agent_id": "other-agent",
+            "session_id": "other-session",
+            "error": "different error",
+            "model": "different model",
+            "token_counts": {"cached_input_tokens": 99, "output_tokens": 7},
+            "tool_definitions": [{"name": "native", "raw": {"name": "native"}}],
+        }
+
+    extraction.apply(extract)
+    assert extraction.result is not None
+    result = detector_view(snapshot, extraction.result).get_trace_by_id(trace.id)
+    agent = result.root_spans[0]
+    a, b, c = agent.children
+    assert agent.kind is SpanKind.AGENT and agent.agent_id == parent.agent_id
+    assert agent.tool_definitions == parent.tool_definitions
+    assert result.attributes["logical_case_id"] == trace.attributes["logical_case_id"]
+    assert c.error == "provider failed"
+    assert c.start_time == failed.start_time and c.end_time == failed.end_time
+    assert c.model == failed.model
+    assert a.tool_definitions == []
+    assert a.token_counts == first.token_counts
+    assert b.token_counts is not None
+    assert b.token_counts.cached_input_tokens == 0
+    if mode == "conflicting":
+        assert b.token_counts.output_tokens == 7
+        assert b.tool_definitions is not UNSET
+        assert b.tool_definitions[0].name == "native"
+    else:
+        assert b.token_counts.output_tokens is None
+        assert b.tool_definitions is UNSET
+    assert snapshot.get_trace_by_id(trace.id).model_dump_json() == before
+
+
+def test_native_context_is_shared_once_per_trace_and_evidence_is_disk_backed():
+    traces = [
+        Trace(
+            id=str(i),
+            aggregate=TraceAggregate(),
+            attributes={"gym": {"steps": [{"text": "x" * 1000}] * 80}},
+            root_spans=[Span(id=str(n), kind=SpanKind.LLM) for n in range(80)],
+        )
+        for i in range(2)
+    ]
+    snapshot = TraceSnapshot(traces)
+    extraction = _Extraction(snapshot, DurationEvidence)
+    previous = None
+    contexts = 0
+
+    def extract(context, span):
+        nonlocal previous, contexts
+        if context is not previous:
+            contexts += 1
+            previous = context
+        return {"seconds": 1}
+
+    extraction.apply(extract)
+    assert contexts == 2
+    assert extraction.result is not None
+    assert extraction.result.extracted_count == 160
+    assert not isinstance(extraction.result.records, (list, tuple))
+    assert sum(1 for _ in extraction.result.records) == 160
+    assert sum(1 for _ in extraction.result.records) == 160

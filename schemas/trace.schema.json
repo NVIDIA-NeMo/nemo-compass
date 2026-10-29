@@ -1264,7 +1264,7 @@
   "additionalProperties": {
     "$ref": "#/$defs/JsonValue"
   },
-  "description": "Canonical representation of one complete end-to-end agent run.\n\nSource loaders deterministically construct this model before any Compass\nSignal runs. Provider-specific parsing or compatibility logic does not\nbelong downstream of this boundary.",
+  "description": "Canonical representation of one complete end-to-end agent run.\n\nSource loaders deterministically preserve structure and recorded fields\nbefore any Compass Signal runs. Analysis may interpret retained native\npayloads in a private evidence view without changing the original trace.",
   "properties": {
     "aggregate": {
       "$ref": "#/$defs/TraceAggregate",

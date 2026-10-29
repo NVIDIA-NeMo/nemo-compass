@@ -98,3 +98,9 @@ Records referencing remote conversation state (`previous_response_id` or
 or developer messages other than an exact copy of the request input, namespaced
 functions, unsupported item types such as built-in tool calls, and duplicate or
 unmatched call IDs are rejected.
+
+
+Responses-envelope usage stays in `trace.attributes.gym`; ingestion no longer
+populates canonical `Span.token_counts` for that source shape. Cost analysis can
+extract it into its private evidence view. Direct loader consumers receive the
+native usage only. The `ng_trajectory` mappings are unchanged.

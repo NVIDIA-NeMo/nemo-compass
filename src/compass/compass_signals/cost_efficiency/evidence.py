@@ -5,13 +5,12 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections.abc import Iterator
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
-from compass.compass_signals._trace import walk_spans
 from compass.evidence import EvidenceBatch
-from compass.traces import UNSET, SpanKind, TokenCounts, TraceSnapshot
+from compass.traces import UNSET, SpanKind, TokenCounts, Trace, TraceSnapshot
 from trace_ingest.models import ToolDefinition
 
 
@@ -71,8 +70,11 @@ Identify actual model calls from the recorded operation, including generic spans
 Do not count agent/turn summaries, tool invocations or token-counting requests as
 model calls merely because they contain copied usage. Return kind for recognized
 non-LLM operations too, so agent boundaries remain available.
-Use canonical recorded fields when available, otherwise inspect the source-native
-payloads. Token field names alone do not establish their accounting semantics.
+Canonical recorded evidence is reused by the host. Extract only missing cost
+fields from the source-native payloads; do not reconstruct or override known fields.
+Return None when no missing evidence can be recovered. Never move tools from an
+AGENT declaration to a child LLM call. Preserve per-call ownership.
+Inspect the actual native payloads. Token field names alone do not establish their accounting semantics.
 input_total includes ALL input; input_tokens excludes cache reads AND cache writes.
 Inspect nested usage details before classifying counts. Keep cache reads and writes
 separate; missing buckets stay unknown. Do not subtract an unknown write count as
@@ -84,42 +86,47 @@ Tool definitions must be the list sent on that exact call, not executed tool cal
 an ancestor's catalog or an application's current registry. Preserve tool order,
 raw JSON key order, cache-control markers, definitions and an explicitly empty list.
 Do not infer a tool-change cause, avoidability, savings or a cache miss.
-Leave unsupported fields null. Return None only when nothing in the contract can
-be established. Session and agent IDs must be recorded, not invented for grouping.
+Leave unsupported fields null. Session and agent IDs must be recorded, not invented for grouping.
 """
 
 
 def detector_view(snapshot: TraceSnapshot, evidence: EvidenceBatch[CacheEvidence]) -> TraceSnapshot:
-    """Project evidence onto a private copy; compilation retains the original snapshot."""
-    traces = {trace.id: trace.model_copy(deep=True) for trace in snapshot}
-    # Never fall back to unextracted counts after a record abstained.
-    for trace in traces.values():
-        for visit in walk_spans(trace):
-            visit.span.token_counts = None
-            visit.span.tool_definitions = UNSET
-    sessions: dict[str, set[str]] = defaultdict(set)
-    for record in evidence.records:
-        value = record.value
-        children = traces[record.trace_id].root_spans
-        for position in record.span_path:
-            span = children[position]
-            children = span.children
-        if value.kind is not None:
-            span.kind = value.kind
-        span.agent_id = value.agent_id
-        if value.session_id:
-            sessions[record.trace_id].add(value.session_id)
-        if span.kind is SpanKind.LLM:
-            span.start_time, span.end_time = value.start_time, value.end_time
-            span.error, span.model = value.error, value.model
-            span.token_counts = value.token_counts
-            span.tool_definitions = (
-                value.tool_definitions if value.tool_definitions is not None else UNSET
-            )
-    for trace_id, identifiers in sessions.items():
-        if len(identifiers) == 1:
-            traces[trace_id].attributes["logical_case_id"] = next(iter(identifiers))
-        else:
-            # Conflicting session evidence must not join this trace to other traces.
-            traces[trace_id].attributes.pop("logical_case_id", None)
-    return TraceSnapshot(traces.values())
+    """Enrich fresh disk-backed traces; recorded facts always take precedence."""
+
+    def enriched() -> Iterator[Trace]:
+        records = iter(evidence.records)
+        record = next(records, None)
+        for trace in snapshot:
+            sessions: set[str] = set()
+            while record is not None and record.trace_id == trace.id:
+                value = record.value
+                children = trace.root_spans
+                for position in record.span_path:
+                    span = children[position]
+                    children = span.children
+                if span.kind is SpanKind.UNKNOWN and value.kind in (SpanKind.LLM, SpanKind.AGENT):
+                    span.kind = value.kind
+                if span.agent_id is None:
+                    span.agent_id = value.agent_id
+                if value.session_id:
+                    sessions.add(value.session_id)
+                if span.kind is SpanKind.LLM:
+                    for name in ("start_time", "end_time", "error", "model"):
+                        if getattr(span, name) is None:
+                            setattr(span, name, getattr(value, name))
+                    if value.token_counts is not None:
+                        counts = span.token_counts.model_dump() if span.token_counts else {}
+                        for name, count in value.token_counts.model_dump().items():
+                            if counts.get(name) is None:
+                                counts[name] = count
+                        span.token_counts = TokenCounts.model_validate(counts)
+                    if span.tool_definitions is UNSET and value.tool_definitions is not None:
+                        span.tool_definitions = value.tool_definitions
+                record = next(records, None)
+            if trace.attributes.get("logical_case_id") is None and len(sessions) == 1:
+                trace.attributes["logical_case_id"] = next(iter(sessions))
+            yield trace
+        if record is not None:
+            raise ValueError("Evidence source order does not match the snapshot")
+
+    return TraceSnapshot(enriched())
