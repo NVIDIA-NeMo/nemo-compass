@@ -26,11 +26,6 @@ class SpanEvidence(BaseModel):
 
 class TraceEvidence(BaseModel):
     trace_id: str = Field(min_length=1)
-    session_id: str | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-        description="Session of the trace. Populated by the application.",
-    )
     url: SourceURL | None = Field(default=None, exclude_if=lambda value: value is None)
     spans: list[SpanEvidence] = Field(default_factory=list, exclude_if=lambda value: not value)
 
@@ -76,16 +71,13 @@ class Insight(BaseModel):
 def resolve_trace_links(
     insights: Sequence[Insight], snapshot: TraceSnapshot, existing: Sequence[Insight] = ()
 ) -> list[Insight]:
-    """Validate span references and attach only loader or previously saved URLs and sessions."""
+    """Validate span references and attach only loader or previously saved URLs."""
     known_urls = {}
-    known_sessions = {}
     known_spans: dict[str, dict[str, str | None]] = {}
     for insight in existing:
         for item in insight.evidence:
             if item.url is not None:
                 known_urls[item.trace_id] = item.url
-            if item.session_id is not None:
-                known_sessions[item.trace_id] = item.session_id
             known_spans.setdefault(item.trace_id, {}).update(
                 (span.span_id, span.url) for span in item.spans
             )
@@ -97,12 +89,9 @@ def resolve_trace_links(
                 trace = snapshot.get_trace_by_id(item.trace_id)
             except KeyError:
                 url = known_urls.get(item.trace_id)
-                session_id = known_sessions.get(item.trace_id)
                 available = known_spans.get(item.trace_id, {})
             else:
                 url = trace.source_url
-                case = trace.attributes.get("logical_case_id")
-                session_id = str(case) if case is not None else None
                 available = {}
                 pending = list(trace.root_spans)
                 while pending:
@@ -112,7 +101,6 @@ def resolve_trace_links(
             evidence.append(
                 TraceEvidence(
                     trace_id=item.trace_id,
-                    session_id=session_id,
                     url=url,
                     spans=[
                         SpanEvidence(span_id=sid, url=available[sid])
