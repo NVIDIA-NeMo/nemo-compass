@@ -113,10 +113,13 @@ function call turn links its tool spans; results stay on those spans. Request
 history is copied context and links no model span, except the last request user
 message, which is of unknown authorship. Reasoning summaries stay in
 `extra.gym.reasoning_summary`, not in the turn's reasoning. Each turn's
-`extra.gym.item_path` points at its source item.
+`extra.gym.item_path` points at its source item; a turn grouping adjacent function
+calls points at the first.
 
 Turns are absent when the conversation has no user message (as in a standalone
-Responses object), when a message has another role, content holds an unsupported part
-or an image of unknown type, function arguments do not decode to a JSON object, or the
-record carries ATIF conversion metadata for several Harbor trajectories. Rollouts with
-`ng_trajectory` have no turns.
+Responses object), when a message has another role, message content or a function call
+output is neither text nor supported parts (a `null` output included), an image has an
+unknown type, function arguments are not a string that decodes to a JSON object, a
+reasoning summary is not a list of `summary_text` parts, or the record carries
+malformed ATIF conversion metadata or metadata for several Harbor trajectories.
+Rollouts with `ng_trajectory` have no turns.

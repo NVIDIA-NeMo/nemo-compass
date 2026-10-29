@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import json
+
 import pytest
 
 from trace_ingest import (
@@ -14,6 +16,7 @@ from trace_ingest import (
     TraceAggregate,
     TurnRole,
 )
+from trace_ingest.loaders.helper.merge import join_turns
 from trace_ingest.loaders.helper.turns import (
     NoTurns,
     agent_turns,
@@ -57,6 +60,13 @@ def rows(turns):
     ]
 
 
+# A tool-call-only reply, as OpenAI's chat completions return it.
+TOOL_CALL = {"id": "call_1", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+NULL_REPLY = {"role": "assistant", "content": None, "tool_calls": [TOOL_CALL]}
+# LangChain ``output_version="v1"`` AIMessage that only calls a tool (LangSmith).
+V1_TOOL_CALL = {"type": "tool_call", "id": "call_1", "name": "fruit_info", "args": {"x": 1}}
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
@@ -67,6 +77,19 @@ def rows(turns):
         ({"generations": [[{"text": "generation"}], [{"text": "other"}]]}, "generation"),
         ([{"content": "first item"}, {"content": "second"}], "first item"),
         ({"n": 1}, '{"n": 1}'),
+        # OpenInference LLM output (Intake).
+        ({"messages": [{"role": "assistant", "content": "42"}]}, "42"),
+        # LangChain messages_to_dict (LangGraph state in Intake).
+        ({"type": "ai", "data": {"content": "42", "tool_calls": []}}, "42"),
+        # Content blocks: the text blocks' text, as LangChain's AIMessage.text.
+        (
+            {"content": [{"type": "text", "text": "Let me look."}, {"type": "tool_use"}]},
+            "Let me look.",
+        ),
+        (
+            {"generations": [[{"text": "Hi", "message": lc("AIMessage", content="Hi")}]]},
+            "Hi",
+        ),
     ],
 )
 def test_message_text(value, expected):
@@ -76,11 +99,43 @@ def test_message_text(value, expected):
 @pytest.mark.parametrize(
     "value",
     [
+        NULL_REPLY,
+        {"choices": [{"message": NULL_REPLY}]},
+        # Braintrust wrap_openai output: the choices list.
+        [{"finish_reason": "tool_calls", "index": 0, "message": {**NULL_REPLY, "audio": None}}],
+        # OpenInference (Intake): no content key at all.
+        {"messages": [{"role": "assistant", "tool_calls": [TOOL_CALL]}]},
+        # ATIF step (Intake): tool calls without a message.
+        {"tool_calls": [{"tool_call_id": "c1", "function_name": "Write", "arguments": {}}]},
+        # LangChain generation with empty content (LangSmith).
+        {
+            "generations": [
+                [{"text": "", "message": lc("AIMessage", content="", tool_calls=[V1_TOOL_CALL])}]
+            ]
+        },
+        # LangChain v1 content blocks that only call a tool (LangSmith).
+        {"type": "ai", "content": [V1_TOOL_CALL], "tool_calls": [V1_TOOL_CALL]},
+    ],
+    ids=["openai", "choices", "choices-list", "openinference", "atif", "generation", "v1-blocks"],
+)
+def test_message_text_is_none_for_a_reply_without_text(value):
+    assert message_text(value) is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
         {"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]},
         [{"type": "system", "content": "s"}, {"type": "human", "content": "u"}],
         {"messages": [[lc("SystemMessage", content="s"), lc("HumanMessage", content="u")]]},
+        {
+            "messages": [
+                {"type": "system", "data": {"content": "s"}},
+                {"type": "human", "data": {"content": "u", "type": "human"}},
+            ]
+        },
     ],
-    ids=["openai", "langchain-type", "langchain-constructor-batch"],
+    ids=["openai", "langchain-type", "langchain-constructor-batch", "langchain-messages-to-dict"],
 )
 def test_message_records_resolve_roles(value):
     records = message_records(value)
@@ -93,14 +148,14 @@ def test_message_records_resolve_roles(value):
 def test_message_records_reads_constructor_roles():
     records = message_records(
         [
-            lc("AIMessage", content="a"),
+            lc("AIMessage", content="", tool_calls=[V1_TOOL_CALL]),
             lc("ToolMessage", content="r", tool_call_id="c1"),
             lc("ChatMessage", content="x", role="developer"),
         ]
     )
 
     assert records == [
-        {"role": "assistant", "content": "a"},
+        {"role": "assistant", "content": "", "tool_calls": [V1_TOOL_CALL]},
         {"role": "tool", "content": "r", "tool_call_id": "c1"},
         {"role": "developer", "content": "x"},
     ]
@@ -139,9 +194,43 @@ def test_tool_result_without_an_agent_turn_stands_alone():
 
 
 @pytest.mark.parametrize(
+    ("tail", "user"),
+    [
+        ([NULL_REPLY, {"role": "tool", "tool_call_id": "call_1", "content": "r"}], COPY),
+        ([{"role": "assistant", "content": "a"}], COPY),
+        ([{"role": "system", "content": "reminder"}], UNKNOWN),
+    ],
+    ids=["tool-loop", "answered", "system-after"],
+)
+def test_input_turns_copy_a_user_message_an_agent_already_answered(tail, user):
+    # A per-call trace in a tool loop re-sends the user message the first call owned.
+    turns = input_turns([{"role": "user", "content": "q"}, *tail])
+
+    assert turns[0].authorship is user
+    assert {turn.authorship for turn in turns[1:]} == {COPY}
+
+
+def test_input_turns_keep_unmappable_part_lists_whole():
+    parts = [
+        {"type": "text", "text": "Describe"},
+        {"type": "image_url", "image_url": {"url": "https://[::1/x.png"}},
+        {"type": "text", "text": "in detail"},
+    ]
+
+    (turn,) = input_turns([{"role": "user", "content": parts}])
+
+    assert isinstance(turn.content, str)
+    assert json.loads(turn.content) == parts
+
+
+@pytest.mark.parametrize(
     "value",
-    [[{"role": "system", "content": "s"}], [{"role": "critic", "content": "c"}, {"role": "user"}]],
-    ids=["no-user", "unknown-role"],
+    [
+        [{"role": "system", "content": "s"}],
+        [{"role": "critic", "content": "c"}, {"role": "user"}],
+        [{"role": "user", "parts": [{"type": "text", "content": "Hi"}]}],
+    ],
+    ids=["no-user", "unknown-role", "otel-parts"],
 )
 def test_input_turns_reject_unmappable_messages(value):
     with pytest.raises(NoTurns):
@@ -177,14 +266,104 @@ def test_agent_turns_fold_tools_into_the_latest_model_turn():
     ]
 
 
-def test_agent_turns_skip_closing_turn_matching_last_agent_text():
-    turns, _ = agent_turns(
-        [llm("l", "Done.")], owner_id="r", conversation_input="Go", conversation_output="Done."
-    )
+@pytest.mark.parametrize(
+    ("spans", "output"),
+    [
+        ([llm("l", "Done.")], "Done."),
+        ([llm("l", "Done."), tool("t")], "Done."),
+        ([llm("l", "Done.")], {"messages": [{"role": "user"}, {"role": "ai", "content": "Done."}]}),
+    ],
+    ids=["same-text", "after-folded-tool", "message-list-output"],
+)
+def test_agent_turns_skip_closing_turn_matching_last_agent_text(spans, output):
+    turns, _ = agent_turns(spans, owner_id="r", conversation_input="Go", conversation_output=output)
 
     assert [turn.content for turn in turns] == ["Go", "Done."]
     with pytest.raises(NoTurns):
         agent_turns([], owner_id="r", conversation_input=UNSET, conversation_output="x")
+
+
+def test_agent_turns_leave_null_reply_content_unset():
+    reply = {"role": "assistant", "content": None, "tool_calls": [{"id": "c1"}]}
+    turns, _ = agent_turns(
+        [llm("l", {"choices": [{"message": reply}]}), tool("t")],
+        owner_id="r",
+        conversation_input="Go",
+        conversation_output={"messages": [{"role": "ai", "content": "Done."}]},
+    )
+
+    assert [turn.content for turn in turns] == ["Go", UNSET, "Done."]
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        NULL_REPLY,
+        {
+            "messages": [
+                {"type": "human", "content": "Go"},
+                {"type": "ai", "content": [V1_TOOL_CALL]},
+            ]
+        },
+        {"tool_calls": [{"tool_call_id": "c1", "function_name": "f", "arguments": {}}]},
+    ],
+    ids=["openai", "langchain-v1-state", "atif"],
+)
+def test_agent_turns_add_no_closing_turn_for_a_reply_without_text(output):
+    turns, _ = agent_turns(
+        [llm("l", "Looking."), llm("l2", {"choices": [{"message": NULL_REPLY}]})],
+        owner_id="r",
+        conversation_input="Go",
+        conversation_output=output,
+    )
+
+    assert [turn.content for turn in turns] == ["Go", "Looking.", UNSET]
+
+
+def test_agent_turns_close_with_langchain_dict_state_text():
+    # LangGraph state as messages_to_dict (Intake): the answer matches the last model turn.
+    state = {
+        "messages": [
+            {"type": "human", "data": {"content": "Go", "type": "human"}},
+            {"type": "ai", "data": {"content": "42", "type": "ai", "tool_calls": []}},
+        ]
+    }
+    turns, _ = agent_turns(
+        [llm("l", {"messages": [{"role": "assistant", "content": "42"}]})],
+        owner_id="r",
+        conversation_input="Go",
+        conversation_output=state,
+    )
+
+    assert [turn.content for turn in turns] == ["Go", "42"]
+
+
+def test_per_call_records_of_a_tool_loop_join_into_one_conversation():
+    # One record per LLM call (e.g. Langfuse's OpenAI integration): the trace output is
+    # the generation output, and the second call re-sends the first call's exchange.
+    request = [{"role": "system", "content": "S"}, {"role": "user", "content": "U1"}]
+    result = {"role": "tool", "tool_call_id": "call_1", "content": "R"}
+    records = [
+        agent_turns(
+            [llm(span_id, output)],
+            owner_id="session",
+            conversation_input=conversation,
+            conversation_output=output,
+        )[0]
+        for span_id, conversation, output in (
+            ("g1", request, NULL_REPLY),
+            ("g2", [*request, NULL_REPLY, result], "Answer"),
+        )
+    ]
+
+    turns = join_turns(records)
+
+    assert [(turn.role, turn.authorship, turn.content, turn.llm_span_ids) for turn in turns] == [
+        (TurnRole.SYSTEM, COPY, "S", []),
+        (TurnRole.USER, UNKNOWN, "U1", []),
+        (TurnRole.AGENT, MODEL, UNSET, ["g1"]),
+        (TurnRole.AGENT, MODEL, "Answer", ["g2"]),
+    ]
 
 
 def trace_of(*roots):

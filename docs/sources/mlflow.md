@@ -80,30 +80,35 @@ are rejected, so each assessment must have an unambiguous name.
 ## Conversation turns
 
 When the trace has a single root span of type `AGENT`, `CHAIN`, `TASK` or `WORKFLOW`, it
-loads as the trace's agent span, keeping its MLflow type in `attributes.subtype` and
-`attributes.mlflow.attributes`, and holds the conversation as ordered turns:
+loads as the trace's agent span and holds the conversation as ordered turns. The MLflow type
+stays in `attributes.mlflow.attributes`, and a `CHAIN`, `TASK` or `WORKFLOW` root also keeps
+it in `attributes.subtype`.
 
 1. The trace input, read from the root span (`mlflow.spanInputs`, `input.value` or
    `gen_ai.input.messages`), else the trace metadata or request preview. A message list
    (OpenAI or LangChain messages, bare, under `messages`, or in a one-item batch) becomes
    one turn per message: `assistant`, `ai`, `agent` and `model` map to agent, `user` and
    `human` to user, and `system` and `developer` to system. A `tool` or `function` message
-   becomes an unlinked result on the preceding agent turn. Every message except the last
-   user message is copied context. Any other input is one user turn holding its text or
-   JSON.
+   becomes an unlinked result on the preceding agent turn. Every message is copied context
+   except the last user message when no agent message or tool result follows it. Any other
+   input is one user turn holding its text or JSON.
 2. One model turn per LLM span in tree order, holding its output text and linking the LLM
-   span. TOOL spans join the latest model turn; a tool call before any model call starts
-   its own turn. Orchestration, retriever, embedding, reranker and guardrail spans stay
-   spans only.
-3. A closing agent turn for the trace output when it differs from the last agent message.
+   span; a reply without text, such as one that only calls tools, has no content.
+   TOOL spans join the latest model turn; a tool call before any model call starts its
+   own turn. Orchestration, retriever, embedding, reranker and guardrail spans stay spans
+   only.
+3. A closing agent turn for the trace output, or for its last message when the output is a
+   message list, when it has text that differs from the last agent message.
 
 Message text comes from string content, a `content`/`message`/`text`/`response`/`answer`/`output`
-field, a nested message, the first choice or the first LangChain generation; anything else is
-kept as JSON text. Input content made only of OpenAI `text` and `image_url` parts becomes text
-and image parts; an image's type comes from a `data:` URI or the file suffix, and images are
-never fetched.
+field, the text blocks of a content-block list, a nested message, the first choice, the first
+LangChain generation or the last of `messages`; anything else is kept as JSON text. Input
+content made only of OpenAI `text` and `image_url` parts becomes text and image parts; any
+other content list is kept whole as JSON text. An image's type comes from a `data:` URI or
+the file suffix, and images are never fetched.
 
 Turns are absent when the trace has several root spans or its root is not an orchestration
-span, no input is recorded, or the input messages are empty, malformed, have an unknown role
-or have no user message. Spans owned by a nested agent are left out of the root agent's turns
-and listed in a `steps_outside_agent_not_in_turns` loss.
+span, no input is recorded, or the input messages are empty, malformed, have an unknown role,
+carry OpenTelemetry `parts` instead of content or have no user message. Spans owned by a
+nested agent are left out of the root agent's turns and listed in a
+`steps_outside_agent_not_in_turns` loss.

@@ -6,7 +6,8 @@
 The conversation is the recorded input's messages, then one model turn per LLM
 span with the TOOL spans that follow it folded in, then a closing turn when the
 recorded output differs from the last agent text. Re-sent history is labeled
-``copied_context``; only the last user message of an input is the record's own.
+``copied_context``; only an input's last user message, when no agent message or
+tool result follows it, is the record's own.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeGuard
 from urllib.parse import urlsplit
 
 from trace_ingest.models import (
@@ -41,6 +42,7 @@ _IMAGE_SUFFIXES = {
     ".webp": "image/webp",
 }
 _TEXT_KEYS = ("content", "message", "text", "response", "answer", "output")
+_TOOL_CALL_BLOCKS = ("tool_call", "tool_use", "function_call")
 _CONTENT_KEYS = ("content", "message", "text")
 _LANGCHAIN_ROLES = {
     "HumanMessage": "user",
@@ -102,7 +104,11 @@ def image_part(url: object) -> ImagePart | None:
     if url.startswith("data:"):
         media_type = url[5:].split(";", 1)[0].split(",", 1)[0]
     else:
-        media_type = _IMAGE_SUFFIXES.get(Path(urlsplit(url).path).suffix.lower())
+        try:
+            path = urlsplit(url).path
+        except ValueError:  # e.g. an unbalanced IPv6 bracket
+            return None
+        media_type = _IMAGE_SUFFIXES.get(Path(path).suffix.lower())
     if media_type not in IMAGE_TYPES:
         return None
     return ImagePart(media_type=media_type, path=url)
@@ -128,33 +134,69 @@ def content_parts(value: object) -> list[TextPart | ImagePart | AudioPart] | Non
     return parts
 
 
-def message_text(value: object) -> str:
-    """The text of a chat message, completion, generation or answer object; else its JSON."""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, dict):
-        for key in _TEXT_KEYS:
-            if isinstance(value.get(key), str):
-                return value[key]
-        message = value.get("message")
-        if isinstance(message, dict):
-            return message_text(message)
-        choices = value.get("choices")
-        if isinstance(choices, list) and choices:
-            return message_text(choices[0])
+def _reply(value: object) -> object:
+    """The message an output carries, unwrapped from its envelope.
+
+    Unwraps a first choice or generation, a nested ``message``, the last of
+    ``messages``, and LangChain's serialized constructor and ``{type, data}`` forms.
+    """
+    while True:
+        if isinstance(value, list) and value and isinstance(value[0], dict):
+            value = value[0]
+            continue
+        if not isinstance(value, dict):
+            return value
         generations = value.get("generations")
-        if (
-            isinstance(generations, list)
-            and generations
-            and isinstance(generations[0], list)
-            and generations[0]
-            and isinstance(generations[0][0], dict)
-            and isinstance(generations[0][0].get("text"), str)
-        ):
-            return generations[0][0]["text"]
-    if isinstance(value, list) and value and isinstance(value[0], dict):
-        return message_text(value[0])
-    return text(value)
+        messages = value.get("messages")
+        if value.get("type") == "constructor" and isinstance(value.get("kwargs"), dict):
+            value = value["kwargs"]
+        elif isinstance(value.get("type"), str) and isinstance(value.get("data"), dict):
+            value = value["data"]
+        elif isinstance(value.get("choices"), list) and value["choices"]:
+            value = value["choices"][0]
+        elif isinstance(generations, list) and generations and isinstance(generations[0], list):
+            value = generations[0]
+        elif isinstance(value.get("message"), dict):
+            value = value["message"]
+        elif isinstance(messages, list) and messages:
+            value = messages[-1]
+        else:
+            return value
+
+
+def _content_blocks(value: object) -> TypeGuard[list[dict[str, Any]]]:
+    """Whether a value is a list of typed content blocks holding text or tool calls."""
+    return (
+        isinstance(value, list)
+        and all(isinstance(block, dict) and isinstance(block.get("type"), str) for block in value)
+        and any(block["type"] in ("text", *_TOOL_CALL_BLOCKS) for block in value)
+    )
+
+
+def message_text(value: object) -> str | None:
+    """The text of a chat message, completion, generation or answer object; else its JSON.
+
+    None for a reply without text: null content, or only tool calls. Content blocks
+    (LangChain ``output_version="v1"``, Anthropic) give the text of their text blocks.
+    """
+    reply = _reply(value)
+    if not isinstance(reply, dict):
+        return text(reply)
+    calls = bool(reply.get("tool_calls") or reply.get("function_call"))
+    content = next((reply[key] for key in _TEXT_KEYS if isinstance(reply.get(key), str)), None)
+    blocks = reply.get("content")
+    if content is None and _content_blocks(blocks):
+        content = "".join(
+            block["text"]
+            for block in blocks
+            if block["type"] == "text" and isinstance(block.get("text"), str)
+        )
+        calls = calls or any(block["type"] in _TOOL_CALL_BLOCKS for block in blocks)
+    if content is not None:
+        return None if calls and not content else content
+    if blocks is None and ("content" in reply or calls):
+        return None
+    return text(reply)
 
 
 def _message_record(item: dict[str, Any]) -> dict[str, Any] | None:
@@ -169,7 +211,13 @@ def _message_record(item: dict[str, Any]) -> dict[str, Any] | None:
         record = {"role": role, "content": kwargs.get("content")}
         if kwargs.get("tool_call_id") is not None:
             record["tool_call_id"] = kwargs["tool_call_id"]
+        if kwargs.get("tool_calls"):
+            record["tool_calls"] = kwargs["tool_calls"]
         return record
+    data = item.get("data")
+    if isinstance(item.get("type"), str) and isinstance(data, dict):
+        # LangChain ``messages_to_dict``: the message's fields under ``data``.
+        return _message_record({**data, "type": item["type"]})
     for key in ("role", "source", "type"):
         role = item.get(key)
         if isinstance(role, str) and role:
@@ -210,8 +258,10 @@ def is_chat_shaped(value: object) -> bool:
 def input_turns(value: object) -> list[Turn]:
     """Turns for a recorded conversation input, with placeholder ids.
 
-    Every message but the last user message is copied context. Tool results join
-    the preceding agent turn. A non-chat input is one user turn holding its text.
+    Every message is copied context except the last user message when no agent
+    message or tool result follows it; a reply after it shows an earlier call sent
+    it. Tool results join the preceding agent turn. A non-chat input is one user
+    turn holding its text.
     """
     messages = message_records(value)
     if messages is None:
@@ -230,9 +280,13 @@ def input_turns(value: object) -> list[Turn]:
     if TurnRole.USER not in roles:
         raise NoTurns
     last_user = len(roles) - 1 - roles[::-1].index(TurnRole.USER)
+    replied = any(role is not TurnRole.SYSTEM for role in roles[last_user + 1 :])
+    own = None if replied else last_user
     turns: list[Turn] = []
     for index, (item, role) in enumerate(zip(messages, roles, strict=True)):
         key = next((key for key in _CONTENT_KEYS if key in item), None)
+        if key is None and "parts" in item:
+            raise NoTurns  # OpenTelemetry GenAI ``parts`` messages are not mapped.
         if role is None:
             result = ToolResult(
                 content=UNSET if key is None else parse_json(item[key]),
@@ -254,14 +308,17 @@ def input_turns(value: object) -> list[Turn]:
                 )
             continue
         raw = None if key is None else item[key]
-        parts = content_parts(raw)
+        content: list[TextPart | ImagePart | AudioPart] | str | None = content_parts(raw)
+        if content is None and raw is not None:
+            # A part list content_parts cannot map stays whole, not cut to its first part.
+            content = text(raw) if isinstance(raw, list) else message_text(raw)
         turns.append(
             Turn(
                 id="-",
                 index=1,
                 role=role,
-                authorship=Authorship.UNKNOWN if index == last_user else Authorship.COPIED_CONTEXT,
-                content=parts if parts is not None else UNSET if raw is None else message_text(raw),
+                authorship=Authorship.UNKNOWN if index == own else Authorship.COPIED_CONTEXT,
+                content=UNSET if content is None else content,
             )
         )
     return turns
@@ -315,9 +372,10 @@ def agent_turns(
                 outside.setdefault(span.id, []).extend(steps)
             continue
         if span.kind is SpanKind.LLM:
-            content = (
-                UNSET if span.output is UNSET or span.output is None else message_text(span.output)
+            reply = (
+                None if span.output is UNSET or span.output is None else message_text(span.output)
             )
+            content = UNSET if reply is None else reply
             turns.append(
                 Turn(
                     id="-",
@@ -329,7 +387,7 @@ def agent_turns(
                 )
             )
             own = len(turns) - 1
-            last_text = content if isinstance(content, str) else ""
+            last_text = "" if reply is None else reply
         elif span.kind is SpanKind.TOOL:
             if own is not None:
                 turns[own].tool_call_span_ids.append(span.id)
@@ -338,12 +396,15 @@ def agent_turns(
                     Turn(id="-", index=1, role=TurnRole.AGENT, tool_call_span_ids=[span.id])
                 )
                 own = len(turns) - 1
-            last_text = ""
+                last_text = ""
         pending.extend(reversed(span.children))
-    if has_input(conversation_output) and message_text(conversation_output) != last_text:
-        turns.append(
-            Turn(id="-", index=1, role=TurnRole.AGENT, content=message_text(conversation_output))
-        )
+    if has_input(conversation_output):
+        # A message-list output (e.g. LangGraph state) closes with its last message.
+        records = message_records(conversation_output)
+        closing = message_text(records[-1] if records else conversation_output)
+        # A reply without text (e.g. only tool calls) is the last model turn, not an answer.
+        if closing is not None and closing != last_text:
+            turns.append(Turn(id="-", index=1, role=TurnRole.AGENT, content=closing))
     turns = [
         turn.model_copy(update={"id": f"{owner_id}/turn/{index}", "index": index})
         for index, turn in enumerate(turns, start=1)
