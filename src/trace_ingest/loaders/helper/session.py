@@ -143,15 +143,19 @@ def _earliest_start(record: Trace) -> datetime:
 
 def _token_counts(records: Sequence[Trace]) -> TokenCounts | None:
     """Session totals; a count any record does not report is None, never a partial sum."""
-    reported = [record.aggregate.token_counts for record in records]
-    if any(count is None for count in reported):
+    reported = [
+        record.aggregate.token_counts
+        for record in records
+        if record.aggregate.token_counts is not None
+    ]
+    if len(reported) != len(records):
         return None
     values: dict[str, object] = {}
     for field in _SUMMED_TOKEN_FIELDS:
         counts = [getattr(count, field) for count in reported]
         values[field] = None if None in counts else sum(counts)
-    by_ttl = [count.cache_writes_by_ttl for count in reported]
-    if all(by_ttl):
+    by_ttl = [count.cache_writes_by_ttl for count in reported if count.cache_writes_by_ttl]
+    if len(by_ttl) == len(reported):
         ttls = set.intersection(*(set(entry) for entry in by_ttl))
         values["cache_writes_by_ttl"] = {
             ttl: sum(entry[ttl] for entry in by_ttl) for ttl in sorted(ttls)
@@ -222,7 +226,9 @@ def merge_session(
         attributes={"name": "session", "subtype": "session"},
     )
 
-    costs = [record.aggregate.cost_usd for record in ordered]
+    costs = [
+        record.aggregate.cost_usd for record in ordered if record.aggregate.cost_usd is not None
+    ]
     latency = (
         (end - start).total_seconds() * 1000 if start is not None and end is not None else None
     )
@@ -274,7 +280,7 @@ def merge_session(
         case_id=case_id,
         root_spans=[root],
         aggregate=TraceAggregate(
-            cost_usd=None if None in costs else sum(costs),
+            cost_usd=sum(costs) if len(costs) == len(ordered) else None,
             latency_ms=latency,
             token_counts=_token_counts(ordered),
         ),
