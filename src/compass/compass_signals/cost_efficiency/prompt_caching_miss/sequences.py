@@ -29,7 +29,8 @@ class CallSequence:
         start = self.calls[position].span.start_time
         if start is None:
             return None
-        for earlier in reversed(self.calls[:position]):
+        for index in range(position - 1, -1, -1):
+            earlier = self.calls[index]
             span = earlier.span
             if span.error is not None or span.end_time is None:
                 continue

@@ -153,7 +153,7 @@ SPEC = RuleSpec(
         ),
         "other": (
             "Cache miss after the tool list was reordered or reformatted",
-            "Send a byte-identical tool list on every call.",
+            "Avoid unnecessary tool-list changes.",
         ),
     },
     waste="previously cached tokens; savings from a fix are unknown",
