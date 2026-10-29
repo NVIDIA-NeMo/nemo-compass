@@ -388,7 +388,7 @@ def test_normalized_mlflow_trace_flows_through_both_compass_signals():
     assert anomaly_and_patterns.calls[0].call_id == "tool"
     assert anomaly_and_patterns.calls[0].error == "timeout"
     assert anomaly_and_patterns.calls[0].source_pointer["span_id"] == "tool"
-    assert tool_issue_trace.case_id == "session-7"
+    assert (normalized.session_id, tool_issue_trace.case_id) == ("session-7", None)
     assert tool_issue_trace.calls[0].result is MISSING
     assert tool_issue_trace.calls[0].explicit_error is True
     assert tool_issue_trace.calls[0].outcome_marker == "timeout"
