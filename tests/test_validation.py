@@ -145,10 +145,6 @@ def test_candidate_problem_validation_preserves_cancellation(monkeypatch, tmp_pa
     async def abort(*args):
         raise GenerationAborted("Interrupted")
 
-    monkeypatch.setattr(
-        validation,
-        "_ValidationAgent",
-        lambda *args: SimpleNamespace(decide=abort, traces=SimpleNamespace(overview=lambda: "")),
-    )
+    monkeypatch.setattr(validation, "_ValidationAgent", lambda *args: SimpleNamespace(decide=abort))
     with pytest.raises(GenerationAborted):
         _validate(tmp_path, FakeLLMClient())
