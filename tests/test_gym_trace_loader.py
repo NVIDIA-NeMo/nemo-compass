@@ -907,14 +907,14 @@ def test_request_history_turns_are_not_attributed_to_the_response(tmp_path):
     (root,) = next(iter(loader_for(tmp_path, source).load())).root_spans
     model, called, generated = root.children
     # The echoed request prefix is counted once; calls split at the request boundary.
-    # Request history is copied context and links no spans of this response.
+    # Request history is copied context; its calls still link their TOOL spans.
     assert [
         (turn.role, turn.authorship, turn.llm_span_ids, turn.tool_call_span_ids)
         for turn in root.turns
     ] == [
         (TurnRole.SYSTEM, Authorship.COPIED_CONTEXT, [], []),
         (TurnRole.USER, Authorship.UNKNOWN, [], []),
-        (TurnRole.AGENT, Authorship.COPIED_CONTEXT, [], []),
+        (TurnRole.AGENT, Authorship.COPIED_CONTEXT, [], [called.id]),
         (TurnRole.AGENT, Authorship.MODEL, [model.id], [generated.id]),
     ]
 
