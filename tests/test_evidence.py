@@ -8,7 +8,7 @@ from nooa.unifiedllm import FakeLLMClient
 from pydantic import BaseModel, ValidationError
 
 from compass.compass_signals._trace import walk_spans
-from compass.compass_signals.cost_efficiency.evidence import CacheEvidence, detector_view
+from compass.compass_signals.cost_efficiency.evidence import CacheEvidence, enrich_trace
 from compass.compass_signals.cost_efficiency.signal import CostEfficiencyCompassSignal
 from compass.evidence import _Extraction
 from compass.traces import UNSET, Span, SpanKind, Trace, TraceAggregate, TraceSnapshot
@@ -16,6 +16,11 @@ from compass.traces import UNSET, Span, SpanKind, Trace, TraceAggregate, TraceSn
 
 class DurationEvidence(BaseModel):
     seconds: float
+
+
+def enrich_duration(trace, evidence):
+    for span, value in evidence:
+        span.attributes["seconds"] = value.seconds
 
 
 def test_neutral_contract_complete_scan_isolated_sources_and_atomic_failure():
@@ -35,7 +40,7 @@ def test_neutral_contract_complete_scan_isolated_sources_and_atomic_failure():
     )
     snapshot = TraceSnapshot([trace])
     before = trace.model_dump_json()
-    extraction = _Extraction(snapshot, DurationEvidence)
+    extraction = _Extraction(snapshot, DurationEvidence, enrich_duration)
 
     def mapper(context, span):
         context["attributes"]["native"]["duration_ms"] = 1000
@@ -43,8 +48,9 @@ def test_neutral_contract_complete_scan_isolated_sources_and_atomic_failure():
 
     assert extraction.apply(mapper) == {"source_records": 2, "extracted": 1, "unavailable": 1}
     assert extraction.result is not None
-    assert list(extraction.result.records)[0].span_path == (0, 0)
-    assert list(extraction.result.records)[0].value.seconds == 0.5
+    result = extraction.result.get_trace_by_id("t")
+    assert result.root_spans[0].children[0].attributes["seconds"] == 0.5
+    assert result.attributes == trace.attributes
     assert trace.model_dump_json() == before
     with pytest.raises(ValidationError):
         extraction.apply(lambda context, span: {"seconds": "invalid"})
@@ -74,9 +80,9 @@ def test_cost_pipeline_native_evidence_matches_detector_and_preserves_snapshot(m
     native = TraceSnapshot(native_traces)
     before = [trace.model_dump_json() for trace in native]
 
-    async def extract(snapshot, schema, instructions, llm):
+    async def extract(snapshot, schema, instructions, llm, project):
         assert schema is CacheEvidence
-        extraction = _Extraction(snapshot, schema)
+        extraction = _Extraction(snapshot, schema, project)
         extraction.apply(lambda context, span: span["attributes"]["foreign_schema"])
         return extraction.result
 
@@ -146,11 +152,11 @@ def test_nooa_requires_complete_application_before_returning():
             )
         ]
     )
-    evidence = asyncio.run(extract_evidence(snapshot, DurationEvidence, "Read duration.", llm))
+    evidence = asyncio.run(
+        extract_evidence(snapshot, DurationEvidence, "Read duration.", llm, enrich_duration)
+    )
     assert llm.call_count == 3
-    assert evidence.source_count == 1
-    assert list(evidence.records)[0].trace_id == "t"
-    assert list(evidence.records)[0].value.seconds == 0.5
+    assert evidence.get_trace_by_id("t").root_spans[0].attributes["seconds"] == 0.5
 
 
 @pytest.mark.parametrize("mode", ["abstain", "missing", "conflicting"])
@@ -169,7 +175,7 @@ def test_enrichment_preserves_recorded_facts_and_tool_ownership(mode):
     failed.error = "provider failed"
     snapshot = TraceSnapshot([trace])
     before = snapshot.get_trace_by_id(trace.id).model_dump_json()
-    extraction = _Extraction(snapshot, CacheEvidence)
+    extraction = _Extraction(snapshot, CacheEvidence, enrich_trace)
 
     def extract(context, span):
         if mode == "abstain":
@@ -188,7 +194,7 @@ def test_enrichment_preserves_recorded_facts_and_tool_ownership(mode):
 
     extraction.apply(extract)
     assert extraction.result is not None
-    result = detector_view(snapshot, extraction.result).get_trace_by_id(trace.id)
+    result = extraction.result.get_trace_by_id(trace.id)
     agent = result.root_spans[0]
     a, b, c = agent.children
     assert agent.kind is SpanKind.AGENT and agent.agent_id == parent.agent_id
@@ -211,7 +217,7 @@ def test_enrichment_preserves_recorded_facts_and_tool_ownership(mode):
     assert snapshot.get_trace_by_id(trace.id).model_dump_json() == before
 
 
-def test_native_context_is_shared_once_per_trace_and_evidence_is_disk_backed():
+def test_native_context_is_shared_once_per_trace_and_output_is_disk_backed():
     traces = [
         Trace(
             id=str(i),
@@ -222,7 +228,7 @@ def test_native_context_is_shared_once_per_trace_and_evidence_is_disk_backed():
         for i in range(2)
     ]
     snapshot = TraceSnapshot(traces)
-    extraction = _Extraction(snapshot, DurationEvidence)
+    extraction = _Extraction(snapshot, DurationEvidence, enrich_duration)
     previous = None
     contexts = 0
 
@@ -233,10 +239,9 @@ def test_native_context_is_shared_once_per_trace_and_evidence_is_disk_backed():
             previous = context
         return {"seconds": 1}
 
-    extraction.apply(extract)
+    assert extraction.apply(extract)["extracted"] == 160
     assert contexts == 2
     assert extraction.result is not None
-    assert extraction.result.extracted_count == 160
-    assert not isinstance(extraction.result.records, (list, tuple))
-    assert sum(1 for _ in extraction.result.records) == 160
-    assert sum(1 for _ in extraction.result.records) == 160
+    assert isinstance(extraction.result, TraceSnapshot)
+    assert sum(len(trace.root_spans) for trace in extraction.result) == 160
+    assert sum(len(trace.root_spans) for trace in extraction.result) == 160

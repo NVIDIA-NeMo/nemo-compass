@@ -32,7 +32,7 @@ from compass.compass_signals.cost_efficiency.cards import (
 from compass.compass_signals.cost_efficiency.evidence import (
     INSTRUCTIONS,
     CacheEvidence,
-    detector_view,
+    enrich_trace,
 )
 from compass.evidence import extract_evidence
 from compass.traces import SpanKind, TraceSnapshot
@@ -73,8 +73,7 @@ class CostEfficiencyCompassSignal:
     async def analyze(self, snapshot: TraceSnapshot) -> CompassSignalResult:
         if self.llm is None:
             raise ValueError("cost-efficiency evidence extraction requires an LLM client")
-        evidence = await extract_evidence(snapshot, CacheEvidence, INSTRUCTIONS, self.llm)
-        view = detector_view(snapshot, evidence)
+        view = await extract_evidence(snapshot, CacheEvidence, INSTRUCTIONS, self.llm, enrich_trace)
         result = await asyncio.to_thread(self.analyze_snapshot, view)
         calls = missing = 0
         for trace in view:

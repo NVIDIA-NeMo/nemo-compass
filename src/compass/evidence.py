@@ -10,11 +10,8 @@ mutations. Generated code uses Compass's existing Nooa execution environment.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
-from tempfile import NamedTemporaryFile
-from typing import IO, Any, Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from nooa import Agent, strategy
 from nooa.config import CodeActConfig
@@ -23,45 +20,24 @@ from nooa.strategy_validation import InvariantError
 from nooa.unifiedllm import UnifiedLLM
 from pydantic import BaseModel
 
-from compass.traces import TraceSnapshot
+from compass.traces import Span, Trace, TraceSnapshot
 
 T = TypeVar("T", bound=BaseModel)
-
-
-@dataclass(frozen=True)
-class Evidence(Generic[T]):
-    trace_id: str
-    span_path: tuple[int, ...]
-    value: T
-
-
-@dataclass(frozen=True)
-class EvidenceBatch(Generic[T]):
-    schema: type[T]
-    storage: IO[str]
-    source_count: int
-    extracted_count: int
-
-    @property
-    def records(self) -> Iterator[Evidence[T]]:
-        """Read evidence in source order without retaining the dataset in memory."""
-        with open(self.storage.name, encoding="utf-8") as rows:
-            for line in rows:
-                row = json.loads(line)
-                yield Evidence(
-                    row["trace_id"],
-                    tuple(row["span_path"]),
-                    self.schema.model_validate(row["value"]),
-                )
 
 
 class _Extraction(Generic[T]):
     """Host-owned traversal, validation and atomic publication of a complete scan."""
 
-    def __init__(self, snapshot: TraceSnapshot, schema: type[T]) -> None:
+    def __init__(
+        self,
+        snapshot: TraceSnapshot,
+        schema: type[T],
+        project: Callable[[Trace, list[tuple[Span, T]]], None],
+    ) -> None:
         self.snapshot = snapshot
         self.schema = schema
-        self.result: EvidenceBatch[T] | None = None
+        self.project = project
+        self.result: TraceSnapshot | None = None
 
     def sources(self) -> Iterator[dict[str, Any]]:
         """One detached native context per trace, including its span tree."""
@@ -72,43 +48,32 @@ class _Extraction(Generic[T]):
         self, extractor: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any] | None]
     ) -> dict[str, int]:
         self.result = None
-        storage = NamedTemporaryFile(
-            mode="w+", encoding="utf-8", prefix="compass-evidence-", suffix=".jsonl"
-        )
         count = extracted = 0
 
         def walk(
-            spans: list[dict[str, Any]], path: tuple[int, ...] = ()
-        ) -> Iterator[tuple[tuple[int, ...], dict[str, Any]]]:
-            for index, span in enumerate(spans):
-                position = (*path, index)
-                yield position, span
-                yield from walk(span.get("children", []), position)
+            spans: list[Span], sources: list[dict[str, Any]]
+        ) -> Iterator[tuple[Span, dict[str, Any]]]:
+            for span, source in zip(spans, sources, strict=True):
+                yield span, source
+                yield from walk(span.children, source.get("children", []))
 
-        try:
-            for source in self.sources():
-                trace_id = source["id"]
-                for path, span in walk(source.get("root_spans", [])):
+        def enriched() -> Iterator[Trace]:
+            nonlocal count, extracted
+            for trace in self.snapshot:
+                source = trace.model_dump(mode="json", exclude_unset=True)
+                # Capture ownership before generated code can modify its detached inputs.
+                spans = list(walk(trace.root_spans, source.get("root_spans", [])))
+                evidence = []
+                for span, native in spans:
                     count += 1
-                    value = extractor(source, span)
+                    value = extractor(source, native)
                     if value is not None:
-                        evidence = self.schema.model_validate(value)
-                        storage.write(
-                            json.dumps(
-                                {
-                                    "trace_id": trace_id,
-                                    "span_path": path,
-                                    "value": evidence.model_dump(mode="json"),
-                                }
-                            )
-                            + "\n"
-                        )
+                        evidence.append((span, self.schema.model_validate(value)))
                         extracted += 1
-            storage.flush()
-            self.result = EvidenceBatch(self.schema, storage, count, extracted)
-        except BaseException:
-            storage.close()
-            raise
+                self.project(trace, evidence)
+                yield trace
+
+        self.result = TraceSnapshot(enriched())
         return {"source_records": count, "extracted": extracted, "unavailable": count - extracted}
 
 
@@ -117,14 +82,14 @@ async def extract_evidence(
     schema: type[T],
     instructions: str,
     llm: UnifiedLLM,
-) -> EvidenceBatch[T]:
-    """Extract an analysis's typed evidence in one bounded Nooa session.
+    project: Callable[[Trace, list[tuple[Span, T]]], None],
+) -> TraceSnapshot:
+    """Build a private snapshot with one Nooa-generated extractor.
 
-    Source references and complete traversal are host-owned. Null output means
-    unavailable evidence, never a negative observation. Errors propagate instead
-    of being presented as a successful analysis with no findings.
+    Pass each trace and its validated (span, evidence) pairs to project.
+    Publish only complete scans; None means unavailable evidence.
     """
-    extraction = _Extraction(snapshot, schema)
+    extraction = _Extraction(snapshot, schema, project)
 
     def complete(_agent: Agent, _result: object, _call: object) -> None:
         if extraction.result is None:
@@ -145,7 +110,7 @@ async def extract_evidence(
             """Apply extractor(trace, span) to every span and check its output.
 
             Return a schema-shaped dict or None for each span. Do not mutate inputs.
-            The host attaches source references and returns coverage counts.
+            The host preserves source ownership and returns coverage counts.
             """
             return extraction.apply(extractor)
 
@@ -168,4 +133,4 @@ async def extract_evidence(
     return extraction.result
 
 
-__all__ = ["Evidence", "EvidenceBatch", "extract_evidence"]
+__all__ = ["extract_evidence"]
