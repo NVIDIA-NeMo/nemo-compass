@@ -650,7 +650,8 @@ def test_realistic_nested_trajectory_and_signal_readers():
     # Coverage counts the prior user text the loader records on each call.
     presence = corpus_coverage(loader)["field_presence"]
     assert presence["prior_user_text"] >= 4
-    assert presence["case_id"] == len(list(loader.load()))
+    # A session id is not a case; this fixture records no case.
+    assert presence["case_id"] == 0
 
 
 @pytest.mark.parametrize(
@@ -778,8 +779,9 @@ def test_loads_all_records_and_rejects_duplicates(tmp_path):
     second = {**source, "trajectory_id": "another"}
     loader = loader_for(tmp_path, source, second)
     assert [trace.id for trace in loader.load()] == ["run", "another"]
-    assert loader.describe()["distinct_cases"] == 1
-    assert {to_tool_issue_trace(trace).case_id for trace in loader.load()} == {"run"}
+    # Trajectories sharing a session_id are still independent cases.
+    assert loader.describe()["distinct_cases"] == 2
+    assert {to_tool_issue_trace(trace).case_id for trace in loader.load()} == {None}
 
 
 @pytest.mark.parametrize(

@@ -694,8 +694,8 @@ class Trace(_TraceModel):
 
 
 def case_key(trace: Trace) -> str:
-    """Independent-case identity: case_id, else session_id, else the trace id."""
-    return trace.case_id or trace.session_id or trace.id
+    """Independent-case identity: case_id, else the trace id."""
+    return trace.case_id or trace.id
 
 
 class _DiskTraceIndex(Mapping[str, Trace]):

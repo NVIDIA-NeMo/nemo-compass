@@ -197,7 +197,7 @@ def _field_presence(traces: Sequence[Trace]) -> dict[str, int]:
     for trace in traces:
         if tool_catalog(trace) is not None:
             counts["tool_catalog"] += 1
-        if trace.case_id or trace.session_id:
+        if trace.case_id:
             counts["case_id"] += 1
         for key in (
             "source_pointer",
@@ -353,7 +353,7 @@ def corpus_coverage(
         )
     if trace_count and distinct_cases == trace_count and presence["case_id"] == 0:
         notes.append(
-            "No trace sets case_id or session_id, so every trace counts as its own independent "
+            "No trace sets case_id, so every trace counts as its own independent "
             "case. If several traces are retries of the same task, card eligibility is "
             "currently overstated."
         )

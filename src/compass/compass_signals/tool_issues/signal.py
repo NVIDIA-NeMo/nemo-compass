@@ -757,7 +757,7 @@ def to_tool_issue_trace(trace: Trace) -> TraceRecord:
     return TraceRecord(
         trace_id=trace.id,
         calls=tuple(calls),
-        case_id=trace.case_id or trace.session_id,
+        case_id=trace.case_id,
         tool_catalog={
             name: dict(schema)
             if isinstance(schema, Mapping)
