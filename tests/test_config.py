@@ -138,8 +138,11 @@ def test_signals_default_on_and_false_disables_only_that_signal(tmp_path):
             "false",
             "--compass-signals.grader-failure-patterns",
             "true",
+            "--compass-signals.cost-efficiency",
+            "false",
         ]
     )
+    assert config.compass_signals.cost_efficiency is None
     assert config.compass_signals.ethos_divergence is None
     assert config.compass_signals.user_sentiment is None
     assert config.compass_signals.tool_issues is not None
