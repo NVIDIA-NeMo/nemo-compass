@@ -24,6 +24,7 @@ from compass.insights_generation.validation import CandidateProblemRejection
 _SIGNAL_LABELS = {
     "anomaly-and-patterns": "Anomalies and patterns",
     "tool-issues": "Tool issues",
+    "cost-efficiency": "Cost efficiency",
     "ethos-divergence": "Ethos divergence",
     "grader-failure-patterns": "Grader failures",
     "user-sentiment": "Sentiment",
@@ -32,6 +33,7 @@ _SKIP_LABELS = {
     "No ETHOS.md": "no ETHOS.md found",
     "No evaluator results": "no results",
     "No embedding backend configured": "no embedding backend",
+    "No LLM spans with token counts": "no token counts",
 }
 _LOG_INTERVAL = 10
 _SEVERITY_STYLES = {"high": "bold red", "med": "bold yellow", "low": "bold cyan"}
@@ -137,16 +139,16 @@ class RunOutput:
 
         for index, insight in enumerate(result.insights, start=1):
             self.console.print(Text(f"\n{index}. {insight.name}", style="bold"))
-            trace_count = len({item.trace_id for item in insight.evidence})
-            self.console.print(
-                Text(f"   Evidence: {count(trace_count, 'supporting trace')}", style="dim")
-            )
             if insight.severity is not None:
                 severity = Text("   Severity: ", style="dim")
                 severity.append(insight.severity.upper(), style=_SEVERITY_STYLES[insight.severity])
                 if insight.severity_reason is not None:
                     severity.append(f" — {insight.severity_reason}", style="dim")
                 self.console.print(severity)
+            trace_count = len({item.trace_id for item in insight.evidence})
+            self.console.print(
+                Text(f"   Evidence: {count(trace_count, 'supporting trace')}", style="dim")
+            )
         self._report_checks(result.evidence)
 
         if result.insights and output_path != Path("-"):

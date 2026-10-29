@@ -26,6 +26,7 @@ from pydantic_settings import (
 )
 
 from compass.compass_signals.anomaly_and_patterns.signal import AnomalyAndPatternsConfig
+from compass.compass_signals.cost_efficiency.signal import CostEfficiencyConfig
 from compass.compass_signals.ethos_divergence.ethos_divergence_detector import (
     EthosDivergenceConfig,
 )
@@ -256,6 +257,12 @@ class ToolIssueSignalConfig(ToolIssueConfig):
     model_config = ConfigDict(extra="forbid")
 
 
+class CostEfficiencySignalConfig(CostEfficiencyConfig):
+    """Strict YAML settings for deterministic cost-efficiency evidence."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class CompassSignalsConfig(ConfigModel):
     """All signals run by default; use false to disable, true or {} for defaults."""
 
@@ -266,6 +273,10 @@ class CompassSignalsConfig(ConfigModel):
     tool_issues: ToolIssueSignalConfig | None = Field(
         default_factory=ToolIssueSignalConfig,
         description="Deterministic tool-issue evidence",
+    )
+    cost_efficiency: CostEfficiencySignalConfig | None = Field(
+        default_factory=CostEfficiencySignalConfig,
+        description="Deterministic prompt-cache and token-efficiency evidence",
     )
     grader_failure_patterns: GraderFailurePatternsConfig | None = Field(
         default_factory=GraderFailurePatternsConfig,
@@ -290,6 +301,7 @@ class CompassSignalsConfig(ConfigModel):
             for signal in (
                 self.anomaly_and_patterns,
                 self.tool_issues,
+                self.cost_efficiency,
                 self.ethos_divergence,
                 self.grader_failure_patterns,
                 self.user_sentiment,

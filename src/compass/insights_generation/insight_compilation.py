@@ -246,6 +246,12 @@ class InsightCompilation(Agent):
         in the insight description and describe the observed consequence; do not
         imply recurrence. Without that evidence, keep the multiple-trace requirement.
 
+        For every evidence stream, check cited examples against the final claim; do not
+        treat a supplied supporting ID as confirmation. Separate observed behavior from
+        possible causes. If a proposed fix depends on missing evidence, describe what to
+        check rather than asserting the fix is feasible. Keep problems with different
+        causes or fixes as separate insights; merge repeated examples of the same problem.
+
         Inspect short excerpts of supporting traces with
         trace_snapshot.get_trace_by_id(trace_id). Use Python for snapshot scans.
 

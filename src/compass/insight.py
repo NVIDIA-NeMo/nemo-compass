@@ -40,6 +40,17 @@ class Insight(BaseModel):
         description="Opaque storage ID of an existing insight. Preserve it exactly; new insights have no ID.",
     )
     name: str = Field(min_length=1)
+    severity: Rating | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Observed consequence after recovery; set during final compilation without code access.",
+    )
+    severity_reason: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description="Observed consequence that supports the severity rating, in one short sentence.",
+    )
     description: str = Field(min_length=1)
     evidence: list[TraceEvidence] = Field(
         min_length=2,
@@ -54,17 +65,6 @@ class Insight(BaseModel):
         default=None,
         exclude_if=lambda value: value is None,
         description="How well the codebase supports this insight's claim; set when code_base is configured.",
-    )
-    severity: Rating | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-        description="Observed consequence after recovery; set during final compilation without code access.",
-    )
-    severity_reason: str | None = Field(
-        default=None,
-        min_length=1,
-        exclude_if=lambda value: value is None,
-        description="Observed consequence that supports the severity rating, in one short sentence.",
     )
 
 

@@ -124,6 +124,7 @@ def test_missing_prerequisites_skip_analysis_without_llm_calls(monkeypatch):
     )
     assert {item.signal_name for item in results if item.skip_reason} == {
         "tool-issues",
+        "cost-efficiency",
         "ethos-divergence",
         "grader-failure-patterns",
         "user-sentiment",

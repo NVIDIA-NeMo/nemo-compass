@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -42,3 +43,244 @@ def test_codebase_tools_reject_sensitive_and_external_paths(tmp_path: Path) -> N
         tools.read_file(".env")
     with pytest.raises(ValueError, match="escapes"):
         tools.read_file("outside.py")
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "ignored.py",
+        ".hidden.py",
+        "nested/file.py",
+        "with space.py",
+        "café.py",
+        "line\nbreak.py",
+        "-leading.py",
+    ],
+)
+def test_discovery_and_search_include_source_despite_ignore_rules(tmp_path, monkeypatch, name):
+    source = tmp_path / name
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("needle\n", encoding="utf-8")
+    for ignore in (".gitignore", ".ignore", ".rgignore"):
+        (tmp_path / ignore).write_text("*.py\nnested/\n")
+    config = tmp_path / "rg-config"
+    config.write_text("--glob=!*.py\n")
+    monkeypatch.setenv("RIPGREP_CONFIG_PATH", str(config))
+    tools = CodebaseTools(tmp_path)
+    assert name in tools.list_files()
+    assert tools.search_code("NEEDLE") == [{"path": name, "line": 1, "text": "needle"}]
+    assert tools.search_code("needle", name)[0]["path"] == name
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        ".env",
+        ".ENV.prod",
+        "credentials.json",
+        ".npmrc",
+        "key.PEM",
+        "node_modules/x.py",
+        ".git/x.py",
+        "build/x.py",
+    ],
+)
+def test_exclusions_apply_to_discovery_search_and_explicit_paths(tmp_path, name):
+    p = tmp_path / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("needle")
+    tools = CodebaseTools(tmp_path)
+    assert name not in tools.list_files()
+    assert tools.search_code("needle") == []
+    with pytest.raises(ValueError):
+        tools.search_code("needle", name)
+
+
+def test_search_limits_and_glob_scope_in_large_tree(tmp_path):
+    for i in range(250):
+        p = tmp_path / f"area{i:03}" / "agent.py"
+        p.parent.mkdir()
+        p.write_text("needle\n" * 5)
+    tools = CodebaseTools(tmp_path)
+    assert len(tools.list_files()) == 200
+    assert len(tools.search_code("needle")) == 100
+    assert tools.list_files("area249/*.py") == ["area249/agent.py"]
+    assert len(tools.search_code("needle", "area249")) == 5
+    assert len(tools.search_code("needle", "area249/agent.py")) == 5
+    (tmp_path / "area249/agent.py").unlink()
+    assert tools.list_files("area249/*.py") == []
+
+
+def test_search_is_literal_and_preserves_line_numbers(tmp_path):
+    (tmp_path / "code.py").write_bytes("first\r\na|b -needle café Straße\r\nlast\r\n".encode())
+    tools = CodebaseTools(tmp_path)
+    for query in ("a|b", "-needle", "CAFÉ"):
+        assert tools.search_code(query)[0] == {
+            "path": "code.py",
+            "line": 2,
+            "text": "a|b -needle café Straße",
+        }
+    assert tools.search_code("a.*b") == []
+    assert tools.search_code("STRASSE") == []  # Native Unicode matching, documented.
+    assert tools.search_code("first\na|b") == []
+    with pytest.raises(ValueError):
+        tools.search_code("")
+
+
+def test_unreadable_text_and_oversize_are_not_returned(tmp_path):
+    (tmp_path / "binary").write_bytes(b"needle\0tail")
+    (tmp_path / "invalid").write_bytes(b"needle\xff")
+    (tmp_path / "huge").write_bytes(b"needle" + b"x" * 1_000_000)
+    (tmp_path / "valid").write_text("needle")
+    tools = CodebaseTools(tmp_path)
+    assert tools.search_code("needle") == [{"path": "valid", "line": 1, "text": "needle"}]
+    for name in ("binary", "invalid", "huge"):
+        assert tools.search_code("needle", name) == []
+        with pytest.raises(ValueError):
+            tools.read_file(name)
+
+
+def test_symlinks_cannot_expand_discovery_or_escape_root(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "source.py").write_text("needle")
+    (repo / "alias.py").symlink_to(repo / "source.py")
+    (tmp_path / "outside.py").write_text("needle")
+    (repo / "external.py").symlink_to(tmp_path / "outside.py")
+    (repo / "loop").symlink_to(repo, target_is_directory=True)
+    tools = CodebaseTools(repo)
+    assert tools.list_files() == ["source.py"]
+    assert len(tools.search_code("needle")) == 1
+    assert tools.search_code("needle", "alias.py")[0]["path"] == "source.py"
+    with pytest.raises(ValueError):
+        tools.search_code("needle", "external.py")
+    with pytest.raises(ValueError):
+        tools.list_files("../*.py")
+    with pytest.raises(ValueError):
+        tools.search_code("needle", "../outside.py")
+
+
+def test_empty_repository_missing_scope_and_missing_executable(tmp_path, monkeypatch):
+    from compass.insights_generation import codebase
+
+    tools = CodebaseTools(tmp_path)
+    assert tools.list_files() == []
+    assert tools.search_code("absent") == []
+    with pytest.raises(FileNotFoundError):
+        tools.search_code("absent", "missing")
+    monkeypatch.setattr(codebase.shutil, "which", lambda _: None)
+    with pytest.raises(RuntimeError, match="requires ripgrep"):
+        tools.search_code("absent")
+
+
+@pytest.mark.parametrize("program", ["raise SystemExit(2)", "import time; time.sleep(5)"])
+def test_backend_errors_and_timeouts_are_not_empty_results(tmp_path, monkeypatch, program):
+    from compass.insights_generation import codebase
+
+    execute = codebase.subprocess.run
+    monkeypatch.setattr(codebase.shutil, "which", lambda _: sys.executable)
+    monkeypatch.setattr(
+        codebase.subprocess,
+        "run",
+        lambda _command, **kwargs: execute([sys.executable, "-c", program], **kwargs),
+    )
+    monkeypatch.setattr(codebase, "_SEARCH_TIMEOUT_SECONDS", 1)
+    with pytest.raises(TimeoutError if "sleep" in program else RuntimeError):
+        CodebaseTools(tmp_path).search_code("needle")
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="Non-UTF-8 filenames require a supporting filesystem"
+)
+def test_non_utf8_filename_and_long_lines(tmp_path):
+    name = "nonutf-\udcff.py"
+    (tmp_path / name).write_text("needle " + "x" * 700)
+    tools = CodebaseTools(tmp_path)
+    assert tools.list_files() == [name]
+    found = tools.search_code("needle")
+    assert found[0]["path"] == name
+    assert found[0]["text"] == "needle " + "x" * 493
+
+
+def test_read_file_line_bounds_and_file_changes(tmp_path):
+    p = tmp_path / "file.py"
+    p.write_text("line\n" * 500)
+    tools = CodebaseTools(tmp_path)
+    assert len(tools.read_file("file.py").splitlines()) == 400
+    assert len(tools.read_file("file.py", 495, 500).splitlines()) == 6
+    p.write_text("changed")
+    assert tools.read_file("file.py") == "1| changed"
+    assert tools.search_code("line") == []
+    assert tools.search_code("changed")[0]["line"] == 1
+
+
+def test_long_lines_are_clipped(tmp_path):
+    (tmp_path / "long.py").write_text("needle " + "x" * 700)
+    assert CodebaseTools(tmp_path).search_code("needle")[0]["text"] == "needle " + "x" * 493
+
+
+def test_glob_semantics_match_exhaustive_path_matching(tmp_path, monkeypatch):
+    from compass.insights_generation import codebase
+
+    names = [
+        "root.py",
+        "tools/one.py",
+        "fixture/tools/two.py",
+        "src/a.py",
+        "src/nested/b.py",
+        ".hidden/c.py",
+        "ignored/d.py",
+    ]
+    for name in names:
+        p = tmp_path / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("needle")
+    (tmp_path / ".gitignore").write_text("ignored/\n")
+    monkeypatch.setattr(codebase, "_MAX_LISTED_FILES", 10000)
+    tools = CodebaseTools(tmp_path)
+    for pattern in ["*.py", "**/*.py", "tools/*.py", "src/**/*.py", "**/one.py"]:
+        expected = {name for name in names if Path(name).match(pattern)}
+        assert set(tools.list_files(pattern)) == expected
+
+
+@pytest.mark.parametrize("operation", ["list_files", "search_code"])
+def test_timeout_discards_partial_results_and_reaps_child(tmp_path, monkeypatch, operation):
+    import json
+    import os
+    import time
+
+    from compass.insights_generation import codebase
+
+    (tmp_path / "source.py").write_text("needle")
+    pid_file = tmp_path / "child.pid"
+    event = (
+        json.dumps(
+            {
+                "type": "match",
+                "data": {
+                    "path": {"text": "source.py"},
+                    "line_number": 1,
+                    "lines": {"text": "needle\n"},
+                },
+            }
+        )
+        + "\n"
+    )
+    output = "source.py\0" if operation == "list_files" else event
+    program = f"import os,time,sys; open({str(pid_file)!r},'w').write(str(os.getpid())); sys.stdout.write({output!r}); sys.stdout.flush(); time.sleep(5)"
+    execute = codebase.subprocess.run
+    monkeypatch.setattr(codebase.shutil, "which", lambda _: sys.executable)
+    monkeypatch.setattr(
+        codebase.subprocess,
+        "run",
+        lambda _command, **kwargs: execute([sys.executable, "-c", program], **kwargs),
+    )
+    monkeypatch.setattr(codebase, "_SEARCH_TIMEOUT_SECONDS", 1)
+    start = time.monotonic()
+    with pytest.raises(TimeoutError, match="results discarded"):
+        getattr(CodebaseTools(tmp_path), operation)(
+            *(() if operation == "list_files" else ("needle",))
+        )
+    assert time.monotonic() - start < 4
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid_file.read_text()), 0)
