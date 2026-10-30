@@ -103,6 +103,7 @@ async def extract_evidence(
 
             Write a pure extractor(trace, span) using the supplied schema and instructions.
             Use recorded facts; keep unknown values distinct from zero and empty lists.
+            Let unexpected parsing errors surface instead of returning unknown.
             Finish in Python with return_result(self.apply(extractor)).
             """
             ...
