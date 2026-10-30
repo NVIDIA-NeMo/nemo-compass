@@ -64,7 +64,9 @@ compass --config config.yaml --trace.max-traces 25
 The API endpoint defaults to `https://api.braintrust.dev`. Set `BRAINTRUST_API_URL` in `.env`
 for a different deployment, or set `api_url` under `trace.braintrust` to override it.
 Use `https://api-eu.braintrust.dev` for EU data or your self-hosted data plane URL.
-The loader uses Braintrust’s SQL query API, requiring data plane v1.1.29 or later.
+The loader uses Braintrust’s [SQL query API](https://www.braintrust.dev/docs/api-reference/query),
+requiring data plane v1.1.29 or later. It follows the redirects to stored results that hosted
+deployments send for large responses, without forwarding the API key to the stored copy.
 
 ## Links to Braintrust
 
