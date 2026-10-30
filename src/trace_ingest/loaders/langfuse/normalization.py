@@ -63,12 +63,9 @@ def _normalize_trace(
     provider_trace: TraceWithFullDetails,
     *,
     source_pointer: dict[str, JsonValue],
-    require_complete_tree: bool = False,
 ) -> Trace:
     trace_id = _trace_id(provider_trace)
-    root_spans, ordered = _normalize_tree(
-        trace_id, provider_trace.observations, source_pointer, require_complete_tree
-    )
+    root_spans, ordered = _normalize_tree(trace_id, provider_trace.observations, source_pointer)
     attributes: dict[str, JsonValue] = {
         "source_pointer": source_pointer,
         "langfuse": {
@@ -125,7 +122,6 @@ def _normalize_tree(
     trace_id: str,
     observations: Sequence[LangfuseObservation],
     source_pointer: dict[str, JsonValue],
-    require_complete_tree: bool = False,
 ) -> tuple[list[Span], list[LangfuseObservation]]:
     by_id: dict[str, LangfuseObservation] = {}
     for observation in observations:
@@ -143,8 +139,7 @@ def _normalize_tree(
             str(observation.parent_observation_id) if observation.parent_observation_id else None
         )
         if parent_id is not None and parent_id not in by_id:
-            if require_complete_tree:
-                raise LangfuseTraceLoadError("incomplete observation tree: missing parent")
+            # The parent may be remote, such as a caller's span in distributed tracing.
             unresolved[observation_id] = parent_id
             parent_id = None
         effective_parents[observation_id] = parent_id
@@ -217,6 +212,10 @@ def _normalize_v4_trace(
     # No single trace-level I/O or session is authoritative when several physical
     # roots exist. Preserve per-observation values rather than choosing arbitrarily.
     physical_roots = [obs for obs in observations if obs.parent_observation_id is None]
+    if not physical_roots:
+        # A root whose parent was never exported (remote) is the trace's root.
+        root_ids = {span.id for span in roots}
+        physical_roots = [obs for obs in observations if str(obs.id) in root_ids]
     root = physical_roots[0] if len(physical_roots) == 1 else None
     attributes: dict[str, JsonValue] = {
         "source_pointer": pointer,

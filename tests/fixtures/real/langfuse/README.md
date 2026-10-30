@@ -68,3 +68,16 @@ To regenerate (v3 shown; for v4 use tag `v4.72.0` and `--api-version 4`):
 4. Record each cassette by running `LangfuseTraceLoader` with a real `Langfuse`
    client. Pass an `httpx.Client(event_hooks={"response": [...]})` that stores the
    method, path, query, status, content type and `response.text` of every response.
+
+## Edge cases
+
+`edge-cases/<name>/` holds the same six files for the same scenario, from the
+same servers and tools, with one ingestion change each. Their ids and
+timestamps differ from the files above.
+
+- `remote-parent/`: each root observation is created with the SDK's
+  `trace_context={"trace_id": ...}` (a seeded `create_trace_id`), so its
+  `parentObservationId` names a span that was never exported, as in
+  distributed tracing. The v3 files were captured without the fake latency.
+  `v4/scores.json` also holds the 3 scores of an earlier v4 run in the same
+  project, because the score export has no time filter.

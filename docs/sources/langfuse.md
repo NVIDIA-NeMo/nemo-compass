@@ -53,7 +53,9 @@ Compass loads one trace per conversation: selected traces that share a Langfuse 
 become one trace, in start order, with spans named `<trace id>/<observation id>` and the
 conversation's turns joined across them. A trace without a session stays on its own; when
 its single root is an agent, chain or span observation, it owns the trace's turns. A merged
-conversation has turns only when every one of its traces has such a root.
+conversation has turns only when every one of its traces has such a root. A root
+observation whose parent was never exported, such as a caller's span in distributed
+tracing, is still the trace's root.
 `max_traces` (default 100) counts conversations. Live loads select the newest ones; when
 selection stops at the limit, each merged trace is marked incomplete (`merge_incomplete`)
 because more of its session may exist. Exports keep the newest `max_traces`

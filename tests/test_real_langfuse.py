@@ -173,20 +173,38 @@ def replay(cassette: Path) -> tuple[TraceSnapshot, dict]:
     return snapshot, dict(loader.describe())
 
 
-def load_v3_file() -> tuple[TraceSnapshot, dict]:
-    loader = LangfuseV3FileTraceLoader(
-        LangfuseFileTraceConfig(FIXTURES / "v3" / "langfuse-v3.jsonl")
-    )
+def load_v3_file(root: Path = FIXTURES) -> tuple[TraceSnapshot, dict]:
+    loader = LangfuseV3FileTraceLoader(LangfuseFileTraceConfig(root / "v3" / "langfuse-v3.jsonl"))
     return loader.load(), dict(loader.describe())
 
 
-def load_v4_file() -> tuple[TraceSnapshot, dict]:
+def load_v4_file(root: Path = FIXTURES) -> tuple[TraceSnapshot, dict]:
     loader = LangfuseV4FileTraceLoader(
         LangfuseV4FileTraceConfig(
-            FIXTURES / "v4" / "observations.json", scores_path=FIXTURES / "v4" / "scores.json"
+            root / "v4" / "observations.json", scores_path=root / "v4" / "scores.json"
         )
     )
     return loader.load(), dict(loader.describe())
+
+
+def load_edge_case(name: str, loader: str) -> tuple[TraceSnapshot, dict]:
+    """One of the five loader paths on an edge-case export."""
+    root = FIXTURES / "edge-cases" / name
+    match loader:
+        case "v3-file":
+            return load_v3_file(root)
+        case "v3-envelope":
+            path = root / "v3-envelope" / "single-trace.json"
+            file_loader = LangfuseV3FileTraceLoader(LangfuseFileTraceConfig(path))
+            return file_loader.load(), dict(file_loader.describe())
+        case "v4-file":
+            return load_v4_file(root)
+        case _:
+            api = loader.removesuffix("-live")
+            return replay(root / api / f"live-{api}-http.json")
+
+
+EDGE_LOADERS = ["v3-file", "v3-envelope", "v3-live", "v4-file", "v4-live"]
 
 
 SOURCES = {
@@ -383,3 +401,112 @@ def test_v3_cli_envelope_loads_the_same_trace_as_its_body():
     assert trace.aggregate.cost_usd == pytest.approx(9.299999e-06)
     assert trace.aggregate.latency_ms == V3.single_latency_ms
     assert trace.losses == []
+
+
+# Roots parented on a span that was never exported (the SDK's trace_context={"trace_id": ...}).
+REMOTE_PARENT = {
+    "v3": (
+        (
+            Record(
+                "c07367571fddd12449b000a996b0394a",
+                "ec33eb1f852a4a9f",
+                "b5a46885dea9d276",
+                "01bead8f4bc69bb0",
+                "3ae779a3febea07c",
+            ),
+            "391a165ae659de2f",
+        ),
+        (
+            Record(
+                "78008b932bb29506ebb5cd97a30e0455",
+                "fdafb75f7656bb24",
+                "b138983a866f1c6b",
+                "23762d8f25256fa3",
+                "26cac9faca6cb926",
+            ),
+            "0b0bf3afe530d7b6",
+        ),
+        ("a87d67ae0b231df5", "c859288930f84059", "814b70f05b1dfe42"),
+    ),
+    "v4": (
+        (
+            Record(
+                "c07367571fddd12449b000a996b0394a",
+                "a826ad0269c0ecaa",
+                "792f0c6b560ac194",
+                "f77405eb3c361824",
+                "07efcc10e5d4e8ee",
+            ),
+            "067179940c03e5e9",
+        ),
+        (
+            Record(
+                "78008b932bb29506ebb5cd97a30e0455",
+                "b2883e5223d2b4df",
+                "ff2064251be5c404",
+                "1d4d257ca8415f7e",
+                "50be5ae93a3be0be",
+            ),
+            "b856da01438b2d4c",
+        ),
+        ("ef7623d71c44fa61", "f80d24f65dd3a47a", "342d8a6123da584a"),
+    ),
+}
+REMOTE_PARENT_SINGLE_TRACE = "2efa50fca7c6803dfe3d08d211fc5ced"
+
+
+def turn_rows(span: Span) -> list[tuple]:
+    assert span.turns is not UNSET
+    return [
+        (turn.role.value, turn.content, turn.llm_span_ids, turn.tool_call_span_ids)
+        for turn in span.turns
+    ]
+
+
+def remote_parent(span: Span) -> object:
+    pointer = span.attributes["source_pointer"]
+    assert isinstance(pointer, dict)
+    return pointer.get("unresolved_parent_observation_id")
+
+
+@pytest.mark.parametrize("loader", EDGE_LOADERS)
+def test_roots_with_a_remote_parent_keep_their_turns(loader):
+    snapshot, description = load_edge_case("remote-parent", loader)
+    traces = {trace.id: trace for trace in snapshot}
+    (t1, t1_parent), (t2, t2_parent), (agent_id, llm_id, single_parent) = REMOTE_PARENT[loader[:2]]
+
+    single = traces[REMOTE_PARENT_SINGLE_TRACE]
+    (agent,) = single.root_spans
+    assert (agent.id, remote_parent(agent)) == (agent_id, single_parent)
+    assert turn_rows(agent) == [
+        ("user", "What is 2 + 2?", [], []),
+        ("agent", "2 + 2 = 4.", [llm_id], []),
+    ]
+    assert single.losses == []
+    if loader == "v3-envelope":
+        assert set(traces) == {REMOTE_PARENT_SINGLE_TRACE}
+        assert description["unresolved_parent_count"] == 1
+        return
+
+    assert set(traces) == {SESSION_TRACE, REMOTE_PARENT_SINGLE_TRACE}
+    assert description["unresolved_parent_count"] == 3
+    session = traces[SESSION_TRACE]
+    (root,) = session.root_spans
+    assert [(span.id, remote_parent(span)) for span in root.children] == [
+        (t1.span(t1.agent), t1_parent),
+        (t2.span(t2.agent), t2_parent),
+    ]
+    assert turn_rows(root) == weather_turns(t1, t2)
+    assert session.losses == []
+
+
+def weather_turns(t1: Record, t2: Record) -> list[tuple]:
+    """The merged weather session's turns, each tool on its tool-call turn."""
+    return [
+        ("user", "What's the weather in Paris today?", [], []),
+        ("agent", UNSET, [t1.span(t1.call_llm)], [t1.span(t1.tool)]),
+        ("agent", "Paris today: light rain, high of 14°C.", [t1.span(t1.answer_llm)], []),
+        ("user", "And tomorrow?", [], []),
+        ("agent", UNSET, [t2.span(t2.call_llm)], [t2.span(t2.tool)]),
+        ("agent", "Paris tomorrow: sunny, high of 17°C.", [t2.span(t2.answer_llm)], []),
+    ]

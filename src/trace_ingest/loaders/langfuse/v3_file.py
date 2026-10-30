@@ -76,7 +76,6 @@ class LangfuseV3FileTraceLoader:
                         raise LangfuseTraceLoadError("observation traceId does not match its trace")
                     trace = _normalize_trace(
                         provider,
-                        require_complete_tree=True,
                         source_pointer={
                             "provider": "langfuse",
                             "export_path": str(path),
