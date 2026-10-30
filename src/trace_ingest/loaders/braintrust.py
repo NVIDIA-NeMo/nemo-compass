@@ -10,6 +10,7 @@ Span fields: https://www.braintrust.dev/docs/instrument/advanced-tracing
 from __future__ import annotations
 
 import heapq
+import json
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -110,7 +111,8 @@ class _ProviderSpan(BaseModel):
     scores: dict[str, float | None] | None = None
     input: JsonValue | UNSET = UNSET
     output: JsonValue | UNSET = UNSET
-    error: str | None = None
+    # The API types the error column as any JSON value, not only text.
+    error: JsonValue = None
 
 
 @dataclass
@@ -409,7 +411,9 @@ def _normalize_span(provider: _ProviderSpan, pointer: dict[str, JsonValue]) -> S
         end_time=datetime.fromtimestamp(end, timezone.utc) if end is not None else None,
         input=provider.input,
         output=provider.output,
-        error=provider.error,
+        error=provider.error
+        if provider.error is None or isinstance(provider.error, str)
+        else json.dumps(provider.error, ensure_ascii=False),
         tool_name=name if kind is SpanKind.TOOL and isinstance(name, str) else None,
         model=model if isinstance(model, str) else None,
         cost_usd=_metric(provider, "estimated_cost"),

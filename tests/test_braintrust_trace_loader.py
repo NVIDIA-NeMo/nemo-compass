@@ -410,3 +410,15 @@ def test_null_object_columns_are_accepted(rows, column):
     braintrust = llm.attributes["braintrust"]
     assert isinstance(braintrust, dict)
     assert braintrust[column] is None
+
+
+def test_structured_error_is_kept_as_json_text(rows):
+    # The query API types the error column as any JSON value.
+    rows[0]["error"] = {"message": "not found", "status": 404}
+    with client_for(rows) as client:
+        trace = next(iter(BraintrustTraceLoader(config(), client=client).load()))
+    failed = next(s for s in trace.root_spans[0].children[0].children if s.id == "tool-b")
+    assert failed.error == '{"message": "not found", "status": 404}'
+    braintrust = failed.attributes["braintrust"]
+    assert isinstance(braintrust, dict)
+    assert braintrust["error"] == {"message": "not found", "status": 404}
