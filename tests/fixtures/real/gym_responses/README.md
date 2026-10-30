@@ -22,6 +22,12 @@ fields). Nothing is trimmed or edited.
   from `Qwen/Qwen3-4B-Instruct-2507`. Gym's `gymnasium_agent` appends each environment
   follow-up question to `response.output` as a `role: user` message, then calls the model
   again.
+- `aviary.example_rollouts.jsonl`: upstream
+  `resources_servers/aviary/data/example_rollouts.jsonl`. 5 GSM8K rows from
+  `gpt-4.1-2025-04-14` through Gym's `aviary_agent`, which sets
+  `"contains_transitions": true` and records `response.output` as a list of transitions,
+  each the full model input after one environment step (1-5 `calculator` and
+  `submit_answer` calls per row).
 
 To regenerate, in a Gym checkout:
 
@@ -30,4 +36,5 @@ rev=399e6783e0e879424fc20a23f8e2d46ffa4cfdee
 for env in example_single_tool_call example_tool_call_multireward example_multi_turn_gymnasium; do
   git show "$rev:resources_servers/$env/data/example_rollouts.jsonl" > "$env.example_rollouts.jsonl"
 done
+git show "$rev:resources_servers/aviary/data/example_rollouts.jsonl" > aviary.example_rollouts.jsonl
 ```
