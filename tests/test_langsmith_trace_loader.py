@@ -620,3 +620,25 @@ def test_span_links_use_each_sdk_run_url_at_any_depth(child_path):
     assert tool_span.id == f"{TRACE_ID}/{TOOL_ID}"
     assert tool_span.source_url == (tool.url if child_path else None)
     assert llm_span.source_url != root_span.source_url
+
+
+def test_loader_reads_the_model_tool_call_id_of_tool_runs():
+    root = langsmith_run(TRACE_ID)
+    tool = langsmith_run(
+        TOOL_ID,
+        parent_id=TRACE_ID,
+        name="get_weather",
+        run_type="tool",
+        offset=1,
+        extra={"tool_call_id": "toolu_01Jd7c27FT9pVshw55h7N6JB"},
+    )
+    loader = LangSmithTraceLoader(
+        LangSmithTraceConfig(project_name="tools"),
+        client=FakeLangSmithClient([root], [root, tool]),
+    )
+
+    (trace,) = loader.load()
+
+    (tool_span,) = trace.root_spans[0].children
+    assert tool_span.tool_call is not None
+    assert tool_span.tool_call.call_id == "toolu_01Jd7c27FT9pVshw55h7N6JB"
