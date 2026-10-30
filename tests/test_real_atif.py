@@ -3,6 +3,7 @@
 
 """ATIF trajectories published or produced by Harbor v0.24.0, see fixtures/real/atif/README.md."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -10,9 +11,6 @@ from trace_ingest.loaders.atif import ATIFTraceConfig, ATIFTraceLoader
 from trace_ingest.models import Authorship, SpanKind, TokenCounts, TurnRole
 
 FIXTURES = Path(__file__).parent / "fixtures" / "real" / "atif"
-
-# Trace.id is not asserted: it falls back to session_id, which ATIF allows several documents
-# to share, so it is not a reliable identity for these root trajectories.
 
 
 def raw(name):
@@ -207,3 +205,30 @@ def test_qwen_code_nested_embedded_subagents(tmp_path):
     ]
     assert nested.turns[1].llm_span_ids == ["trajectory/subagent/0/subagent/0/step/2"]
     assert trace.losses == []
+
+
+def test_trajectories_sharing_a_session_id_are_distinct_traces(tmp_path):
+    # ATIF-v1.7+ session_id is run-scoped: continuations and siblings may share it, and
+    # Harbor root trajectories set no trajectory_id. Both Qwen Code outputs use session-1.
+    names = [
+        "qwen-code-embedded-subagent.trajectory.json",
+        "qwen-code-nested-subagents.trajectory.json",
+    ]
+    sources = [raw(name) for name in names]
+    assert [(source["session_id"], source.get("trajectory_id")) for source in sources] == [
+        ("session-1", None),
+        ("session-1", None),
+    ]
+    lines = [json.dumps(source) for source in sources]
+    corpus = tmp_path / "qwen-code.jsonl"
+    corpus.write_text("".join(f"{line}\n" for line in lines))
+    loader = ATIFTraceLoader(ATIFTraceConfig(path=corpus))
+    traces = list(loader.load())
+
+    assert [trace.id for trace in traces] == [
+        "atif-" + hashlib.sha256(line.encode()).hexdigest()[:16] for line in lines
+    ]
+    assert [trace.session_id for trace in traces] == ["session-1", "session-1"]
+    assert [len(spans_by_id(trace.root_spans)) for trace in traces] == [5, 8]
+    description = loader.describe()
+    assert (description["trace_count"], description["distinct_sessions"]) == (2, 1)

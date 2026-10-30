@@ -62,9 +62,9 @@ still work when no span declares definitions.
 
 ## ATIF
 
-Each nonblank line must contain one complete ATIF trajectory with a `trajectory_id` or
-`session_id`. The loader accepts Harbor's `Trajectory` fields for schema versions `ATIF-v1.0`
-through `ATIF-v1.8`, validated strictly: values are not coerced, and unknown keys are rejected.
+Each nonblank line must contain one complete ATIF trajectory. The loader accepts Harbor's
+`Trajectory` fields for schema versions `ATIF-v1.0` through `ATIF-v1.8`, validated strictly:
+values are not coerced, and unknown keys are rejected.
 
 ATIF steps become ordered conversation turns linked to recorded model and tool calls. Include
 subagent trajectories in the export; external trajectory files are not read. Missing
@@ -72,7 +72,12 @@ references and other known gaps are recorded in `Trace.losses`. The
 [loader](../../src/trace_ingest/loaders/atif.py) documents the exact mapping, and
 [`Loss`](../../src/trace_ingest/models.py) the loss fields.
 
-The `session_id` becomes the trace's `session_id`, with `session_basis` `atif.session_id`.
+The trace ID is the `trajectory_id`, else `atif-` plus the first 16 hex digits of the
+SHA-256 of the line (without surrounding whitespace), so a repeated line is rejected as a
+duplicate. The `session_id` is not the trace ID: a trajectory, its continuations and its
+subagents may share one. It becomes the trace's `session_id`, with `session_basis`
+`atif.session_id`.
+
 Include `agent.tool_definitions` to enable tool-schema checks; an observation result with
 `is_error: true` (on the result or in its `extra`) marks the tool call as failed.
 
