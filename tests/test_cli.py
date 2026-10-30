@@ -519,6 +519,55 @@ def test_configuration_errors_are_reported_together(tmp_path, monkeypatch, capsy
     assert "Traceback" not in captured.err
 
 
+@pytest.mark.parametrize("ethos", [None, "Prioritize successful delivery."])
+def test_compilation_receives_ethos_with_divergence_disabled(tmp_path, monkeypatch, ethos):
+    from datetime import datetime, timezone
+
+    from rich.console import Console
+
+    from compass.insights_generation.validation import (
+        CandidateProblemDecision,
+        CandidateProblemValidationResult,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    ethos_path = tmp_path / "ETHOS.md" if ethos is not None else None
+    if ethos_path is not None:
+        ethos_path.write_text(ethos)
+    config = RunConfig(
+        trace={"filesystem": {"path": "unused.jsonl"}},
+        ethos_path=ethos_path,
+        compass_signals={"ethos_divergence": None},
+    )
+    problem = Problem(description="Delivery failed", supporting_trace_ids=("t",))
+    signals = [CompassSignalResult(signal_name="test", problems=(problem,))]
+    result = cli.RunResult(trace_count=1, evidence=signals, insights=[])
+    validation = AsyncMock(
+        return_value=CandidateProblemValidationResult(
+            signals, [[CandidateProblemDecision(supported=None, explanation="Needs review")]]
+        )
+    )
+    compilation = SimpleNamespace(compile_insights=AsyncMock(return_value=[]))
+    phase = Mock(wraps=cli.telemetry.compilation)
+    monkeypatch.setattr(cli, "_validate_candidate_problems", validation)
+    monkeypatch.setattr(cli, "_build_llm", lambda *args: FakeLLMClient())
+    monkeypatch.setattr(cli, "InsightCompilation", lambda **kwargs: compilation)
+    monkeypatch.setattr(cli.telemetry, "compilation", phase)
+    asyncio.run(
+        cli._compile_evidence(
+            config,
+            "key",
+            TraceSnapshot([Trace(id="t", root_spans=[], aggregate=TraceAggregate())]),
+            result,
+            cli.RunOutput(Console(quiet=True)),
+            datetime.now(timezone.utc),
+        )
+    )
+    assert compilation.compile_insights.await_args.kwargs == {"ethos": ethos}
+    assert phase.call_args.kwargs == {"ethos": ethos}
+    assert validation.await_count == (1 if ethos is not None else 0)
+
+
 @pytest.mark.parametrize(
     ("env_model", "selected_model", "warns"),
     [
