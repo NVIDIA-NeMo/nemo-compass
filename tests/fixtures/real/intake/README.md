@@ -41,6 +41,14 @@ scores are illustrative; the response shape is the server's:
 `e95366268936a416` of trace `e859c721…`, and `outcome` (`CATEGORICAL`,
 `string_value: "pass"`) on ATIF root span `span-e299ea5f59c8bbcf0982e2aba19e4839`.
 
+`langchain-session-with-failed-evaluator-result.json` holds the 3 exchanges of a later
+load from the same server, selecting `session_id=langchain-openinference-smoke` with
+`max_traces: 1`, after one more result was posted: `faithfulness/v1` (`NUMERIC`,
+`status: "FAILED"`, no value, comment `judge timed out`) on root span `3871b4b2a9ab1db6`
+of trace `05ade7af…`. FAILED is the Intake status for an evaluator that ran but could
+not score. The loader of the time failed on that result, so the recording ends at the
+evaluator results; the spans of both traces are the ones in `all-sessions.json`.
+
 To regenerate (OTLP ids and all timestamps are random or time-dependent; Intake
 keeps 90 days, so move the window):
 
