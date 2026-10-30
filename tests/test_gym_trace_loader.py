@@ -163,6 +163,7 @@ def test_native_gym_mapping_and_cached_description(tmp_path):
         "distinct_cases": 1,
         "distinct_sessions": 0,
         "gap_count": 1,
+        "duplicate_record_count": 0,
     }
     loader.config.path.unlink()
     assert loader.load() is snapshot
@@ -266,8 +267,14 @@ def test_legacy_records_missing_files_and_duplicate_rollouts(tmp_path):
         loader_for(tmp_path, {"response": {"output": []}}).load()
     with pytest.raises(GymTraceLoadError):
         GymTraceLoader(GymTraceConfig(path=tmp_path / "missing")).load()
+    # The same rollout ID with different content is ambiguous.
     with pytest.raises(GymTraceLoadError):
-        loader_for(tmp_path, rollout(), rollout()).load()
+        loader_for(tmp_path, rollout(), {**rollout(), "reward": 1.0}).load()
+    # A byte-identical record is the same rollout recorded again.
+    loader = loader_for(tmp_path, rollout(), rollout())
+    (trace,) = loader.load()
+    assert trace.id == "rollout-1" and trace.source_url.endswith("#L1")
+    assert loader.describe()["duplicate_record_count"] == 1
 
 
 def test_explicit_cli_source_selection(tmp_path):
@@ -645,7 +652,6 @@ def test_response_error_code_marks_model_span(tmp_path):
         "orphan_result",
         "history",
         "prompt_after_echo",
-        "prompt_without_input",
         "remote",
         "remote_on_response",
         "item",
@@ -673,9 +679,6 @@ def test_ambiguous_responses_records_rejected(tmp_path, mutation):
             copy.deepcopy(request["input"][0]),
             {"type": "message", "role": "user", "content": "Another prompt"},
         ]
-    elif mutation == "prompt_without_input":
-        source["responses_create_params"]["input"] = []
-        output.insert(0, {"type": "message", "role": "user", "content": "Hidden prompt"})
     elif mutation == "remote":
         source["responses_create_params"]["previous_response_id"] = "resp-0"
     elif mutation == "remote_on_response":
@@ -703,11 +706,59 @@ def test_standalone_response_with_remote_state_rejected(tmp_path, field, value):
         loader_for(tmp_path, response, format="json").load()
 
 
-def test_standalone_response_with_prompt_output_rejected(tmp_path):
+def test_prompt_role_output_after_model_items_or_without_input_loads(tmp_path):
+    # A multi-turn agent appends the environment's reply as a user message, then calls
+    # the model again.
+    source = envelope()
+    output = source["response"]["output"]
+    output[2]["arguments"] = "{}"  # Undecodable arguments leave turns unset.
+    reply = {"type": "message", "role": "user", "content": "And nuts?"}
+    answer = {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "9 nuts."}],
+    }
+    output += [reply, answer]
+    (root,) = next(iter(loader_for(tmp_path, source).load())).root_spans
+    assert root.output == "9 nuts."
+    assert [
+        (turn.role, turn.authorship, turn.llm_span_ids, turn.content) for turn in root.turns[-2:]
+    ] == [
+        (TurnRole.USER, Authorship.UNKNOWN, [], "And nuts?"),
+        (TurnRole.AGENT, Authorship.MODEL, ["gym/response/model"], [TextPart(text="9 nuts.")]),
+    ]
+    assert root.turns[-2].extra["gym"]["item_path"] == "$.response.output[5]"
+    # Without request input, the output is the whole conversation.
     response = envelope()["response"]
-    response["output"].insert(0, {"type": "message", "role": "system", "content": "Injected"})
-    with pytest.raises(GymTraceLoadError, match="prompt-role items"):
-        loader_for(tmp_path, response, format="json").load()
+    response["output"][2]["arguments"] = "{}"
+    response["output"][:0] = [
+        {"type": "message", "role": "system", "content": "Rules"},
+        {"type": "message", "role": "user", "content": "How many bolts?"},
+    ]
+    (root,) = next(iter(loader_for(tmp_path, response, format="json").load())).root_spans
+    assert [(turn.role, turn.authorship) for turn in root.turns[:2]] == [
+        (TurnRole.SYSTEM, Authorship.UNKNOWN),
+        (TurnRole.USER, Authorship.UNKNOWN),
+    ]
+    assert root.children[1].tool_call.prior_user_text == "How many bolts?"
+
+
+@pytest.mark.parametrize(
+    "transitions, flag, match",
+    [
+        # A later transition that rewrites history (aviary's collapse_old_env_states).
+        ([[{"role": "user", "content": "A"}], [{"role": "user", "content": "B"}]], True, "extend"),
+        ([], True, "nonempty array"),
+        ([[{"role": "user", "content": "A"}]], False, "invalid Gym rollout"),
+    ],
+)
+def test_unusable_transitions_rejected(tmp_path, transitions, flag, match):
+    source = envelope()
+    source["responses_create_params"]["input"] = []
+    source["response"]["output"] = transitions
+    source["response"]["contains_transitions"] = flag
+    with pytest.raises(GymTraceLoadError, match=match):
+        loader_for(tmp_path, source).load()
 
 
 def test_eval_author_responses_fixtures_load(tmp_path):
@@ -742,9 +793,11 @@ def test_eval_author_responses_fixtures_load(tmp_path):
         assert tool.tool_name == "lookup_item" and tool.input == {"sku": "BOLT-17"}
         assert tool.tool_call is not None and tool.tool_call.results is not UNSET
         assert tool.tool_call.result_count == len(tool.tool_call.results) == 1
-    # Byte-identical rows share a content identity, so one JSONL corpus is a duplicate.
-    with pytest.raises(GymTraceLoadError):
-        GymTraceLoader(GymTraceConfig(path=RESPONSES_FIXTURES / "ambiguous.jsonl")).load()
+    # Byte-identical rows are one rollout recorded twice: it loads once.
+    loader = GymTraceLoader(GymTraceConfig(path=RESPONSES_FIXTURES / "ambiguous.jsonl"))
+    (trace,) = loader.load()
+    assert trace.id == "gym-" + hashlib.sha256(lines[0].strip()).hexdigest()[:16]
+    assert loader.describe()["duplicate_record_count"] == 1
 
 
 # Conversation turns, ported from Eval Author's gym-to-atif converter
