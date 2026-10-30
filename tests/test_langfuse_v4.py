@@ -738,6 +738,43 @@ def test_v4_file_ranks_traces_by_their_newest_observation_like_live_selection(tm
     assert [trace.id for trace in instance.load()] == ["long"]
 
 
+def test_v4_flattened_metadata_still_selects_the_llm_reader(tmp_path):
+    # v4 returns metadata with dotted keys where v3 nests it.
+    sdk = observation(
+        "sdk",
+        parent="root",
+        usageDetails={"input": 95, "output": 21, "total": 116},
+        metadata={"scope.name": "langfuse-sdk", "scope.version": "4.17.0"},
+    )
+    openinference = observation(
+        "oi",
+        parent="root",
+        metadata={
+            "scope.name": "openinference.instrumentation.langchain",
+            "attributes.openinference.span.kind": "LLM",
+            "attributes.llm.token_count.prompt": 900,
+        },
+    )
+    instance = file_loader(
+        tmp_path,
+        [
+            observation("root"),
+            {**sdk, "type": "GENERATION"},
+            {**openinference, "type": "SPAN"},
+        ],
+    )
+    (trace,) = instance.load()
+    spans = {span.id: span for span in trace.root_spans[0].children}
+    assert spans["sdk"].token_counts is not None
+    assert (spans["sdk"].token_counts.input_tokens, spans["sdk"].token_counts.output_tokens) == (
+        95,
+        21,
+    )
+    assert spans["oi"].kind is SpanKind.LLM
+    assert spans["oi"].token_counts is not None
+    assert spans["oi"].token_counts.input_total == 900
+
+
 @pytest.mark.parametrize("which", ["observations", "scores"])
 @pytest.mark.parametrize(
     "case",

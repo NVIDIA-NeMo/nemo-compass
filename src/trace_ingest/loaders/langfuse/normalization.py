@@ -388,16 +388,24 @@ def _map_observation_kind(value: object) -> tuple[SpanKind, str | None]:
 def _span_data(observation: LangfuseObservation) -> SpanData:
     """What the LLM span readers need, from where Langfuse keeps it: OTel span
     attributes and the instrumentation scope under ``metadata``, its own usage in
-    ``usageDetails``."""
+    ``usageDetails``. V3 nests them (``scope.name``); v4 flattens them into
+    dotted keys (``"scope.name"``, ``"attributes.<key>"``)."""
 
     metadata = observation.metadata if isinstance(observation.metadata, Mapping) else {}
     scope = metadata.get("scope")
+    scope_name = scope.get("name") if isinstance(scope, Mapping) else metadata.get("scope.name")
     attributes = metadata.get("attributes")
+    if not isinstance(attributes, Mapping):
+        attributes = {
+            key.removeprefix("attributes."): value
+            for key, value in metadata.items()
+            if key.startswith("attributes.")
+        }
     return SpanData(
         name=str(observation.name) if observation.name else None,
         type=str(observation.type) if observation.type else None,
-        scope=str(scope.get("name")) if isinstance(scope, Mapping) and scope.get("name") else None,
-        attributes=attributes if isinstance(attributes, Mapping) else {},
+        scope=str(scope_name) if scope_name else None,
+        attributes=attributes,
         usage_details=observation.usage_details or {},
     )
 

@@ -293,7 +293,7 @@ def test_tool_observations_carry_the_arguments_and_results_the_model_asked_for(s
 
 
 def test_generations_keep_model_cost_and_offered_tools(source):
-    traces, _, run, api = source
+    traces, _, run, _ = source
     spans = {span.id: span for trace in traces.values() for span in walk(trace.root_spans)}
     # (span id, Langfuse calculated cost, input tokens, output tokens) from the export.
     generations = [
@@ -316,12 +316,11 @@ def test_generations_keep_model_cost_and_offered_tools(source):
                 GET_WEATHER_SCHEMA,
             )
         ]
-        if api == "v3":  # v4 token counts are a known gap; see the fixture README.
-            assert span.token_counts is not None
-            assert (span.token_counts.input_tokens, span.token_counts.output_tokens) == (
-                input_tokens,
-                output_tokens,
-            )
+        assert span.token_counts is not None
+        assert (span.token_counts.input_tokens, span.token_counts.output_tokens) == (
+            input_tokens,
+            output_tokens,
+        )
 
     session, single = traces[SESSION_TRACE], traces[run.single_trace]
     assert session.aggregate.cost_usd == pytest.approx(2 * (2.685e-05 + 2.88e-05))

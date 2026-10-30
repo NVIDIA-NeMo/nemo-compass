@@ -55,10 +55,6 @@ the ids match. A cassette records `base_url`, `from_timestamp` and `to_timestamp
 Replaying with that window reproduces the loader's exact requests. Nothing was
 trimmed or edited. The only processing is the `jq -c .body` step in the v3 recipe.
 
-Known gap: v4 flattens observation metadata keys (for example `"scope.name"`), so
-the loader does not detect the SDK scope there and v4 spans get no token counts.
-For that reason, the tests check token counts only for v3.
-
 To regenerate (v3 shown; for v4 use tag `v4.72.0` and `--api-version 4`):
 
 1. Start the server with the upstream compose file at the tag and the image tags
