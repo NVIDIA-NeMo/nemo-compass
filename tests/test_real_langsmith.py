@@ -280,3 +280,15 @@ def test_cost_counts_each_model_call_once(snapshot):
     assert account.aggregate.cost_usd == pytest.approx(0.00109 + 0.001295)
     # 01a189c9-5b35 calls no model and reports no cost, so the thread total is unknown.
     assert _trace(snapshot, "session:1").aggregate.cost_usd is None
+
+
+def test_langgraph_interrupts_are_not_errors(snapshot):
+    trace = _trace(snapshot, "session:1")
+    interrupted = [span for span in _spans(trace) if span.attributes.get("status") == "INTERRUPTED"]
+    assert [span.attributes["name"] for span in interrupted] == ["a", "b", "tools", "fruit_info"]
+    for span in interrupted:
+        assert span.error is None
+        langsmith = span.attributes["langsmith"]
+        assert isinstance(langsmith, dict)
+        assert str(langsmith["interrupt"]).startswith("GraphInterrupt((Interrupt(value=")
+    assert all(span.error is None for span in _spans(trace))
