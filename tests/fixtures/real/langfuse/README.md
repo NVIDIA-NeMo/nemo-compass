@@ -75,6 +75,9 @@ To regenerate (v3 shown; for v4 use tag `v4.72.0` and `--api-version 4`):
 same servers and tools, with one ingestion change each. Their ids and
 timestamps differ from the files above.
 
+- `ms-ties/`: ingested without the fake latency, so a generation and the tool
+  it called (v3 trace `7196…`), or a tool and the answering generation (v4
+  trace `b6f2…`), start in the same millisecond.
 - `remote-parent/`: each root observation is created with the SDK's
   `trace_context={"trace_id": ...}` (a seeded `create_trace_id`), so its
   `parentObservationId` names a span that was never exported, as in
