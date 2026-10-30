@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+from functools import partial
 
 import pytest
 from nooa.unifiedllm import FakeLLMClient
@@ -10,7 +11,7 @@ from pydantic import BaseModel, ValidationError
 from compass.compass_signals._trace import walk_spans
 from compass.compass_signals.cost_efficiency.evidence import CacheEvidence, enrich_trace
 from compass.compass_signals.cost_efficiency.signal import CostEfficiencyCompassSignal
-from compass.field_extraction import _Extraction
+from compass.field_extraction import _build_snapshot
 from compass.traces import UNSET, Span, SpanKind, Trace, TraceAggregate, TraceSnapshot
 
 
@@ -40,21 +41,18 @@ def test_neutral_contract_complete_scan_isolated_sources_and_atomic_failure():
     )
     snapshot = TraceSnapshot([trace])
     before = trace.model_dump_json()
-    extraction = _Extraction(snapshot, DurationEvidence, enrich_duration)
+    apply = partial(_build_snapshot, snapshot, DurationEvidence, enrich_duration)
 
     def mapper(context, span):
         context["attributes"]["native"]["duration_ms"] = 1000
         return {"seconds": 0.5} if span["id"] == "child" else None
 
-    assert extraction.apply(mapper) == {"source_records": 2, "extracted": 1, "unavailable": 1}
-    assert extraction.result is not None
-    result = extraction.result.get_trace_by_id("t")
+    result = apply(mapper).get_trace_by_id("t")
     assert result.root_spans[0].children[0].attributes["seconds"] == 0.5
     assert result.attributes == trace.attributes
     assert trace.model_dump_json() == before
     with pytest.raises(ValidationError):
-        extraction.apply(lambda context, span: {"seconds": "invalid"})
-    assert extraction.result is None
+        apply(lambda context, span: {"seconds": "invalid"})
 
 
 def test_cost_pipeline_native_evidence_matches_detector_and_preserves_snapshot(monkeypatch):
@@ -82,9 +80,8 @@ def test_cost_pipeline_native_evidence_matches_detector_and_preserves_snapshot(m
 
     async def extract(snapshot, schema, instructions, llm, project):
         assert schema is CacheEvidence
-        extraction = _Extraction(snapshot, schema, project)
-        extraction.apply(lambda context, span: span["attributes"]["foreign_schema"])
-        return extraction.result
+        apply = partial(_build_snapshot, snapshot, schema, project)
+        return apply(lambda context, span: span["attributes"]["foreign_schema"])
 
     monkeypatch.setattr(signal, "extract_evidence", extract)
     registry = registered_builtin_signals(
@@ -115,7 +112,8 @@ def test_cost_contract_rejects_contradictions_but_keeps_unknowns():
         )
 
 
-def test_nooa_requires_complete_application_before_returning():
+@pytest.mark.parametrize("invalid", ["None", "TraceSnapshot([])"])
+def test_nooa_returns_complete_snapshot_directly(invalid):
     import json
 
     from nooa.unifiedllm import LLMResponse, ToolCall
@@ -133,20 +131,21 @@ def test_nooa_requires_complete_application_before_returning():
 
     llm = FakeLLMClient(
         [
-            response("return_result", {"result": None}),
+            response("execute_python", {"code": f"return_result({invalid})"}),
             response(
                 "execute_python",
                 {
-                    "code": "assert len(list(self.records())) == 1\nself.apply(lambda context, span: {'seconds': 0.5})"
+                    "code": "assert len(list(self.records())) == 1\nreturn_result(self.apply(lambda context, span: {'seconds': 0.5}))"
                 },
             ),
-            response("return_result", {"result": None}),
         ]
     )
+    payload = "native-payload-outside-model-context" * 100_000
     snapshot = TraceSnapshot(
         [
             Trace(
                 id="t",
+                attributes={"native": payload},
                 root_spans=[Span(id="s", kind=SpanKind.TOOL)],
                 aggregate=TraceAggregate(),
             )
@@ -155,7 +154,9 @@ def test_nooa_requires_complete_application_before_returning():
     evidence = asyncio.run(
         extract_evidence(snapshot, DurationEvidence, "Read duration.", llm, enrich_duration)
     )
-    assert llm.call_count == 3
+    assert llm.call_count == 2
+    assert evidence.get_trace_by_id("t").attributes["native"] == payload
+    assert "native-payload-outside-model-context" not in str(llm.last_messages)
     assert evidence.get_trace_by_id("t").root_spans[0].attributes["seconds"] == 0.5
 
 
@@ -178,7 +179,7 @@ def test_cost_extraction_budget_preserves_completed_work_or_skips(completed):
                         name="execute_python",
                         arguments=json.dumps(
                             {
-                                "code": "self.apply(lambda trace, span: {})"
+                                "code": "return_result(self.apply(lambda trace, span: {}))"
                                 if completed and turn == 24
                                 else "pass"
                             }
@@ -217,7 +218,7 @@ def test_enrichment_preserves_recorded_facts_and_tool_ownership(mode):
     failed.error = "provider failed"
     snapshot = TraceSnapshot([trace])
     before = snapshot.get_trace_by_id(trace.id).model_dump_json()
-    extraction = _Extraction(snapshot, CacheEvidence, enrich_trace)
+    apply = partial(_build_snapshot, snapshot, CacheEvidence, enrich_trace)
 
     def extract(context, span):
         if mode == "abstain":
@@ -234,9 +235,7 @@ def test_enrichment_preserves_recorded_facts_and_tool_ownership(mode):
             "tool_definitions": [{"name": "native", "raw": {"name": "native"}}],
         }
 
-    extraction.apply(extract)
-    assert extraction.result is not None
-    result = extraction.result.get_trace_by_id(trace.id)
+    result = apply(extract).get_trace_by_id(trace.id)
     agent = result.root_spans[0]
     a, b, c = agent.children
     assert agent.kind is SpanKind.AGENT and agent.agent_id == parent.agent_id
@@ -270,7 +269,7 @@ def test_native_context_is_shared_once_per_trace_and_output_is_disk_backed():
         for i in range(2)
     ]
     snapshot = TraceSnapshot(traces)
-    extraction = _Extraction(snapshot, DurationEvidence, enrich_duration)
+    apply = partial(_build_snapshot, snapshot, DurationEvidence, enrich_duration)
     previous = None
     contexts = 0
 
@@ -281,9 +280,8 @@ def test_native_context_is_shared_once_per_trace_and_output_is_disk_backed():
             previous = context
         return {"seconds": 1}
 
-    assert extraction.apply(extract)["extracted"] == 160
+    result = apply(extract)
     assert contexts == 2
-    assert extraction.result is not None
-    assert isinstance(extraction.result, TraceSnapshot)
-    assert sum(len(trace.root_spans) for trace in extraction.result) == 160
-    assert sum(len(trace.root_spans) for trace in extraction.result) == 160
+    assert isinstance(result, TraceSnapshot)
+    assert sum(len(trace.root_spans) for trace in result) == 160
+    assert sum(len(trace.root_spans) for trace in result) == 160
