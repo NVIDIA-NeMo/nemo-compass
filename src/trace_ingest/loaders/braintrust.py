@@ -20,12 +20,15 @@ from urllib.parse import quote, urlencode
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
+from trace_ingest.loaders.helper.llm_span.token_usage import token_counts as _token_counts
+from trace_ingest.loaders.helper.llm_span.token_usage._core import count
 from trace_ingest.loaders.helper.turns import with_run_root_turns
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
     UNSET,
     Span,
     SpanKind,
+    TokenCounts,
     ToolCall,
     ToolResult,
     Trace,
@@ -360,13 +363,24 @@ def _normalize_trace(
         starts = [s.start_time for s in normalized.values() if s.start_time is not None]
         ends = [s.end_time for s in normalized.values() if s.end_time is not None]
         root = by_id[root_id]
+        # Braintrust's cost queries count LLM spans except scorer calls; parent spans
+        # may repeat their children's totals for display.
+        billable = [
+            normalized[key]
+            for key, provider in by_id.items()
+            if normalized[key].kind is SpanKind.LLM
+            and (provider.span_attributes or {}).get("purpose") != "scorer"
+        ]
+        costs = [span.cost_usd for span in billable if span.cost_usd is not None]
         trace = Trace(
             id=trace_id,
             root_spans=[normalized[root_id]],
             aggregate=TraceAggregate(
+                cost_usd=sum(costs) if billable and len(costs) == len(billable) else None,
                 latency_ms=(max(ends) - min(starts)).total_seconds() * 1000
                 if starts and ends
-                else None
+                else None,
+                token_counts=_summed_token_counts([span.token_counts for span in billable]),
             ),
             evaluator_results=dict(root.scores or {}),
             attributes={"source_pointer": pointer},
@@ -376,6 +390,53 @@ def _normalize_trace(
         )
     except (ValidationError, ValueError, OverflowError) as error:
         raise BraintrustTraceLoadError(f"Invalid Braintrust trace {trace_id!r}: {error}") from error
+
+
+def _span_token_counts(span: _ProviderSpan) -> TokenCounts | None:
+    """Braintrust's canonical token metrics; prompt_tokens includes cache reads and writes.
+
+    https://github.com/braintrustdata/braintrust-spec/blob/main/skills/instrumentation-spec/references/features/token-and-cost-metrics.md
+    """
+    metrics = span.metrics or {}
+    by_ttl = {
+        300: count(metrics.get("prompt_cache_creation_5m_tokens")),
+        3600: count(metrics.get("prompt_cache_creation_1h_tokens")),
+    }
+    writes = metrics.get("prompt_cache_creation_tokens")
+    if writes is None and by_ttl[300] is not None and by_ttl[3600] is not None:
+        writes = by_ttl[300] + by_ttl[3600]  # the TTL split represents the whole cache write
+    return _token_counts(
+        input_total=metrics.get("prompt_tokens"),
+        cached_input_tokens=metrics.get("prompt_cached_tokens"),
+        output_tokens=metrics.get("completion_tokens"),
+        cache_write_tokens=writes,
+        cache_writes_by_ttl=by_ttl,
+        source="braintrust",
+    )
+
+
+def _summed_token_counts(counts: list[TokenCounts | None]) -> TokenCounts | None:
+    """Totals over the calls; a count any call does not report is None, never a partial sum."""
+    if not counts or None in counts:
+        return None
+    reported = [entry for entry in counts if entry is not None]
+
+    def total(field: str) -> int | None:
+        values = [getattr(entry, field) for entry in reported]
+        return None if None in values else sum(values)
+
+    ttls = [entry.cache_writes_by_ttl or {} for entry in reported]
+    return _token_counts(
+        input_total=total("input_total"),
+        input_tokens=total("input_tokens"),
+        cached_input_tokens=total("cached_input_tokens"),
+        output_tokens=total("output_tokens"),
+        cache_write_tokens=total("cache_write_tokens"),
+        cache_writes_by_ttl={
+            ttl: sum(entry[ttl] for entry in ttls) for ttl in set.intersection(*map(set, ttls))
+        },
+        source="braintrust",
+    )
 
 
 def _metric(span: _ProviderSpan, name: str) -> float | None:
@@ -448,6 +509,7 @@ def _normalize_span(provider: _ProviderSpan, pointer: dict[str, JsonValue]) -> S
         tool_name=name if kind is SpanKind.TOOL and isinstance(name, str) else None,
         model=model if isinstance(model, str) else None,
         cost_usd=_metric(provider, "estimated_cost"),
+        token_counts=_span_token_counts(provider),
         attributes={
             "name": name,
             "subtype": provider_type,

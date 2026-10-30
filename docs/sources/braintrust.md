@@ -87,10 +87,16 @@ using each referenced event’s row ID for both project logs and experiments.
 ## What is preserved
 
 Inputs, outputs, errors, scores, and provider metadata are retained; an error logged as a JSON
-object rather than text becomes its JSON text. Missing outputs stay
-missing; explicit JSON null remains a recorded result. Root scores become trace evaluation
-results, span `metrics.estimated_cost` becomes cost, and whole-trace latency is derived from
-span times. Other metrics remain in `attributes.braintrust.metrics`.
+object rather than text becomes its JSON text. Missing outputs stay missing; explicit JSON null
+remains a recorded result. Root scores become trace evaluation results, and whole-trace latency
+is derived from span times. Span `metrics.estimated_cost` becomes cost, and the
+[token metrics](https://github.com/braintrustdata/braintrust-spec/blob/main/skills/instrumentation-spec/references/features/token-and-cost-metrics.md)
+become token counts: `prompt_tokens` (cache reads and writes included), `prompt_cached_tokens`,
+`completion_tokens` (reasoning included) and cache writes from `prompt_cache_creation_tokens` or
+its 5-minute and 1-hour split. Whole-trace cost and token counts total the LLM spans, except
+scorer calls; parent rollups are not counted again. The cost, or a token count, is left unknown
+when any of those spans does not report it. Other metrics remain in
+`attributes.braintrust.metrics`.
 
 Spans are ordered by start time. SDKs may record whole-second starts, so for equal starts the
 Python SDK's span creation counter (`span_attributes.exec_counter`) decides, then the span ID.

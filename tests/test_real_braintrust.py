@@ -14,7 +14,7 @@ import httpx
 import pytest
 
 from trace_ingest.loaders.braintrust import BraintrustTraceConfig, BraintrustTraceLoader
-from trace_ingest.models import UNSET, SpanKind
+from trace_ingest.models import UNSET, SpanKind, TokenCounts
 
 FIXTURES = Path(__file__).parent / "fixtures" / "real" / "braintrust"
 START = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -71,6 +71,10 @@ def at(seconds: float) -> datetime:
     return datetime.fromtimestamp(seconds, timezone.utc)
 
 
+def tokens(**counts: int | dict[int, int]) -> TokenCounts:
+    return TokenCounts.model_validate({**counts, "source": "braintrust"})
+
+
 def test_java_openai_responses_web_search_tool_call():
     rows = java_rows("btql-0196bdc4536f")
     _, traces = load(rows, project_id="f1e858a4-58e3-408f-983f-016760d7fa25")
@@ -82,6 +86,11 @@ def test_java_openai_responses_web_search_tool_call():
     assert trace.evaluator_results == {}  # root scores: null
     assert trace.aggregate.latency_ms == pytest.approx(
         (1788197836.7153447 - 1788197827.907864) * 1000
+    )
+    # The LLM span's estimated cost and tokens; prompt_cached_tokens is a subset of prompt_tokens.
+    assert trace.aggregate.cost_usd == 0.00221
+    assert trace.aggregate.token_counts == tokens(
+        input_total=316, cached_input_tokens=0, output_tokens=142
     )
 
     [root] = trace.root_spans
@@ -149,6 +158,10 @@ def test_java_o4_mini_two_llm_calls_in_start_order():
     assert trace.aggregate.latency_ms == pytest.approx(
         (1788197855.0829535 - 1788197840.683676) * 1000
     )
+    assert trace.aggregate.cost_usd == pytest.approx(0.0023683 + 0.0026268)
+    assert trace.aggregate.token_counts == tokens(
+        input_total=41 + 176, cached_input_tokens=0, output_tokens=528 + 553
+    )
     [root] = trace.root_spans
     assert root.id == "8d6f13c58b832744"
     assert root.kind is SpanKind.AGENT
@@ -164,6 +177,11 @@ def test_java_o4_mini_two_llm_calls_in_start_order():
     assert [span.cost_usd for span in root.children] == [
         0.0023683000000000003,
         0.0026268000000000003,
+    ]
+    # completion_reasoning_tokens (384 each) are part of completion_tokens.
+    assert [span.token_counts for span in root.children] == [
+        tokens(input_total=41, cached_input_tokens=0, output_tokens=528),
+        tokens(input_total=176, cached_input_tokens=0, output_tokens=553),
     ]
     assert all(span.tool_call is None and span.children == [] for span in root.children)
 
@@ -222,6 +240,8 @@ def test_ruby_experiment_eval_and_task_spans():
     assert trace.id == "4a5fdda0f881776e093341bdb782f5cc"
     assert trace.session_id is None
     assert trace.evaluator_results == {}
+    # No LLM span, so no trace cost or tokens.
+    assert trace.aggregate.cost_usd is None and trace.aggregate.token_counts is None
     # Span times are datetimes, so latency has microsecond resolution.
     assert trace.aggregate.latency_ms == pytest.approx(
         (1772766230.701538 - 1772766230.701321) * 1000, abs=1e-3
@@ -256,6 +276,9 @@ def test_python_harbor_rows_with_null_metadata():
     [trace] = traces
     assert trace.id == "72e7027c0bca3e9e21011705849951f7"
     assert trace.aggregate.latency_ms == 4000
+    # Neither LLM call logged estimated_cost, so the trace cost is unknown.
+    assert trace.aggregate.cost_usd is None
+    assert trace.aggregate.token_counts == tokens(input_total=12 + 14, output_tokens=5 + 6)
     [root] = trace.root_spans
     assert root.id == "e18806b7b5dc6cc3"
     assert root.kind is SpanKind.AGENT
@@ -296,12 +319,21 @@ def test_python_harbor_skips_rows_of_other_traces():
     [trace] = traces
     assert trace.id == "756e122672cb74dd5a53964ea59f2853"
     assert trace.aggregate.latency_ms == 3000
+    # Only the first LLM call logged estimated_cost (0.001): no partial trace cost.
+    assert trace.aggregate.cost_usd is None
+    assert trace.aggregate.token_counts == tokens(input_total=10 + 15, output_tokens=4 + 5)
     [root] = trace.root_spans
     assert root.attributes["braintrust"]["metadata"] is None
     assert [(child.id, child.kind) for child in root.children] == [
         ("f8e4e029c001460e", SpanKind.LLM),
         ("942655bdec6ae4dd", SpanKind.TOOL),
         ("e55e28b6572e18a1", SpanKind.LLM),
+    ]
+    assert [child.cost_usd for child in root.children] == [0.001, None, None]
+    assert [child.token_counts for child in root.children] == [
+        tokens(input_total=10, output_tokens=4),
+        None,
+        tokens(input_total=15, output_tokens=5),
     ]
 
 
@@ -319,7 +351,16 @@ def test_java_anthropic_server_tool_use():
     assert llm.id == "57273781b5b257ec"
     assert llm.kind is SpanKind.LLM
     assert llm.model == "claude-sonnet-4-5-20250929"
-    assert llm.cost_usd == 0.02736
+    assert llm.cost_usd == trace.aggregate.cost_usd == 0.02736
+    # Anthropic reports the cache write split by TTL; the split is the whole write.
+    assert llm.token_counts == trace.aggregate.token_counts
+    assert llm.token_counts == tokens(
+        input_total=8615,
+        cached_input_tokens=0,
+        output_tokens=101,
+        cache_write_tokens=0,
+        cache_writes_by_ttl={300: 0, 3600: 0},
+    )
     server_tool_use = llm.output["content"][0]
     assert server_tool_use["type"] == "server_tool_use"
 
