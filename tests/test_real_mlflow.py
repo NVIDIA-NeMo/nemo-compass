@@ -9,12 +9,16 @@ below are the hex form of the base64 OTLP ids in the export.
 
 from __future__ import annotations
 
+import base64
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from compass.trace_loaders.mlflow import MLflowFileTraceConfig, MLflowFileTraceLoader
 from compass.traces import UNSET, SpanKind
-from trace_ingest.models import Authorship, TurnRole
+from trace_ingest.models import Authorship, TokenCounts, TurnRole
 
 FIXTURES = Path(__file__).parent / "fixtures" / "real" / "mlflow"
 SESSION_EXPORT = FIXTURES / "openai_agent_session.json"
@@ -214,3 +218,68 @@ def test_sessionless_agent_trace_matches_its_traces_get_export():
             ),
         ]
     assert fetched.attributes["mlflow"] == searched.attributes["mlflow"]
+
+
+def spans_of(spans):
+    for span in spans:
+        yield span
+        yield from spans_of(span.children)
+
+
+def raw_usage(traces_by_id):
+    """Per span and per trace, MLflow's recorded model, token usage and cost."""
+    spans, aggregates = {}, {}
+    for trace_id, raw in traces_by_id.items():
+        metadata = raw["info"]["trace_metadata"]
+        aggregates[trace_id] = (
+            json.loads(metadata["mlflow.trace.tokenUsage"]),
+            json.loads(metadata["mlflow.trace.cost"])["total_cost"],
+        )
+        for span in raw["data"]["spans"]:
+            attributes = span["attributes"]
+            if "mlflow.chat.tokenUsage" not in attributes:
+                continue
+            span_id = base64.b64decode(span["span_id"]).hex()
+            spans[span_id] = (
+                json.loads(attributes["mlflow.llm.model"]),
+                json.loads(attributes["mlflow.chat.tokenUsage"]),
+                json.loads(attributes["mlflow.llm.cost"])["total_cost"],
+            )
+    return spans, aggregates
+
+
+def counts(usage):
+    return TokenCounts(
+        input_total=usage["input_tokens"], output_tokens=usage["output_tokens"], source="mlflow"
+    )
+
+
+def test_model_tokens_and_cost_match_the_recorded_usage():
+    raw = {t["info"]["trace_id"]: t for t in json.loads(SESSION_EXPORT.read_text())["traces"]}
+    raw_spans, raw_aggregates = raw_usage(raw)
+    merged, sessionless = load(SESSION_EXPORT)[0]
+
+    llm_spans = {
+        span.id.rsplit("/", 1)[-1]: span
+        for trace in (merged, sessionless)
+        for span in spans_of(trace.root_spans)
+        if span.kind is SpanKind.LLM
+    }
+    assert llm_spans.keys() == raw_spans.keys()
+    for span_id, (model, usage, cost) in raw_spans.items():
+        span = llm_spans[span_id]
+        assert (span.model, span.token_counts, span.cost_usd) == (model, counts(usage), cost)
+    assert {span.model for span in llm_spans.values()} == {"gpt-4o-mini"}
+
+    usage, cost = raw_aggregates[SESSIONLESS]
+    assert sessionless.aggregate.token_counts == counts(usage)
+    assert sessionless.aggregate.cost_usd == cost
+    # The conversation sums its records' trace-level usage.
+    assert merged.aggregate.token_counts == TokenCounts(
+        input_total=sum(raw_aggregates[t][0]["input_tokens"] for t in (TURN_1, TURN_2)),
+        output_tokens=sum(raw_aggregates[t][0]["output_tokens"] for t in (TURN_1, TURN_2)),
+        source="mlflow",
+    )
+    assert merged.aggregate.cost_usd == pytest.approx(
+        sum(raw_aggregates[t][1] for t in (TURN_1, TURN_2))
+    )

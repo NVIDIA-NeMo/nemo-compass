@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import heapq
 import json
+import math
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -17,6 +18,7 @@ from urllib.parse import quote, urlencode
 
 from pydantic import JsonValue
 
+from trace_ingest.loaders.helper.llm_span.token_usage import token_counts
 from trace_ingest.loaders.helper.merge import Record, assemble
 from trace_ingest.loaders.helper.turns import has_input, parse_json
 from trace_ingest.loaders.trace_loaders import TraceDescription
@@ -24,6 +26,7 @@ from trace_ingest.models import (
     UNSET,
     Span,
     SpanKind,
+    TokenCounts,
     ToolCall,
     ToolResult,
     Trace,
@@ -44,6 +47,11 @@ _OUTPUTS_ATTRIBUTE = "mlflow.spanOutputs"
 _SPAN_TYPE_ATTRIBUTE = "mlflow.spanType"
 _SESSION_METADATA = "mlflow.trace.session"
 _SESSION_ATTRIBUTE = "session.id"
+_MODEL_ATTRIBUTE = "mlflow.llm.model"
+_TOKEN_USAGE_ATTRIBUTE = "mlflow.chat.tokenUsage"
+_COST_ATTRIBUTE = "mlflow.llm.cost"
+_TOKEN_USAGE_METADATA = "mlflow.trace.tokenUsage"
+_COST_METADATA = "mlflow.trace.cost"
 _ORDER_BY = ["timestamp_ms DESC", "request_id ASC"]
 _SEARCH_PAGE_SIZE = 500
 
@@ -580,7 +588,11 @@ def _normalize_trace(
         session_id=session[0] if session is not None else None,
         session_basis=session[1] if session is not None else None,
         root_spans=root_spans,
-        aggregate=TraceAggregate(latency_ms=_trace_latency_ms(ordered)),
+        aggregate=TraceAggregate(
+            cost_usd=_cost_usd(metadata.get(_COST_METADATA)),
+            latency_ms=_trace_latency_ms(ordered),
+            token_counts=_token_counts(metadata.get(_TOKEN_USAGE_METADATA)),
+        ),
         evaluator_results=evaluator_results,
         attributes=attributes,
     )
@@ -701,6 +713,8 @@ def _normalize_span(
     if status == "ERROR":
         error = status_description or "MLflow span status ERROR"
     name = provider_span.name
+    attributes = provider_span.attributes
+    model = attributes.get(_MODEL_ATTRIBUTE)
     return Span(
         id=span_id,
         kind=kind,
@@ -710,6 +724,9 @@ def _normalize_span(
         output=_span_field(provider_span, _OUTPUTS_ATTRIBUTE, provider_span.outputs),
         tool_name=name if kind is SpanKind.TOOL else None,
         error=error,
+        cost_usd=_cost_usd(attributes.get(_COST_ATTRIBUTE)),
+        token_counts=_token_counts(attributes.get(_TOKEN_USAGE_ATTRIBUTE)),
+        model=model if isinstance(model, str) and model else None,
         attributes={
             "name": str(name) if name is not None else None,
             "subtype": subtype,
@@ -720,6 +737,29 @@ def _normalize_span(
             "mlflow": {"attributes": _json_value(provider_span.attributes)},
         },
     )
+
+
+def _token_counts(value: object) -> TokenCounts | None:
+    """MLflow's token usage; its ``input_tokens`` already includes cache reads and writes."""
+
+    usage = parse_json(value)
+    if not isinstance(usage, dict):
+        return None
+    return token_counts(
+        input_total=usage.get("input_tokens"),
+        cached_input_tokens=usage.get("cache_read_input_tokens"),
+        output_tokens=usage.get("output_tokens"),
+        cache_write_tokens=usage.get("cache_creation_input_tokens"),
+        source="mlflow",
+    )
+
+
+def _cost_usd(value: object) -> float | None:
+    cost = parse_json(value)
+    total = cost.get("total_cost") if isinstance(cost, dict) else None
+    if isinstance(total, bool) or not isinstance(total, int | float):
+        return None
+    return float(total) if math.isfinite(total) and total >= 0 else None
 
 
 def _provider_span_type(provider_span: MLflowSpan) -> str:

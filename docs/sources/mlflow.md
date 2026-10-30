@@ -59,6 +59,12 @@ conversation has none. `max_traces` counts conversations. When the live search s
 with traces left, each merged conversation records a `merge_incomplete` loss, because older
 traces of the session may not have been loaded.
 
+A span's `model`, `token_counts` and `cost_usd` come from MLflow's `mlflow.llm.model`,
+`mlflow.chat.tokenUsage` and `mlflow.llm.cost` (`total_cost`) attributes, and a trace's
+aggregate token counts and cost from its `mlflow.trace.tokenUsage` and `mlflow.trace.cost`
+metadata; a merged conversation sums its traces' aggregates. MLflow's `input_tokens` already
+includes cache reads and writes, so it is the input total.
+
 ## Use an export
 
 Set `MLFLOW_TRACKING_URI` and any tracking-server credentials in `.env`, then export complete traces:
