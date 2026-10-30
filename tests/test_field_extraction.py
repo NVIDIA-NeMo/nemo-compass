@@ -112,7 +112,14 @@ def test_cost_contract_rejects_contradictions_but_keeps_unknowns():
         )
 
 
-@pytest.mark.parametrize("invalid", ["None", "TraceSnapshot([])"])
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        "None",
+        "TraceSnapshot([])",
+        "TraceSnapshot([Trace.model_validate({'id': 't', 'root_spans': [], 'aggregate': {}})])",
+    ],
+)
 def test_nooa_returns_complete_snapshot_directly(invalid):
     import json
 

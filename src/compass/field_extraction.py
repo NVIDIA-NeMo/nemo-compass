@@ -11,7 +11,6 @@ mutations. Generated code uses Compass's existing Nooa execution environment.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
-from itertools import zip_longest
 from typing import Any, TypeVar
 
 from nooa import Agent, strategy
@@ -69,12 +68,10 @@ async def extract_evidence(
     Pass each trace and its validated (span, evidence) pairs to project.
     Publish only complete scans; None means unavailable evidence.
     """
+    applied_snapshot: TraceSnapshot | None = None
 
     def complete(_agent: Agent, result: object, _call: object) -> None:
-        if not isinstance(result, TraceSnapshot) or any(
-            source != output
-            for source, output in zip_longest(snapshot.traces_by_id, result.traces_by_id)
-        ):
+        if applied_snapshot is None or result is not applied_snapshot:
             raise InvariantError("Return the complete snapshot from self.apply(extractor).")
 
     class Extractor(Agent):
@@ -93,7 +90,10 @@ async def extract_evidence(
             The extractor returns a schema-shaped dict or None. It must not mutate inputs.
             Returns a private snapshot with every trace. Source facts stay unchanged.
             """
-            return _build_snapshot(snapshot, schema, project, extractor)
+            nonlocal applied_snapshot
+            applied_snapshot = None
+            applied_snapshot = _build_snapshot(snapshot, schema, project, extractor)
+            return applied_snapshot
 
         @strategy(
             CodeActStrategy(config=CodeActConfig(max_iterations=25, postconditions=[complete]))
