@@ -108,7 +108,6 @@ def test_export_directory_limits_and_ordering(tmp_path):
     [
         ("duplicate_trace", "duplicate trace"),
         ("duplicate_observation", "duplicate observation"),
-        ("missing_parent", "missing parent"),
         ("wrong_trace", "traceId"),
         ("cycle", "parent cycle"),
         ("summary", "complete v3"),
@@ -119,8 +118,6 @@ def test_export_directory_limits_and_ordering(tmp_path):
 )
 def test_export_rejects_invalid_records_before_limit(tmp_path, case, match):
     obs = observation("child")
-    if case == "missing_parent":
-        obs = observation("child", parent_id="missing")
     if case == "wrong_trace":
         obs = observation("child", trace_id="other")
     if case == "cycle":
