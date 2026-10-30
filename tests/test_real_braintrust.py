@@ -128,6 +128,9 @@ def test_java_openai_responses_web_search_tool_call():
     }
     assert tool.output == {"status": "completed"}
     assert tool.tool_call is not None
+    # metadata.tool_id is the Responses output item's ID, not the span ID.
+    assert tool.tool_call.call_id == web_search_item["id"]
+    assert tool.tool_call.call_id == "ws_0101af2ea84b56a6016a95bbc7f0e887d0893eed6df9b97576"
     assert tool.tool_call.index == 0
     assert tool.tool_call.result_count == 1
     [result] = tool.tool_call.results
@@ -278,6 +281,11 @@ def test_python_harbor_rows_with_null_metadata():
         ("read_file", {"path": "/app/answer.txt"}, "42", 0),
         ("read_file", {"path": "/app/notes.txt"}, "none", 1),
     ]
+    # metadata.tool_call_id names the OpenAI tool call the LLM output requested. The ATIF
+    # import reuses "call_1" in each turn; repeated IDs are kept as recorded.
+    for call, tool in ((first_call, first_tool), (second_call, second_tool)):
+        assert tool.tool_call is not None
+        assert tool.tool_call.call_id == call.output["tool_calls"][0]["id"] == "call_1"
 
 
 def test_python_harbor_skips_rows_of_other_traces():
@@ -295,3 +303,34 @@ def test_python_harbor_skips_rows_of_other_traces():
         ("942655bdec6ae4dd", SpanKind.TOOL),
         ("e55e28b6572e18a1", SpanKind.LLM),
     ]
+
+
+def test_java_anthropic_server_tool_use():
+    rows = java_rows("btql-861c67da54b7")
+    _, traces = load(rows, project_id="f1e858a4-58e3-408f-983f-016760d7fa25")
+
+    [trace] = traces
+    assert trace.id == "5ebbf0fd54af3ba1dafc91c34d181abf"
+    [root] = trace.root_spans
+    assert root.id == "315297cdabb281bb"
+    assert root.kind is SpanKind.AGENT
+    assert root.turns is UNSET
+    [llm] = root.children
+    assert llm.id == "57273781b5b257ec"
+    assert llm.kind is SpanKind.LLM
+    assert llm.model == "claude-sonnet-4-5-20250929"
+    assert llm.cost_usd == 0.02736
+    server_tool_use = llm.output["content"][0]
+    assert server_tool_use["type"] == "server_tool_use"
+
+    # Anthropic's server-side web search is a child TOOL span keyed by its tool_use_id.
+    [tool] = llm.children
+    assert tool.id == "a0c369225cc66870"
+    assert tool.kind is SpanKind.TOOL
+    assert tool.tool_name == "web_search"
+    assert tool.input == server_tool_use["input"] == {"query": "AI news today"}
+    assert tool.tool_call is not None
+    assert tool.tool_call.call_id == server_tool_use["id"] == "srvtoolu_012jwHZbUsD8YwQ2PmJfaAmi"
+    assert tool.tool_call.index == 0
+    assert tool.tool_call.result_count == 1
+    assert [item["type"] for item in tool.output] == ["web_search_result"] * len(tool.output)

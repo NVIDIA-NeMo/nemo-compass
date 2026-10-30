@@ -8,7 +8,7 @@ against the hosted Braintrust API. Files are byte-identical copies of the upstre
 (or of the recorded body string); nothing is trimmed or re-serialized. Upstream had
 already redacted credentials and encrypted web-search content.
 
-- `btql-0196bdc4536f.json`, `btql-a4a38e186326.json`: response bodies of
+- `btql-0196bdc4536f.json`, `btql-a4a38e186326.json`, `btql-861c67da54b7.json`: response bodies of
   `POST https://api.braintrust.dev/btql` for
   `SELECT * FROM project_logs('f1e858a4-…') WHERE root_span_id = '<id>' ORDER BY created ASC LIMIT 1000`,
   recorded 2026-08-31 (WireMock/VCR). From
@@ -20,6 +20,9 @@ already redacted credentials and encrypted web-search content.
     Responses API) → `tool web_search_call` (built-in web search).
   - `a4a38e186326`: `task reasoning` → two `llm responses` calls (o4-mini, encrypted
     reasoning items); the second call continues the first conversation.
+  - `861c67da54b7`: `task web_search` → `llm anthropic.messages.create`
+    (claude-sonnet-4-5, server-side web search, Anthropic cache-write metrics) →
+    `tool web_search` (`metadata.tool_use_id`).
   License: MIT, Copyright (c) 2025 Braintrust Data, Inc. (`LICENSE-braintrust-sdk-java.txt`).
 - `trace_spans.btql-response.jsonl`: body (`fmt: jsonl`, 1,878 B) of the `/btql` response in
   `test/fixtures/vcr_cassettes/btql/trace_spans.yml` of
@@ -43,7 +46,7 @@ already redacted credentials and encrypted web-search content.
   root absent from the page. License: Apache-2.0, Copyright 2023 Braintrust Data LLC
   (`LICENSE-braintrust-sdk-python.txt`).
 
-Root spans have `input`/`output` `null` in all five traces, so no run-root turns are
+Root spans have `input`/`output` `null` in all six traces, so no run-root turns are
 recorded. Braintrust has no session key; each trace stands alone.
 
 `tests/test_real_braintrust.py` replays the rows through `httpx.MockTransport`: the
@@ -54,7 +57,7 @@ lines and the fetch `events` are wrapped the same way; recorded cursors are not 
 To regenerate, check out the pinned commits and copy the files:
 
 ```sh
-cp braintrust-sdk-java/test-harness/src/testFixtures/resources/cassettes/braintrust/__files/btql-{0196bdc4536f,a4a38e186326}.json .
+cp braintrust-sdk-java/test-harness/src/testFixtures/resources/cassettes/braintrust/__files/btql-{0196bdc4536f,a4a38e186326,861c67da54b7}.json .
 cp braintrust-sdk-java/LICENSE LICENSE-braintrust-sdk-java.txt
 cp braintrust-sdk-ruby/LICENSE LICENSE-braintrust-sdk-ruby.txt
 cp braintrust-sdk-python/LICENSE LICENSE-braintrust-sdk-python.txt
