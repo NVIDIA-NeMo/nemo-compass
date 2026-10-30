@@ -1,0 +1,187 @@
+{
+  "traces": [
+    {
+      "info": {
+        "trace_id": "tr-1092a7d02d4b09fa965f914bdacad421",
+        "trace_location": {
+          "type": "MLFLOW_EXPERIMENT",
+          "mlflow_experiment": {
+            "experiment_id": "2"
+          }
+        },
+        "request_time": "2026-10-30T15:59:02.288Z",
+        "state": "OK",
+        "trace_metadata": {
+          "mlflow.source.name": "generate_openai_agent.py",
+          "mlflow.trace_schema.version": "3",
+          "mlflow.trace.tokenUsage": "{\"input_tokens\": 29, \"output_tokens\": 32, \"total_tokens\": 61}",
+          "mlflow.user": "compass",
+          "mlflow.source.git.repoURL": "",
+          "mlflow.traceOutputs": "\"Yes, we ship to Canada; delivery takes 7-10 business days.\"",
+          "mlflow.source.type": "LOCAL",
+          "mlflow.trace.cost": "{\"input_cost\": 1.16e-05, \"output_cost\": 5.1200000000000004e-05, \"total_cost\": 6.280000000000001e-05}",
+          "mlflow.traceInputs": "{\"message\": \"Do you ship to Canada?\", \"user_id\": \"user-9\", \"session_id\": \"web-session-7\"}",
+          "mlflow.trace.infoFinalized": "true",
+          "mlflow.trace.sizeBytes": "3405",
+          "mlflow.trace.user": "user-9",
+          "mlflow.source.git.commit": "",
+          "mlflow.source.git.branch": "",
+          "mlflow.trace.sizeStats": "{\"total_size_bytes\": 3405, \"num_spans\": 2, \"max\": 1545, \"p25\": 904, \"p50\": 1118, \"p75\": 1331}",
+          "mlflow.trace.session": "web-session-7"
+        },
+        "tags": {
+          "mlflow.traceName": "process_chat",
+          "mlflow.artifactLocation": "/private/tmp/mlflow-fixture-regen/mlruns/2/traces/tr-1092a7d02d4b09fa965f914bdacad421/artifacts",
+          "mlflow.trace.spansLocation": "TRACKING_STORE"
+        },
+        "request_preview": "{\"message\": \"Do you ship to Canada?\", \"user_id\": \"user-9\", \"session_id\": \"web-session-7\"}",
+        "response_preview": "\"Yes, we ship to Canada; delivery takes 7-10 business days.\"",
+        "execution_duration_ms": 0
+      },
+      "data": {
+        "spans": [
+          {
+            "trace_id": "EJKn0C1LCfqWX5FL2srUIQ==",
+            "span_id": "+3rpKMcExXc=",
+            "parent_span_id": null,
+            "name": "process_chat",
+            "start_time_unix_nano": 1793375942288598000,
+            "end_time_unix_nano": 1793375942289226000,
+            "events": [],
+            "status": {
+              "code": "STATUS_CODE_OK",
+              "message": ""
+            },
+            "attributes": {
+              "mlflow.traceRequestId": "\"tr-1092a7d02d4b09fa965f914bdacad421\"",
+              "mlflow.spanType": "\"UNKNOWN\"",
+              "mlflow.spanFunctionName": "\"process_chat\"",
+              "mlflow.spanInputs": "{\"message\": \"Do you ship to Canada?\", \"user_id\": \"user-9\", \"session_id\": \"web-session-7\"}",
+              "mlflow.spanOutputs": "\"Yes, we ship to Canada; delivery takes 7-10 business days.\"",
+              "mlflow.spanLogLevel": "10"
+            },
+            "links": []
+          },
+          {
+            "trace_id": "EJKn0C1LCfqWX5FL2srUIQ==",
+            "span_id": "8a62mjHAzwk=",
+            "parent_span_id": "+3rpKMcExXc=",
+            "name": "Completions",
+            "start_time_unix_nano": 1793375942288755000,
+            "end_time_unix_nano": 1793375942289194000,
+            "events": [],
+            "status": {
+              "code": "STATUS_CODE_OK",
+              "message": ""
+            },
+            "attributes": {
+              "mlflow.traceRequestId": "\"tr-1092a7d02d4b09fa965f914bdacad421\"",
+              "mlflow.spanType": "\"CHAT_MODEL\"",
+              "mlflow.spanInputs": "{\"model\": \"gpt-4.1-mini\", \"messages\": [{\"role\": \"system\", \"content\": \"You are a helpful assistant.\"}, {\"role\": \"user\", \"content\": \"Do you ship to Canada?\"}]}",
+              "model": "\"gpt-4.1-mini\"",
+              "mlflow.message.format": "\"openai\"",
+              "mlflow.llm.model": "\"gpt-4.1-mini\"",
+              "mlflow.chat.tokenUsage": "{\"input_tokens\": 29, \"output_tokens\": 32, \"total_tokens\": 61}",
+              "mlflow.spanOutputs": "{\"id\": \"chatcmpl-fake-0006\", \"choices\": [{\"finish_reason\": \"stop\", \"index\": 0, \"logprobs\": null, \"message\": {\"content\": \"Yes, we ship to Canada; delivery takes 7-10 business days.\", \"refusal\": null, \"role\": \"assistant\", \"annotations\": [], \"audio\": null, \"function_call\": null, \"tool_calls\": null}}], \"created\": 1793318406, \"model\": \"gpt-4o-mini-2024-07-18\", \"object\": \"chat.completion\", \"moderation\": null, \"service_tier\": null, \"system_fingerprint\": \"fp_fake\", \"usage\": {\"completion_tokens\": 32, \"prompt_tokens\": 29, \"total_tokens\": 61, \"completion_tokens_details\": null, \"prompt_tokens_details\": null}}",
+              "mlflow.spanLogLevel": "20",
+              "mlflow.llm.cost": "{\"input_cost\": 1.16e-05, \"output_cost\": 5.1200000000000004e-05, \"total_cost\": 6.280000000000001e-05}"
+            },
+            "links": []
+          }
+        ]
+      }
+    },
+    {
+      "info": {
+        "trace_id": "tr-caf7468dfb2f88842661ff86e7c9919b",
+        "trace_location": {
+          "type": "MLFLOW_EXPERIMENT",
+          "mlflow_experiment": {
+            "experiment_id": "2"
+          }
+        },
+        "request_time": "2026-10-30T15:59:02.287Z",
+        "state": "OK",
+        "trace_metadata": {
+          "mlflow.source.name": "generate_openai_agent.py",
+          "mlflow.trace_schema.version": "3",
+          "mlflow.trace.tokenUsage": "{\"input_tokens\": 33, \"output_tokens\": 28, \"total_tokens\": 61}",
+          "mlflow.user": "compass",
+          "mlflow.source.git.repoURL": "",
+          "mlflow.traceOutputs": "\"Standard shipping takes 3-5 business days.\"",
+          "mlflow.source.type": "LOCAL",
+          "mlflow.trace.cost": "{\"input_cost\": 1.32e-05, \"output_cost\": 4.4800000000000005e-05, \"total_cost\": 5.800000000000001e-05}",
+          "mlflow.traceInputs": "{\"message\": \"How long does standard shipping take?\", \"user_id\": \"user-9\", \"session_id\": \"web-session-7\"}",
+          "mlflow.trace.infoFinalized": "true",
+          "mlflow.trace.sizeBytes": "3401",
+          "mlflow.trace.user": "user-9",
+          "mlflow.source.git.commit": "",
+          "mlflow.source.git.branch": "",
+          "mlflow.trace.sizeStats": "{\"total_size_bytes\": 3401, \"num_spans\": 2, \"max\": 1544, \"p25\": 903, \"p50\": 1117, \"p75\": 1330}",
+          "mlflow.trace.session": "web-session-7"
+        },
+        "tags": {
+          "mlflow.traceName": "process_chat",
+          "mlflow.artifactLocation": "/private/tmp/mlflow-fixture-regen/mlruns/2/traces/tr-caf7468dfb2f88842661ff86e7c9919b/artifacts",
+          "mlflow.trace.spansLocation": "TRACKING_STORE"
+        },
+        "request_preview": "{\"message\": \"How long does standard shipping take?\", \"user_id\": \"user-9\", \"session_id\": \"web-session-7\"}",
+        "response_preview": "\"Standard shipping takes 3-5 business days.\"",
+        "execution_duration_ms": 0
+      },
+      "data": {
+        "spans": [
+          {
+            "trace_id": "yvdGjfsviIQmYf+G58mRmw==",
+            "span_id": "mJyeBNwq2UI=",
+            "parent_span_id": null,
+            "name": "process_chat",
+            "start_time_unix_nano": 1793375942287669000,
+            "end_time_unix_nano": 1793375942288548000,
+            "events": [],
+            "status": {
+              "code": "STATUS_CODE_OK",
+              "message": ""
+            },
+            "attributes": {
+              "mlflow.traceRequestId": "\"tr-caf7468dfb2f88842661ff86e7c9919b\"",
+              "mlflow.spanType": "\"UNKNOWN\"",
+              "mlflow.spanFunctionName": "\"process_chat\"",
+              "mlflow.spanInputs": "{\"message\": \"How long does standard shipping take?\", \"user_id\": \"user-9\", \"session_id\": \"web-session-7\"}",
+              "mlflow.spanOutputs": "\"Standard shipping takes 3-5 business days.\"",
+              "mlflow.spanLogLevel": "10"
+            },
+            "links": []
+          },
+          {
+            "trace_id": "yvdGjfsviIQmYf+G58mRmw==",
+            "span_id": "tSyEKEM1/J0=",
+            "parent_span_id": "mJyeBNwq2UI=",
+            "name": "Completions",
+            "start_time_unix_nano": 1793375942287914000,
+            "end_time_unix_nano": 1793375942288510000,
+            "events": [],
+            "status": {
+              "code": "STATUS_CODE_OK",
+              "message": ""
+            },
+            "attributes": {
+              "mlflow.traceRequestId": "\"tr-caf7468dfb2f88842661ff86e7c9919b\"",
+              "mlflow.spanType": "\"CHAT_MODEL\"",
+              "mlflow.spanInputs": "{\"model\": \"gpt-4.1-mini\", \"messages\": [{\"role\": \"system\", \"content\": \"You are a helpful assistant.\"}, {\"role\": \"user\", \"content\": \"How long does standard shipping take?\"}]}",
+              "model": "\"gpt-4.1-mini\"",
+              "mlflow.message.format": "\"openai\"",
+              "mlflow.llm.model": "\"gpt-4.1-mini\"",
+              "mlflow.chat.tokenUsage": "{\"input_tokens\": 33, \"output_tokens\": 28, \"total_tokens\": 61}",
+              "mlflow.spanOutputs": "{\"id\": \"chatcmpl-fake-0005\", \"choices\": [{\"finish_reason\": \"stop\", \"index\": 0, \"logprobs\": null, \"message\": {\"content\": \"Standard shipping takes 3-5 business days.\", \"refusal\": null, \"role\": \"assistant\", \"annotations\": [], \"audio\": null, \"function_call\": null, \"tool_calls\": null}}], \"created\": 1793318405, \"model\": \"gpt-4o-mini-2024-07-18\", \"object\": \"chat.completion\", \"moderation\": null, \"service_tier\": null, \"system_fingerprint\": \"fp_fake\", \"usage\": {\"completion_tokens\": 28, \"prompt_tokens\": 33, \"total_tokens\": 61, \"completion_tokens_details\": null, \"prompt_tokens_details\": null}}",
+              "mlflow.spanLogLevel": "20",
+              "mlflow.llm.cost": "{\"input_cost\": 1.32e-05, \"output_cost\": 4.4800000000000005e-05, \"total_cost\": 5.800000000000001e-05}"
+            },
+            "links": []
+          }
+        ]
+      }
+    }
+  ],
+  "next_page_token": null
+}
