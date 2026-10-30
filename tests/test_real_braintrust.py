@@ -259,18 +259,25 @@ def test_python_harbor_rows_with_null_metadata():
     assert root.attributes["braintrust"]["metadata"] is None
     assert root.model is None
     assert root.turns is UNSET  # root input is null
-    assert {child.id: (child.kind, child.model) for child in root.children} == {
-        "e85ba18b067a54df": (SpanKind.LLM, "gpt-4o-mini"),
-        "0da5cd06d84547d0": (SpanKind.TOOL, None),
-        "efe8b93dc41a3c81": (SpanKind.LLM, "gpt-4o-mini"),
-        "942ad65273083ced": (SpanKind.TOOL, None),
-        "072a770c29393da6": (SpanKind.CHAIN, None),
-    }
-    tools = {child.id: child for child in root.children if child.kind is SpanKind.TOOL}
-    assert {key: (tool.tool_name, tool.input, tool.output) for key, tool in tools.items()} == {
-        "0da5cd06d84547d0": ("read_file", {"path": "/app/answer.txt"}, "42"),
-        "942ad65273083ced": ("read_file", {"path": "/app/notes.txt"}, "none"),
-    }
+    # Starts are whole seconds: each LLM call starts with the tool call it requested.
+    # exec_counter (6..10) keeps the request before the tool, as it was created.
+    assert [(child.id, child.kind, child.model) for child in root.children] == [
+        ("e85ba18b067a54df", SpanKind.LLM, "gpt-4o-mini"),
+        ("0da5cd06d84547d0", SpanKind.TOOL, None),
+        ("efe8b93dc41a3c81", SpanKind.LLM, "gpt-4o-mini"),
+        ("942ad65273083ced", SpanKind.TOOL, None),
+        ("072a770c29393da6", SpanKind.CHAIN, None),
+    ]
+    first_call, first_tool, second_call, second_tool, _ = root.children
+    assert first_call.start_time == first_tool.start_time == at(1767225601)
+    assert second_call.start_time == second_tool.start_time == at(1767225602)
+    assert [
+        (tool.tool_name, tool.input, tool.output, tool.tool_call and tool.tool_call.index)
+        for tool in (first_tool, second_tool)
+    ] == [
+        ("read_file", {"path": "/app/answer.txt"}, "42", 0),
+        ("read_file", {"path": "/app/notes.txt"}, "none", 1),
+    ]
 
 
 def test_python_harbor_skips_rows_of_other_traces():
@@ -283,8 +290,8 @@ def test_python_harbor_skips_rows_of_other_traces():
     assert trace.aggregate.latency_ms == 3000
     [root] = trace.root_spans
     assert root.attributes["braintrust"]["metadata"] is None
-    assert {child.id: child.kind for child in root.children} == {
-        "f8e4e029c001460e": SpanKind.LLM,
-        "942655bdec6ae4dd": SpanKind.TOOL,
-        "e55e28b6572e18a1": SpanKind.LLM,
-    }
+    assert [(child.id, child.kind) for child in root.children] == [
+        ("f8e4e029c001460e", SpanKind.LLM),
+        ("942655bdec6ae4dd", SpanKind.TOOL),
+        ("e55e28b6572e18a1", SpanKind.LLM),
+    ]

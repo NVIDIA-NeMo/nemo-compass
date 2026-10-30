@@ -92,6 +92,9 @@ missing; explicit JSON null remains a recorded result. Root scores become trace 
 results, span `metrics.estimated_cost` becomes cost, and whole-trace latency is derived from
 span times. Other metrics remain in `attributes.braintrust.metrics`.
 
+Spans are ordered by start time. SDKs may record whole-second starts, so for equal starts the
+Python SDK's span creation counter (`span_attributes.exec_counter`) decides, then the span ID.
+
 Tool catalogs are not normalized into schemas, which limits tool-schema checks.
 Duplicate IDs, missing parents, cycles, and multiple-parent spans produce an error.
 HTTP failures, including rate limits, are reported without automatic retries.
