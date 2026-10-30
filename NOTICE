@@ -25,7 +25,7 @@ Test fixtures under tests/fixtures/real/ include data from these projects. They 
 used only by the test suite and are not part of the source or wheel distributions.
 Each fixture directory's README.md records the exact source revision and files.
 
-  Harbor (tests/fixtures/real/intake/)
+  Harbor (tests/fixtures/real/atif/, tests/fixtures/real/intake/)
   License: Apache-2.0
   Source: https://github.com/harbor-framework/harbor (v0.24.0,
           b53b8134e1241686dca7759af188f987ecc48e8b)
