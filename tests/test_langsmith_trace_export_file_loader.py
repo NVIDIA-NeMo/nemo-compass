@@ -115,7 +115,10 @@ def test_loader_reads_native_cli_export_and_preserves_hierarchy_and_provenance(t
     assert trace.id == "trace-1"
     assert trace.aggregate.cost_usd == 0.025
     assert trace.aggregate.latency_ms == 3000
-    assert trace.attributes["logical_case_id"] == "session-7"
+    assert (trace.session_id, trace.session_basis) == (
+        "session-7",
+        "langsmith.metadata.session_id",
+    )
     assert trace.attributes["source_pointer"] == {
         "provider": "langsmith",
         "export_path": str(tmp_path.resolve()),
@@ -153,7 +156,8 @@ def test_loader_reads_native_cli_export_and_preserves_hierarchy_and_provenance(t
         "source": f"langsmith-trace-export-file:{tmp_path.resolve()}",
         "trace_count": 1,
         "call_count": 1,
-        "distinct_logical_cases": 1,
+        "distinct_cases": 1,
+        "distinct_sessions": 1,
         "run_count": 3,
         "unresolved_parent_count": 0,
         "export_path": str(tmp_path.resolve()),

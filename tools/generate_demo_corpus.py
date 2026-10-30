@@ -100,9 +100,9 @@ class _CallFields(TypedDict, total=False):
 class TraceBuilder:
     """Build one canonical trace for the bundled synthetic corpus."""
 
-    def __init__(self, trace_id: str, logical_case_id: str, task_text: str) -> None:
+    def __init__(self, trace_id: str, case_id: str, task_text: str) -> None:
         self.trace_id = trace_id
-        self.logical_case_id = logical_case_id
+        self.case_id = case_id
         self.task_text = task_text
         self.spans: list[Span] = []
         self.orphans: list[dict[str, Any]] = []
@@ -228,7 +228,6 @@ class TraceBuilder:
             "metrics": metrics or {},
             "extra": self.extras,
             "task_text": self.task_text,
-            "logical_case_id": self.logical_case_id,
             "observed_verdict": verdict,
         }
         # The agent root declares the catalogued tools; every step runs under it.
@@ -241,6 +240,7 @@ class TraceBuilder:
         )
         return Trace(
             id=self.trace_id,
+            case_id=self.case_id,
             root_spans=[agent],
             aggregate=TraceAggregate(cost_usd=cost, latency_ms=self.duration_ms or None),
             evaluator_results={"observed_verdict": verdict},
@@ -567,7 +567,7 @@ def build_corpus() -> list[Trace]:
     """Fourteen traces over twelve logical cases.
 
     Two cases (``case-search-a`` and ``case-state-a``) cover two traces each,
-    so ``logical_case_id`` is demonstrably not a synonym for ``trace_id`` —
+    so ``case_id`` is demonstrably not a synonym for ``trace_id`` —
     which is what the card-eligibility gate depends on.
     """
     return [
@@ -624,7 +624,7 @@ def main() -> int:
         "calls            : "
         f"{sum(span.kind is SpanKind.TOOL for trace in corpus for span in trace.root_spans[0].children)}"
     )
-    print(f"logical cases    : {len({t.attributes['logical_case_id'] for t in corpus})}")
+    print(f"cases            : {len({t.case_id for t in corpus})}")
     for name, path in written.items():
         print(
             f"{name:17}: {path.relative_to(REPO_ROOT) if path.is_relative_to(REPO_ROOT) else path}"

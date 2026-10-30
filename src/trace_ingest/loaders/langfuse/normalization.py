@@ -84,8 +84,6 @@ def _normalize_trace(
             "scores": _json_value(provider_trace.scores),
         },
     }
-    if provider_trace.session_id:
-        attributes["logical_case_id"] = str(provider_trace.session_id)
 
     # Keep repeated evaluations and observation associations rather than choosing a winner.
     scores_by_name: dict[str, list[JsonValue]] = {}
@@ -94,6 +92,8 @@ def _normalize_trace(
 
     return Trace(
         id=trace_id,
+        session_id=str(provider_trace.session_id) if provider_trace.session_id else None,
+        session_basis="langfuse.sessionId" if provider_trace.session_id else None,
         root_spans=root_spans,
         aggregate=TraceAggregate(
             cost_usd=_trace_cost(provider_trace, ordered),
@@ -217,8 +217,7 @@ def _normalize_v4_trace(
         },
     }
     sessions = {obs.session_id for obs in observations if obs.session_id}
-    if len(sessions) == 1:
-        attributes["logical_case_id"] = next(iter(sessions))
+    session_id = next(iter(sessions)) if len(sessions) == 1 else None
     results: dict[str, list[JsonValue]] = {}
     for score in sorted(scores, key=lambda item: (item.name, item.id)):
         results.setdefault(score.name, []).append(_json_value(score))
@@ -231,6 +230,8 @@ def _normalize_v4_trace(
     project_id = next(iter(project_ids))
     return Trace(
         id=trace_id,
+        session_id=session_id,
+        session_basis="langfuse.sessionId" if session_id else None,
         root_spans=roots,
         source_url=http_source_url(
             base_url.rstrip("/")

@@ -16,7 +16,8 @@ class TraceDescription(TypedDict):
     source: str
     trace_count: int
     call_count: int
-    distinct_logical_cases: int
+    distinct_cases: int
+    distinct_sessions: int
 
 
 class TraceLoader(Protocol):

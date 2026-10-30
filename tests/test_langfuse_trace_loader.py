@@ -253,7 +253,7 @@ def test_corpus_reports_count_only_selected_traces(tmp_path, offline):
         "trace_count": 2,
         "call_count": 1,
         "observation_count": 1,
-        "distinct_logical_cases": 2,
+        "distinct_cases": 2,
         "unresolved_parent_count": 0,
     }
     assert {key: value for key, value in description.items() if key in expected} == expected
@@ -536,7 +536,7 @@ def test_loader_selects_then_fetches_complete_v3_traces() -> None:
     ]
     assert client.trace.get_calls == ["trace-1"]
     assert normalized.id == "trace-1"
-    assert normalized.attributes["logical_case_id"] == "session-7"
+    assert (normalized.session_id, normalized.session_basis) == ("session-7", "langfuse.sessionId")
     assert normalized.aggregate.cost_usd == 0.03
     assert normalized.aggregate.latency_ms == 5_000
     assert [span.id for span in normalized.root_spans] == ["root"]
@@ -1191,7 +1191,7 @@ def test_relay_spans_become_canonical_llm_calls() -> None:
         source_pointer={"provider": "langfuse"},
     )
 
-    assert normalized.attributes["logical_case_id"] == "session-7"
+    assert (normalized.session_id, normalized.session_basis) == ("session-7", "langfuse.sessionId")
     (agent,) = normalized.root_spans
     assert agent.kind is SpanKind.AGENT
     # Relay records no agent ID on the session span, and none is made up.

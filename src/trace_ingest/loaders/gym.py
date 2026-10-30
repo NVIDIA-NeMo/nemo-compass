@@ -50,7 +50,7 @@ Responses shape instead: a rollout envelope (``responses_create_params`` plus
 - Identity: ``"gym-" + sha256(record bytes)[:16]`` where the record bytes are
   the JSONL line or whole JSON file with surrounding ASCII whitespace stripped,
   so byte-identical records collide and are rejected as duplicates.
-  ``_ng_task_index`` sets ``logical_case_id`` to ``gym-task-index-<n>``.
+  ``_ng_task_index`` sets ``Trace.case_id`` to ``gym-task-index-<n>``.
   The gaps ``ng_trajectory_unavailable`` and ``responses_output_aggregated``
   record the missing attachment and the lost interleaving.
 
@@ -85,6 +85,7 @@ from trace_ingest.models import (
     Trace,
     TraceAggregate,
     TraceSnapshot,
+    case_key,
 )
 from trace_ingest.source_links import file_source_url
 
@@ -111,7 +112,7 @@ class GymTraceConfig(BaseModel):
 class GymTraceDescription(TraceDescription):
     """File identity and counts from the cached corpus.
 
-    ``call_count`` counts tool spans; ``distinct_logical_cases`` counts task IDs.
+    ``call_count`` counts tool spans; ``distinct_cases`` counts task IDs.
     ``gap_count`` sums source-reported gaps and unresolved ownership/parent gaps
     added by this loader. Zero gaps is not proof of complete producer coverage.
     """
@@ -488,10 +489,9 @@ def _normalize_responses(record: dict[str, Any], raw: bytes) -> Trace:
         ],
         "gym_gap_count": 2,
     }
-    if type(task_index) is int:
-        attributes["logical_case_id"] = f"gym-task-index-{task_index}"
     return Trace(
         id=identity,
+        case_id=f"gym-task-index-{task_index}" if type(task_index) is int else None,
         root_spans=[root],
         aggregate=TraceAggregate(),
         evaluator_results={
@@ -695,13 +695,13 @@ def _normalize(record: dict[str, Any], raw: bytes) -> Trace:
             owner.tool_definitions = definitions
     return Trace(
         id=rollout,
+        case_id=task,
         root_spans=roots,
         aggregate=TraceAggregate(),
         evaluator_results={
             f"gym.{key}": record[key] for key in ("reward", "reward_components") if key in record
         },
         attributes={
-            "logical_case_id": task,
             "gym": record,
             "gym_loader_gaps": extra_gaps,
             "gym_gap_count": len(gaps) + len(extra_gaps),
@@ -730,6 +730,7 @@ class GymTraceLoader:
     def _loaded(self) -> tuple[TraceSnapshot, GymTraceDescription]:
         _line_number = calls = gap_count = 0
         cases: set[str] = set()
+        sessions: set[str] = set()
         path = self.config.path
 
         def traces() -> Iterator[Trace]:
@@ -748,7 +749,9 @@ class GymTraceLoader:
                         span = pending.pop()
                         calls += span.kind is SpanKind.TOOL
                         pending.extend(span.children)
-                    cases.add(str(trace.attributes.get("logical_case_id", trace.id)))
+                    cases.add(case_key(trace))
+                    if trace.session_id:
+                        sessions.add(trace.session_id)
                     count = trace.attributes["gym_gap_count"]
                     assert isinstance(count, int)
                     gap_count += count
@@ -770,7 +773,8 @@ class GymTraceLoader:
             format=self.config.format,
             trace_count=len(snapshot),
             call_count=calls,
-            distinct_logical_cases=len(cases),
+            distinct_cases=len(cases),
+            distinct_sessions=len(sessions),
             gap_count=gap_count,
         )
 

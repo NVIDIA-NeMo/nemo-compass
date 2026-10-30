@@ -30,6 +30,7 @@ from compass.traces import (
     TraceAggregate,
     TraceSnapshot,
 )
+from trace_ingest.loaders.helper.merge import merge_records, prepare_record
 from trace_ingest.loaders.helper.tool_definitions import tool_definitions
 
 T0 = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
@@ -92,7 +93,8 @@ def trace(
         id=trace_id,
         root_spans=roots,
         aggregate=TraceAggregate(),
-        attributes={"logical_case_id": session} if session is not None else {},
+        session_id=session,
+        session_basis="test.session" if session is not None else None,
     )
 
 
@@ -305,7 +307,8 @@ def test_agent_spans_without_ids_are_separate_sequences():
         id="t",
         root_spans=spans,
         aggregate=TraceAggregate(),
-        attributes={"logical_case_id": "s"},
+        session_id="s",
+        session_basis="test.session",
     )
     assert run([one]).finding_count == 0
     keys = {key for key, _ in sequence_keys(one)}
@@ -321,6 +324,27 @@ def test_a_call_with_its_own_agent_id_joins_that_agent():
     keys = {visit.span.id: key for key, visit in sequence_keys(one)}
     assert keys["s1"] == "agent_id:sub"
     assert keys["m1"] == f"agent_id:{PLANNER}"
+
+
+def test_merged_records_keep_their_agents_apart():
+    """One session's records run by different agents stay separate sequences once merged."""
+
+    records = [
+        prepare_record(
+            trace(
+                f"t{n}",
+                "s",
+                [call(f"c{n}", 10 * n, 10 * n + 2, uncached=10, read=0, write=5000, tools=(name,))],
+                agent=agent,
+            )
+        )[0]
+        for n, (agent, name) in enumerate((("triage-agent", "route"), ("billing-agent", "refund")))
+    ]
+    merged = merge_records(records, session_id="s", session_basis="test.session")
+
+    assert run([merged]).finding_count == 0
+    keys = {key for key, _ in sequence_keys(merged)}
+    assert keys == {"agent_id:triage-agent", "agent_id:billing-agent"}
 
 
 def tool_change_pair(case: str) -> list[Span]:
@@ -420,7 +444,7 @@ def test_calls_outside_any_agent_join_the_session_root_sequence():
 
 
 def test_traces_without_a_session_are_never_compared():
-    """Without logical_case_id each trace is its own session; with one, the same calls miss."""
+    """Without a session_id each trace is its own session; with one, the same calls miss."""
 
     alone = [trace("na", None, [REFERENCE]), trace("nb", None, [MISSED])]
     sequences = build_sequences(alone)

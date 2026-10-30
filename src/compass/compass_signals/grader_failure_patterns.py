@@ -30,7 +30,8 @@ def _trace_index(snapshot: TraceSnapshot) -> list[dict[str, object]]:
         rows.append(
             {
                 "trace_id": trace.id,
-                "logical_case_id": trace.attributes.get("logical_case_id"),
+                "case_id": trace.case_id,
+                "session_id": trace.session_id,
                 "evaluator_results": trace.evaluator_results,
                 "tools": sorted({span.tool_name for span in spans if span.tool_name}),
                 "errors": sorted({span.error for span in spans if span.error}),

@@ -12,7 +12,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from trace_ingest.loaders.trace_loaders import TraceDescription
-from trace_ingest.models import Span, SpanKind, Trace, TraceSnapshot
+from trace_ingest.models import Span, SpanKind, Trace, TraceSnapshot, case_key
 from trace_ingest.source_links import file_source_url
 
 __all__ = ["FSDataLoadError", "FSDataLoader"]
@@ -32,7 +32,7 @@ def _spans(trace: Trace) -> Iterator[Span]:
 
 def _parse_trace(raw: str | bytes, *, path: Path, line_number: int) -> Trace:
     try:
-        return Trace.model_validate_json(raw)
+        trace = Trace.model_validate_json(raw)
     except ValidationError as error:
         problem = (
             "malformed JSON"
@@ -40,6 +40,14 @@ def _parse_trace(raw: str | bytes, *, path: Path, line_number: int) -> Trace:
             else "invalid trace"
         )
         raise FSDataLoadError(f"{path}:{line_number}: {problem}: {error}") from error
+    # Schema version 2 kept the case key here; read silently, its traces would each count
+    # as their own case.
+    if "logical_case_id" in trace.attributes:
+        raise FSDataLoadError(
+            f"{path}:{line_number}: attributes.logical_case_id is the schema version 2 case key;"
+            " move its value to the trace's case_id field"
+        )
+    return trace
 
 
 @dataclass
@@ -59,6 +67,7 @@ class FSDataLoader:
 
         call_count = 0
         cases: set[str] = set()
+        sessions: set[str] = set()
 
         def traces() -> Iterator[Trace]:
             nonlocal call_count
@@ -71,7 +80,9 @@ class FSDataLoader:
                     for span in _spans(trace):
                         span.source_url = None
                         call_count += span.kind is SpanKind.TOOL
-                    cases.add(str(trace.attributes.get("logical_case_id") or trace.id))
+                    cases.add(case_key(trace))
+                    if trace.session_id:
+                        sessions.add(trace.session_id)
                     yield trace
 
         try:
@@ -87,7 +98,8 @@ class FSDataLoader:
             "source": f"fs:{self.path.resolve()}",
             "trace_count": len(snapshot),
             "call_count": call_count,
-            "distinct_logical_cases": len(cases),
+            "distinct_cases": len(cases),
+            "distinct_sessions": len(sessions),
         }
         return snapshot
 
