@@ -510,3 +510,56 @@ def weather_turns(t1: Record, t2: Record) -> list[tuple]:
         ("agent", UNSET, [t2.span(t2.call_llm)], [t2.span(t2.tool)]),
         ("agent", "Paris tomorrow: sunny, high of 17°C.", [t2.span(t2.answer_llm)], []),
     ]
+
+
+# A generation and the tool it called, or a tool and the answer reading it, share a
+# start millisecond; ordering them by their random ids put a tool on the wrong turn.
+MS_TIES = {
+    "v3": (
+        Record(
+            "34a20045d44df54aabf9540ac6de2e71",
+            "b70183c13701f3ed",
+            "ea97f5f252619b57",
+            "46015ea8fd5952a6",
+            "d97273039f65ef90",
+        ),
+        Record(
+            "7196b923f5b6d145f552835e05872073",
+            "1121fe08b90008b7",
+            "60a1f2714e9920f2",
+            "18f73abb517ec5ae",
+            "aa4a48441f849f24",
+        ),
+    ),
+    "v4": (
+        Record(
+            "b6f29235ce0cd279776a109e7c5c97b4",
+            "c589577d87687450",
+            "426bd31664da2cdd",
+            "74dcca460df1d357",
+            "363f8daceeeef7b5",
+        ),
+        Record(
+            "cfaeda28dceedfc71be47e84a6a3345e",
+            "6366310da9cf4810",
+            "29953ec03919a5ca",
+            "dee2b0d0173a7235",
+            "aacd1450cfec403b",
+        ),
+    ),
+}
+
+
+@pytest.mark.parametrize("loader", [loader for loader in EDGE_LOADERS if loader != "v3-envelope"])
+def test_steps_starting_in_one_millisecond_keep_their_tool_on_its_turn(loader):
+    snapshot, _ = load_edge_case("ms-ties", loader)
+    t1, t2 = MS_TIES[loader[:2]]
+    (root,) = next(trace for trace in snapshot if trace.id == SESSION_TRACE).root_spans
+
+    for record, agent in zip((t1, t2), root.children, strict=True):
+        assert [span.id for span in agent.children] == [
+            record.span(record.call_llm),
+            record.span(record.tool),
+            record.span(record.answer_llm),
+        ]
+    assert turn_rows(root) == weather_turns(t1, t2)

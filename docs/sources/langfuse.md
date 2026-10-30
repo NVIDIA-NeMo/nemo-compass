@@ -51,7 +51,9 @@ in the environment.
 
 Compass loads one trace per conversation: selected traces that share a Langfuse `sessionId`
 become one trace, in start order, with spans named `<trace id>/<observation id>` and the
-conversation's turns joined across them. A trace without a session stays on its own; when
+conversation's turns joined across them. Langfuse keeps times to the millisecond; steps
+starting in the same one are ordered by end time, then a model call requesting tools
+before those tools. A trace without a session stays on its own; when
 its single root is an agent, chain or span observation, it owns the trace's turns. A merged
 conversation has turns only when every one of its traces has such a root. A root
 observation whose parent was never exported, such as a caller's span in distributed

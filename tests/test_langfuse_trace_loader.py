@@ -409,6 +409,46 @@ def test_v3_span_root_without_session_owns_its_turns():
     ]
 
 
+def test_steps_in_one_millisecond_follow_their_causal_order():
+    # Langfuse keeps milliseconds: a call, its tool and the answer can all start
+    # and end in the same one. Ids sort them backwards.
+    step = START + timedelta(milliseconds=1)
+
+    def child(observation_id, observation_type, output, end=step):
+        return observation(
+            observation_id,
+            trace_id="t1",
+            parent_id="root",
+            observation_type=observation_type,
+            start_time=step,
+            end_time=end,
+            output_value=output,
+        )
+
+    call = {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function"}]}
+    native = provider_trace(
+        "t1",
+        input_value={"messages": [{"role": "user", "content": "weather?"}]},
+        output_value="rain",
+        observations=[
+            observation("root", trace_id="t1", observation_type="AGENT", end_time=END),
+            child("a-answer", "GENERATION", {"role": "assistant", "content": "rain"}),
+            child("b-tool", "TOOL", {"forecast": "rain"}),
+            child("c-call", "GENERATION", json.dumps(call)),
+            # Started in the same millisecond, but ended after the others.
+            child("0-late", "GENERATION", {"role": "assistant", "content": "rain"}, END),
+        ],
+    )
+    (trace,) = load_live(native)
+    (root,) = trace.root_spans
+    assert [span.id for span in root.children] == ["c-call", "b-tool", "a-answer", "0-late"]
+    assert root.turns is not UNSET
+    assert [(turn.llm_span_ids, turn.tool_call_span_ids) for turn in root.turns[1:3]] == [
+        (["c-call"], ["b-tool"]),
+        (["a-answer"], []),
+    ]
+
+
 def test_v3_generation_root_without_session_is_not_a_run():
     native = provider_trace(
         "t1",

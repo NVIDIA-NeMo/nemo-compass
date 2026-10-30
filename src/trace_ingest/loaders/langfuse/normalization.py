@@ -287,22 +287,51 @@ def _canonical_observation_order(
             children[parent_id].append(observation_id)
             indegree[observation_id] += 1
 
-    ready: list[tuple[datetime, str]] = []
+    ready: list[tuple[datetime, datetime, int, str]] = []
     for observation_id, degree in indegree.items():
         if degree == 0:
-            heapq.heappush(ready, (_started_at(by_id[observation_id]), observation_id))
+            heapq.heappush(ready, _order_key(by_id[observation_id]))
 
     ordered: list[LangfuseObservation] = []
     while ready:
-        _, observation_id = heapq.heappop(ready)
+        *_, observation_id = heapq.heappop(ready)
         ordered.append(by_id[observation_id])
         for child_id in children[observation_id]:
             indegree[child_id] -= 1
             if indegree[child_id] == 0:
-                heapq.heappush(ready, (_started_at(by_id[child_id]), child_id))
+                heapq.heappush(ready, _order_key(by_id[child_id]))
     if len(ordered) != len(by_id):
         raise LangfuseTraceLoadError(f"Langfuse trace {trace_id!r} contains a parent cycle")
     return ordered
+
+
+def _order_key(observation: LangfuseObservation) -> tuple[datetime, datetime, int, str]:
+    """Start order, with causal tie-breaks for Langfuse's millisecond timestamps.
+
+    Of two steps starting in the same millisecond, one that caused the other has
+    ended by then, so the earlier end comes first. When both also end then, a
+    model call that requests tools comes before the tools, and those before the
+    calls that read their results. The random observation id breaks the rest.
+    """
+    started_at = _started_at(observation)
+    ended_at = _optional_datetime(observation.end_time) or started_at
+    if _requests_tools(observation.output):
+        rank = 0
+    elif str(observation.type).upper() == "TOOL":
+        rank = 1
+    else:
+        rank = 2
+    return started_at, ended_at, rank, str(observation.id)
+
+
+def _requests_tools(output: object) -> bool:
+    """Whether an output is a chat message with tool calls (v4 returns it as JSON text)."""
+    if isinstance(output, str):
+        try:
+            output = json.loads(output)
+        except json.JSONDecodeError:
+            return False
+    return isinstance(output, Mapping) and bool(output.get("tool_calls"))
 
 
 def _normalize_observation(
