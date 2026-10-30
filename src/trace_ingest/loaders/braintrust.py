@@ -267,13 +267,20 @@ def _query_rows(client: httpx.Client, api_url: str, query: str) -> Iterator[dict
     seen: set[str] = set()
     while True:
         paged_query = query if cursor is None else f"{query} OFFSET {_literal(cursor)}"
-        response = client.post(f"{api_url}/btql", json={"query": paged_query, "fmt": "json"})
+        # Hosted deployments redirect large responses to stored results, which carry
+        # the cursor in x-amz-meta-bt_cursor. httpx drops the API key on the
+        # cross-origin redirect.
+        response = client.post(
+            f"{api_url}/btql",
+            json={"query": paged_query, "fmt": "json"},
+            follow_redirects=True,
+        )
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
             raise BraintrustTraceLoadError("Braintrust query response requires a data array")
         rows = payload["data"]
-        cursor = response.headers.get("x-bt-cursor")
+        cursor = response.headers.get("x-bt-cursor") or response.headers.get("x-amz-meta-bt_cursor")
         if cursor:
             if cursor in seen or not rows:
                 raise BraintrustTraceLoadError("Braintrust pagination made no progress")

@@ -480,3 +480,35 @@ def test_trace_cost_is_unknown_when_a_call_has_none(rows):
         trace = next(iter(BraintrustTraceLoader(config(), client=client).load()))
     assert trace.aggregate.cost_usd is None
     assert trace.aggregate.token_counts is not None
+
+
+def test_follows_redirect_to_stored_results_and_its_cursor(rows):
+    # docs.braintrust.dev/api-reference/query: hosted deployments redirect large
+    # responses to a stored copy whose cursor is in x-amz-meta-bt_cursor.
+    queries = []
+
+    def handle(request):
+        if request.url.host == "results.example.test":
+            assert "Authorization" not in request.headers
+            return httpx.Response(
+                200, json={"data": rows[:2]}, headers={"x-amz-meta-bt_cursor": "stored-page"}
+            )
+        assert request.headers["Authorization"] == "Bearer secret"
+        query = json.loads(request.content)["query"]
+        queries.append(query)
+        if "WHERE is_root" in query:
+            return httpx.Response(
+                200, json={"data": [{"root_span_id": "root", "created": START.isoformat()}]}
+            )
+        if "OFFSET" not in query:
+            return httpx.Response(303, headers={"Location": "https://results.example.test/r"})
+        assert "OFFSET 'stored-page'" in query
+        return httpx.Response(200, json={"data": rows[2:]})
+
+    with httpx.Client(
+        transport=httpx.MockTransport(handle), headers={"Authorization": "Bearer secret"}
+    ) as client:
+        loader = BraintrustTraceLoader(config(), client)
+        assert loader.load().trace_count == 1
+    assert len(queries) == 3
+    assert loader.describe()["span_count"] == 4
