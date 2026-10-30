@@ -150,7 +150,7 @@ def normalize_trace(
                 ]
             )
             normalized.tool_call = ToolCall(
-                call_id=run_id,
+                call_id=_tool_call_id(run) or run_id,
                 index=tool_call_index,
                 result_count=len(results),
                 results=results,
@@ -449,6 +449,20 @@ def _trace_token_counts(llm_spans: Sequence[Span]) -> TokenCounts | None:
         cache_write_tokens=total("cache_write_tokens"),
         source="langsmith",
     )
+
+
+def _tool_call_id(run: _LangSmithRun) -> str | None:
+    """The model's id for this tool call, which LangChain records on the tool Run."""
+
+    extra = getattr(run, "extra", None)
+    value = extra.get("tool_call_id") if isinstance(extra, Mapping) else None
+    if value in (None, ""):
+        # CLI exports drop extra but keep the ToolMessage the tool returned.
+        outputs = getattr(run, "outputs", None)
+        message = outputs.get("output") if isinstance(outputs, Mapping) else None
+        if isinstance(message, Mapping) and message.get("type") == "tool":
+            value = message.get("tool_call_id")
+    return value if isinstance(value, str) and value else None
 
 
 def _ancestors(run_id: str, parents: Mapping[str, str | None]) -> Iterator[str]:

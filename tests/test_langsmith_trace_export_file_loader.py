@@ -657,3 +657,30 @@ def test_loader_reads_model_and_token_counts_of_model_calls(tmp_path):
         cache_write_tokens=0,
         source="langsmith",
     )
+
+
+def test_loader_reads_the_tool_call_id_from_the_returned_tool_message(tmp_path):
+    message = {"type": "tool", "tool_call_id": "call_7yhmFQz8YB7mg1TJXNBmuxQr", "content": "ok"}
+    write_trace_export_file(
+        tmp_path / "trace-1.jsonl",
+        trace_export_run_record("trace-1"),
+        trace_export_run_record(
+            "tool-1",
+            parent_run_id="trace-1",
+            name="lookup",
+            run_type="tool",
+            outputs={"output": message},
+        ),
+        trace_export_run_record(
+            "tool-2", parent_run_id="trace-1", name="lookup", run_type="tool", outputs=None
+        ),
+    )
+
+    (trace,) = LangSmithTraceExportFileLoader(LangSmithTraceExportFileConfig(path=tmp_path)).load()
+
+    (root,) = trace.root_spans
+    # Without a ToolMessage the export keeps no provider id, so the run id stands in.
+    assert [span.tool_call.call_id for span in root.children if span.tool_call] == [
+        "call_7yhmFQz8YB7mg1TJXNBmuxQr",
+        "tool-2",
+    ]

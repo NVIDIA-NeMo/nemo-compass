@@ -333,3 +333,25 @@ def test_model_calls_carry_model_and_token_counts(snapshot):
     ]
     # 01a189c9-5b35 calls no model, so the thread reports no totals.
     assert thread.aggregate.token_counts is None
+
+
+def test_tool_calls_keep_the_model_tool_call_id(snapshot):
+    ids = {
+        span.tool_name: span.tool_call.call_id
+        for trace in snapshot
+        for span in _spans(trace)
+        if span.tool_call is not None
+    }
+    assert ids["get_user_info"] == "toolu_01Jd7c27FT9pVshw55h7N6JB"
+    assert ids["get_account_info"] == "call_7yhmFQz8YB7mg1TJXNBmuxQr"
+
+
+def test_interrupted_tool_call_id_survives_only_the_api():
+    # The interrupted fruit_info run returned nothing, and the CLI export drops extra.
+    def fruit_call_id(snapshot: TraceSnapshot) -> str | None:
+        (span,) = _named(_trace(snapshot, "session:1"), "fruit_info")
+        assert span.tool_call is not None
+        return span.tool_call.call_id
+
+    assert fruit_call_id(_api().load()) == "call_ZS8GGudYXD90WW3m7JdGhU7c"
+    assert fruit_call_id(_export().load()) == "01a189c9-72d2-70a0-9b79-f2b41a375039"
