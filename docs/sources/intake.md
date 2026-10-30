@@ -63,6 +63,9 @@ Evaluator results are listed per metric as `{"trace_id", "value"}` entries; a re
 `span_id` is the Intake span id, so prefix it with `<trace id>/` to find the span. A result
 with `status: FAILED` (the evaluator ran but could not score) is kept and has no value.
 
+A tool span's `tool_call.call_id` and `result_id` come from the ATIF tool call, or from
+the `tool_call_id` of a LangChain ToolMessage output (as OpenInference records it).
+
 `trace.max_traces` overrides `query.max_traces`, and both count merged traces, one per
 `session_id`; each selected `session_id` is loaded completely within the window. Without
 either limit, every matching trace in the window is loaded.

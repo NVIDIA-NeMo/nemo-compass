@@ -5,9 +5,7 @@
 
 See tests/fixtures/real/intake/README.md for how the recording was made.
 
-Not asserted, because the loader is known to get them wrong on this data: token counts
-(Intake span and trace token fields are dropped); and losses, since the dropped tokens are
-not reported as one.
+Token counts are not asserted: the loader does not map Intake's token fields.
 """
 
 from __future__ import annotations
@@ -160,6 +158,8 @@ def test_real_intake_langchain_session_merges_both_otlp_traces(loaded):
         assert span.tool_name == "multiply"
         assert span.input == {"a": 6, "b": 7}
         assert span.tool_call is not None
+        # The fake LLM names its one call call_multiply_1 in both runs.
+        assert span.tool_call.call_id == span.tool_call.result_id == "call_multiply_1"
         assert isinstance(span.tool_call.results, list)
         (result,) = span.tool_call.results
         assert result.is_error is False
