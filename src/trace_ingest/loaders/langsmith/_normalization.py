@@ -275,6 +275,17 @@ def _normalize_run(
         pointer["unresolved_parent_run_id"] = unresolved_parent_id
 
     status, error = _map_run_status(run)
+    langsmith: dict[str, JsonValue] = {
+        "run_type": str(getattr(run, "run_type", None) or ""),
+        "tags": _json_value(getattr(run, "tags", None)),
+        "extra": _json_value(getattr(run, "extra", None)),
+        "feedback_stats": _json_value(getattr(run, "feedback_stats", None)),
+        "dotted_order": str(getattr(run, "dotted_order", None) or "") or None,
+        "total_cost": total_cost,
+    }
+    interrupt = getattr(run, "error", None)
+    if status == "INTERRUPTED" and interrupt not in (None, ""):
+        langsmith["interrupt"] = str(interrupt)
     name = getattr(run, "name", None)
     name = str(name) if name not in (None, "") else None
     return Span(
@@ -293,14 +304,7 @@ def _normalize_run(
             "duration_ms": duration_ms,
             "source_pointer": pointer,
             "status": status,
-            "langsmith": {
-                "run_type": str(getattr(run, "run_type", None) or ""),
-                "tags": _json_value(getattr(run, "tags", None)),
-                "extra": _json_value(getattr(run, "extra", None)),
-                "feedback_stats": _json_value(getattr(run, "feedback_stats", None)),
-                "dotted_order": str(getattr(run, "dotted_order", None) or "") or None,
-                "total_cost": total_cost,
-            },
+            "langsmith": langsmith,
         },
     )
 
@@ -325,10 +329,14 @@ def _map_run_kind(run_type: object) -> tuple[SpanKind, str | None]:
 
 
 def _map_run_status(run: _LangSmithRun) -> tuple[str, str | None]:
+    status = str(getattr(run, "status", None) or "").lower()
+    if status == "interrupted":
+        # A LangGraph interrupt pauses the run for human input; its error field holds
+        # the GraphInterrupt, which is not a failure.
+        return "INTERRUPTED", None
     error = getattr(run, "error", None)
     if error not in (None, ""):
         return "ERROR", str(error)
-    status = str(getattr(run, "status", None) or "").lower()
     if status == "success":
         return "SUCCESS", None
     if status == "error":

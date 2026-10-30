@@ -562,3 +562,29 @@ def test_tool_results_mark_errors_and_match_result_counts(tmp_path):
     for call in calls.values():
         assert call.results is not UNSET
         assert len(call.results) == call.result_count
+
+
+def test_loader_keeps_langgraph_interrupts_apart_from_errors(tmp_path):
+    interrupt = "GraphInterrupt((Interrupt(value='continue?', id='i-1'),))"
+    write_trace_export_file(
+        tmp_path / "trace-1.jsonl",
+        trace_export_run_record("trace-1"),
+        trace_export_run_record(
+            "tool-1",
+            parent_run_id="trace-1",
+            name="ask",
+            run_type="tool",
+            error=interrupt,
+            status="interrupted",
+        ),
+    )
+
+    (trace,) = LangSmithTraceExportFileLoader(LangSmithTraceExportFileConfig(path=tmp_path)).load()
+
+    (root,) = trace.root_spans
+    (tool,) = root.children
+    assert tool.error is None
+    assert tool.attributes["status"] == "INTERRUPTED"
+    langsmith = tool.attributes["langsmith"]
+    assert isinstance(langsmith, dict)
+    assert langsmith["interrupt"] == interrupt
