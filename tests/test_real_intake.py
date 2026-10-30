@@ -4,10 +4,6 @@
 """IntakeTraceLoader on responses recorded from a real NeMo Helix 0.8.1 Intake server.
 
 See tests/fixtures/real/intake/README.md for how the recording was made.
-
-Not asserted, because the loader is known to get them wrong on this data: token counts
-(Intake span and trace token fields are dropped); and losses, since the dropped tokens are
-not reported as one.
 """
 
 from __future__ import annotations
@@ -27,7 +23,7 @@ from compass.trace_loaders.intake import (
     IntakeTraceQuery,
 )
 from compass.traces import Span, Trace, TraceSnapshot
-from trace_ingest.models import UNSET
+from trace_ingest.models import UNSET, TokenCounts
 
 FIXTURES = Path(__file__).parent / "fixtures" / "real" / "intake"
 RECORDING = FIXTURES / "all-sessions.json"
@@ -144,12 +140,17 @@ def test_real_intake_langchain_session_merges_both_otlp_traces(loaded):
     assert root.end_time == datetime(2026, 10, 30, 16, 2, 27, 714825, tzinfo=timezone.utc)
     assert trace.aggregate.latency_ms == pytest.approx(5725.597)
     assert trace.aggregate.cost_usd is None  # Intake reports no cost for these traces.
+    # Each run's two model calls report 42 prompt and 7 completion tokens (the fake LLM).
+    assert trace.aggregate.token_counts == TokenCounts(input_total=168, output_tokens=28)
 
     # Per run: LangGraph, model, tools, model chains; 2 ChatOpenAI calls; 1 multiply tool.
     kinds = Counter(span.kind.value for span in _walk(root.children))
     assert kinds == {"CHAIN": 8, "LLM": 4, "TOOL": 2}
     llm_models = {span.model for span in _walk(root.children) if span.kind.value == "LLM"}
     assert llm_models == {"openai/openai/gpt-5.5"}
+    assert [span.token_counts for span in _walk(root.children) if span.token_counts] == [
+        TokenCounts(input_total=42, output_tokens=7)
+    ] * 4
 
     tools = [span for span in _walk(root.children) if span.kind.value == "TOOL"]
     assert [span.id for span in tools] == [
@@ -247,6 +248,15 @@ def test_real_intake_atif_session_is_a_single_record(loaded):
         ("LLM", "claude-code"),
         ("LLM", "claude-code"),
     ]
+    # Intake input_tokens include cached_tokens, as ATIF prompt_tokens do.
+    assert [span.token_counts for span in agent.children] == [
+        None,
+        TokenCounts(input_total=18907, cached_input_tokens=13788, output_tokens=82),
+        TokenCounts(input_total=19026, cached_input_tokens=18905, output_tokens=25),
+    ]
+    assert trace.aggregate.token_counts == TokenCounts(
+        input_total=37933, cached_input_tokens=32693, output_tokens=107
+    )
     (tool,) = agent.children[1].children
     assert tool.id == f"{ATIF_SESSION}/span-15726b0b0e0d93510e7d0772c0b5f823"
     assert tool.tool_name == "Write"

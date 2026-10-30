@@ -63,6 +63,10 @@ Evaluator results are listed per metric as `{"trace_id", "value"}` entries; a re
 `span_id` is the Intake span id, so prefix it with `<trace id>/` to find the span. A result
 with `status: FAILED` (the evaluator ran but could not score) is kept and has no value.
 
+Span and trace `input_tokens`, `cached_tokens` and `output_tokens` become `token_counts`
+(`input_total`, `cached_input_tokens`, `output_tokens`); Intake's `input_tokens` already
+include cached tokens. A merged trace's `aggregate.token_counts` sums its Intake traces.
+
 `trace.max_traces` overrides `query.max_traces`, and both count merged traces, one per
 `session_id`; each selected `session_id` is loaded completely within the window. Without
 either limit, every matching trace in the window is loaded.

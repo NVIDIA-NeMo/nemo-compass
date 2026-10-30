@@ -25,7 +25,7 @@ from compass.trace_loaders.intake import (
 )
 from compass.traces import UNSET, SpanKind, Trace
 from trace_ingest.catalog import tool_catalog
-from trace_ingest.models import ToolResult
+from trace_ingest.models import TokenCounts, ToolResult
 
 BASE_URL = "https://platform.example.test"
 WORKSPACE = "example-workspace"
@@ -690,6 +690,28 @@ def test_intake_preserves_span_model_and_cost():
     (span,) = _record_roots(next(iter(loader.load())))
     assert span.model == "example-model"
     assert span.cost_usd == 0.125
+
+
+def test_intake_maps_span_token_counts():
+    loader = _loader_for_records(
+        [
+            _span_record(
+                "root",
+                kind="LLM",
+                input_tokens=120,
+                output_tokens=30,
+                total_tokens=150,
+                cached_tokens=100,
+            ),
+            _span_record("tool", kind="TOOL", parent_span_id="root"),
+        ],
+    )
+    (span,) = _record_roots(next(iter(loader.load())))
+    assert span.token_counts == TokenCounts(
+        input_total=120, cached_input_tokens=100, output_tokens=30
+    )
+    # A span that records no counts has none.
+    assert span.children[0].token_counts is None
 
 
 def _agent_attributes(*names: str) -> str:

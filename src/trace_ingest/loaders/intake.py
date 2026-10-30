@@ -36,12 +36,14 @@ from trace_ingest.loaders.atif import (
     tool_definitions_from_atif,
     tool_result_from_atif,
 )
+from trace_ingest.loaders.helper.llm_span.token_usage import token_counts
 from trace_ingest.loaders.helper.merge import Record, assemble
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
     UNSET,
     Span,
     SpanKind,
+    TokenCounts,
     ToolCall,
     ToolResult,
     Trace,
@@ -74,6 +76,20 @@ class _WireModel(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+class _TokenUsage(_WireModel):
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    cached_tokens: int | None = Field(default=None, ge=0)
+
+    def token_counts(self) -> TokenCounts | None:
+        # Intake input_tokens include cached_tokens, as the recorded prompt totals do.
+        return token_counts(
+            input_total=self.input_tokens,
+            cached_input_tokens=self.cached_tokens,
+            output_tokens=self.output_tokens,
+        )
+
+
 class _Pagination(_WireModel):
     page: int = Field(ge=1)
     page_size: int = Field(ge=1)
@@ -87,7 +103,7 @@ class _EvaluationContext(_WireModel):
     test_case_name: str | None = None
 
 
-class _IntakeTrace(_WireModel):
+class _IntakeTrace(_TokenUsage):
     id: str
     root_span_id: str | None = None
     session_id: str = Field(min_length=1)
@@ -104,7 +120,7 @@ class _IntakeTrace(_WireModel):
     cost_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
-class _IntakeSpan(_WireModel):
+class _IntakeSpan(_TokenUsage):
     span_id: str
     session_id: str
     workspace: str
@@ -636,6 +652,7 @@ def _normalize_trace(
         root_spans=root_spans,
         aggregate=TraceAggregate(
             cost_usd=raw.cost_usd,
+            token_counts=raw.token_counts(),
             latency_ms=_trace_duration_ms(raw),
         ),
         attributes=attributes,
@@ -771,6 +788,7 @@ def _normalize_span(
         output=output_value,
         model=raw.model,
         cost_usd=raw.cost_total_usd,
+        token_counts=raw.token_counts(),
         tool_name=tool_name if kind is SpanKind.TOOL else None,
         tool_call=tool_call,
         error=error,
