@@ -35,7 +35,7 @@ from compass.compass_signals.cost_efficiency.evidence import (
     CacheEvidence,
     enrich_trace,
 )
-from compass.evidence import extract_evidence
+from compass.field_extraction import extract_evidence
 from compass.traces import SpanKind, TraceSnapshot
 
 # Each detector reads the snapshot and returns complete Findings, cause included.

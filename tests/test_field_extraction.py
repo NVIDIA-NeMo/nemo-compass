@@ -10,7 +10,7 @@ from pydantic import BaseModel, ValidationError
 from compass.compass_signals._trace import walk_spans
 from compass.compass_signals.cost_efficiency.evidence import CacheEvidence, enrich_trace
 from compass.compass_signals.cost_efficiency.signal import CostEfficiencyCompassSignal
-from compass.evidence import _Extraction
+from compass.field_extraction import _Extraction
 from compass.traces import UNSET, Span, SpanKind, Trace, TraceAggregate, TraceSnapshot
 
 
@@ -120,7 +120,7 @@ def test_nooa_requires_complete_application_before_returning():
 
     from nooa.unifiedllm import LLMResponse, ToolCall
 
-    from compass.evidence import extract_evidence
+    from compass.field_extraction import extract_evidence
 
     def response(name, arguments):
         return LLMResponse(
