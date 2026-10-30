@@ -161,6 +161,8 @@ def test_real_intake_langchain_session_merges_both_otlp_traces(loaded):
         assert span.tool_name == "multiply"
         assert span.input == {"a": 6, "b": 7}
         assert span.tool_call is not None
+        # The fake LLM names its one call call_multiply_1 in both runs.
+        assert span.tool_call.call_id == span.tool_call.result_id == "call_multiply_1"
         assert isinstance(span.tool_call.results, list)
         (result,) = span.tool_call.results
         assert result.is_error is False

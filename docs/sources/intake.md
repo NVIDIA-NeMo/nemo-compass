@@ -67,6 +67,9 @@ Span and trace `input_tokens`, `cached_tokens` and `output_tokens` become `token
 (`input_total`, `cached_input_tokens`, `output_tokens`); Intake's `input_tokens` already
 include cached tokens. A merged trace's `aggregate.token_counts` sums its Intake traces.
 
+A tool span's `tool_call.call_id` and `result_id` come from the ATIF tool call, or from
+the `tool_call_id` of a LangChain ToolMessage output (as OpenInference records it).
+
 `trace.max_traces` overrides `query.max_traces`, and both count merged traces, one per
 `session_id`; each selected `session_id` is loaded completely within the window. Without
 either limit, every matching trace in the window is loaded.

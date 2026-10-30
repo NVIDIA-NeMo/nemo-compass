@@ -707,6 +707,10 @@ def _normalize_span(
         input_value, output_value, tool_name, tool_call, payload_result = (
             _normalize_atif_tool_payload(raw, input_value=input_value, output_value=output_value)
         )
+    elif kind is SpanKind.TOOL:
+        call_id = _langchain_tool_call_id(raw_output)
+        if call_id is not None:
+            tool_call = ToolCall(call_id=call_id, result_id=call_id)
 
     started_at = _aware_utc(raw.started_at)
     ended_at = _aware_utc(raw.ended_at) if raw.ended_at is not None else None
@@ -842,6 +846,17 @@ def _canonical_spans(trace_id: str, spans: list[_IntakeSpan]) -> list[_IntakeSpa
     if len(result) != len(spans):
         raise ValueError(f"trace {trace_id!r} contains a parent cycle")
     return result
+
+
+def _langchain_tool_call_id(output: JsonValue | UNSET) -> str | None:
+    """The call id of a LangChain ToolMessage output, as OpenInference records it."""
+    if not isinstance(output, Mapping) or output.get("type") != "tool":
+        return None
+    data = output.get("data")
+    if not isinstance(data, Mapping):
+        return None
+    call_id = data.get("tool_call_id")
+    return call_id if isinstance(call_id, str) and call_id else None
 
 
 def _normalize_atif_tool_payload(

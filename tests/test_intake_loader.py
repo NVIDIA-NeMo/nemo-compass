@@ -714,6 +714,35 @@ def test_intake_maps_span_token_counts():
     assert span.children[0].token_counts is None
 
 
+def test_intake_langchain_tool_message_output_carries_the_call_id():
+    message = {"type": "tool", "data": {"content": "42", "tool_call_id": "call-1"}}
+    loader = _loader_for_records(
+        [
+            _span_record("root", source="otel"),
+            _span_record(
+                "a", source="otel", kind="TOOL", parent_span_id="root", output=json.dumps(message)
+            ),
+            _span_record(
+                "b",
+                source="otel",
+                kind="TOOL",
+                parent_span_id="root",
+                started_at="2026-08-28T18:40:01",
+                output='"42"',
+            ),
+        ],
+    )
+    (root,) = _record_roots(next(iter(loader.load())))
+    calls = [span.tool_call for span in root.children]
+    assert [(call.call_id, call.result_id) for call in calls if call] == [
+        ("call-1", "call-1"),
+        (None, None),
+    ]
+    assert calls[0] is not None and calls[0].results == [
+        ToolResult(content=message, is_error=False)
+    ]
+
+
 def _agent_attributes(*names: str) -> str:
     definitions = [{"name": name, "parameters": {"type": "object"}} for name in names]
     return json.dumps({"agent": {"tool_definitions": definitions}})
