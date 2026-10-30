@@ -30,3 +30,11 @@ Each fixture directory's README.md records the exact source revision and files.
   Source: https://github.com/harbor-framework/harbor (v0.24.0,
           b53b8134e1241686dca7759af188f987ecc48e8b)
   License text: tests/fixtures/real/intake/LICENSE-harbor.txt
+
+  LangChain docs (tests/fixtures/real/langsmith/)
+  Copyright (c) 2025 LangChain
+  License: MIT
+  Source: https://github.com/langchain-ai/docs
+          (529d160b243aee561329e0d40754fdc10905c57a, src/code-samples/trace-links.json;
+          runs from the public LangSmith project docs-code-samples)
+  License text: tests/fixtures/real/langsmith/LICENSE-langchain-docs.txt
