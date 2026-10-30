@@ -14,6 +14,7 @@ SINGLE = FIXTURES / "example_single_tool_call.example_rollouts.jsonl"
 MULTIREWARD = FIXTURES / "example_tool_call_multireward.example_rollouts.jsonl"
 MULTI_TURN = FIXTURES / "example_multi_turn_gymnasium.example_rollouts.jsonl"
 AVIARY = FIXTURES / "aviary.example_rollouts.jsonl"
+GRAPHWALKS = FIXTURES / "graphwalks.example_rollouts.jsonl"
 
 
 def rows(path):
@@ -273,3 +274,27 @@ def test_aviary_transitions_load_the_last_transition():
             assert root.output is UNSET
         assert trace.losses == []
     assert [len(trace.root_spans[0].children) - 1 for trace in traces] == [1, 1, 5, 3, 3]
+
+
+def test_byte_identical_rollouts_load_once():
+    lines = GRAPHWALKS.read_text().splitlines()
+    # Lines 4 and 5 are the same rollout written twice: same response id, task and
+    # rollout index.
+    assert lines[3] == lines[4]
+    assert json.loads(lines[3])["response"]["id"] == "resp_49c351616734407a8520348626394e6b"
+    loader = GymTraceLoader(GymTraceConfig(path=GRAPHWALKS))
+    traces = list(loader.load())
+
+    uri = GRAPHWALKS.resolve().as_uri()
+    assert [trace.source_url for trace in traces] == [f"{uri}#L{line}" for line in range(1, 5)]
+    assert [trace.case_id for trace in traces] == [
+        "gym-task-index-439",
+        "gym-task-index-5",
+        "gym-task-index-2",
+        "gym-task-index-11",
+    ]
+    assert [trace.root_spans[0].children[0].attributes["gym_response_id"] for trace in traces] == [
+        json.loads(line)["response"]["id"] for line in lines[:4]
+    ]
+    description = loader.describe()
+    assert (description["trace_count"], description["duplicate_record_count"]) == (4, 1)

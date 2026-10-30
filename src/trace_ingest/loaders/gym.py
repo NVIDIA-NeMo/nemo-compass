@@ -55,8 +55,9 @@ Responses shape instead: a rollout envelope (``responses_create_params`` plus
   environment step. Each must extend the previous one; the last is the output,
   with item paths ``$.response.output[<last>][<i>]``.
 - Identity: ``"gym-" + sha256(record bytes)[:16]`` where the record bytes are
-  the JSONL line or whole JSON file with surrounding ASCII whitespace stripped,
-  so byte-identical records collide and are rejected as duplicates.
+  the JSONL line or whole JSON file with surrounding ASCII whitespace stripped.
+  A byte-identical record repeats the response id, so it is the same rollout
+  recorded again and loads once.
   ``_ng_task_index`` sets ``Trace.case_id`` to ``gym-task-index-<n>``.
   The gaps ``ng_trajectory_unavailable`` and ``responses_output_aggregated``
   record the missing attachment and the lost interleaving.
@@ -139,11 +140,14 @@ class GymTraceDescription(TraceDescription):
     ``call_count`` counts tool spans; ``distinct_cases`` counts task IDs.
     ``gap_count`` sums source-reported gaps and unresolved ownership/parent gaps
     added by this loader. Zero gaps is not proof of complete producer coverage.
+    ``duplicate_record_count`` counts records skipped as byte-identical to an
+    earlier record.
     """
 
     path: str
     format: str
     gap_count: int
+    duplicate_record_count: int
 
 
 def _object(value: object) -> dict[str, Any]:
@@ -583,7 +587,7 @@ def _responses_turns(
     return turns
 
 
-def _normalize_responses(record: dict[str, Any], raw: bytes) -> Trace:
+def _normalize_responses(record: dict[str, Any], digest: str) -> Trace:
     """Map a rollout envelope or standalone Responses object without ``ng_trajectory``.
 
     One AGENT root holds one LLM span for the recorded response and one TOOL
@@ -719,7 +723,7 @@ def _normalize_responses(record: dict[str, Any], raw: bytes) -> Trace:
         )
     except NoTurns:
         pass  # No mappable conversation: turns stay unset.
-    identity = "gym-" + hashlib.sha256(raw.strip()).hexdigest()[:16]
+    identity = "gym-" + digest[:16]
     task_index = record.get("_ng_task_index")
     attributes: dict[str, Any] = {
         "gym": record,
@@ -742,7 +746,7 @@ def _normalize_responses(record: dict[str, Any], raw: bytes) -> Trace:
     )
 
 
-def _normalize(record: dict[str, Any], raw: bytes) -> Trace:
+def _normalize(record: dict[str, Any], digest: str) -> Trace:
     """Map one native attachment while retaining the complete source envelope.
 
     Rollout IDs identify traces; task IDs group logical cases. Invocations,
@@ -753,7 +757,7 @@ def _normalize(record: dict[str, Any], raw: bytes) -> Trace:
     """
 
     if record.get("ng_trajectory") is None:
-        return _normalize_responses(record, raw)
+        return _normalize_responses(record, digest)
     source = _object(record["ng_trajectory"])
     if source.get("schema_version") != "1.0":
         raise GymTraceLoadError("unsupported ng_trajectory schema_version; expected 1.0")
@@ -955,8 +959,11 @@ class GymTraceLoader:
     """Normalize native Gym rollouts into a cached, disk-backed snapshot.
 
     The first ``load()`` or ``describe()`` reads and validates the entire file;
-    later calls reuse that snapshot even if the source file changes. Empty
-    input, duplicate rollout IDs and ambiguous records raise GymTraceLoadError.
+    later calls reuse that snapshot even if the source file changes. A record
+    byte-identical to an earlier one is the same rollout recorded again (it
+    repeats the response id or rollout ID): it loads once, and
+    ``duplicate_record_count`` counts the repeats. Empty input, other duplicate
+    rollout IDs and ambiguous records raise GymTraceLoadError.
     Missing evidence stays missing; whole-rollout totals are not inferred.
 
     Example:
@@ -969,19 +976,25 @@ class GymTraceLoader:
 
     @cached_property
     def _loaded(self) -> tuple[TraceSnapshot, GymTraceDescription]:
-        _line_number = calls = gap_count = 0
+        _line_number = calls = gap_count = duplicates = 0
+        digests: set[str] = set()
         cases: set[str] = set()
         sessions: set[str] = set()
         path = self.config.path
 
         def traces() -> Iterator[Trace]:
-            nonlocal _line_number, calls, gap_count
+            nonlocal _line_number, calls, gap_count, duplicates
             with path.open("rb") as stream:
                 records = [stream.read()] if self.config.format == "json" else stream
                 for _line_number, raw in enumerate(records, 1):
                     if not raw.strip():
                         continue
-                    trace = _normalize(_object(_decode(raw)), raw)
+                    digest = hashlib.sha256(raw.strip()).hexdigest()
+                    if digest in digests:
+                        duplicates += 1
+                        continue
+                    digests.add(digest)
+                    trace = _normalize(_object(_decode(raw)), digest)
                     trace.source_url = file_source_url(
                         path, _line_number if self.config.format == "jsonl" else None
                     )
@@ -1017,6 +1030,7 @@ class GymTraceLoader:
             distinct_cases=len(cases),
             distinct_sessions=len(sessions),
             gap_count=gap_count,
+            duplicate_record_count=duplicates,
         )
 
     def load(self) -> TraceSnapshot:

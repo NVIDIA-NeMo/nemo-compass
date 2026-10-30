@@ -71,7 +71,10 @@ Invocation nesting, captured model calls, tool arguments and results, recorded
 status and timing, semantic turns, rewards, and evidence gaps are preserved.
 Task IDs group repeated rollouts. Missing evidence stays missing, nullable token
 counts are not filled with zero, and rewards do not establish execution success.
-Duplicate rollout IDs and ambiguous joins are rejected.
+A record byte-identical to an earlier one in the file repeats its rollout or response
+ID, so it is the same rollout recorded twice: it loads once, and the source description's
+`duplicate_record_count` counts the repeats. Other duplicate rollout IDs and ambiguous
+joins are rejected.
 
 ## Rollouts without ng_trajectory
 
@@ -90,8 +93,8 @@ messages, model turns and tool calls were interleaved; each tool span's `item_pa
 and the model span's output keep the source order. Each record reports the gaps
 `ng_trajectory_unavailable` and `responses_output_aggregated`. The trace ID is `gym-`
 plus the first 16 hex digits of the SHA-256 of the record bytes (the JSONL line or JSON
-file, without surrounding whitespace), so byte-identical records are rejected as
-duplicates. `_ng_task_index` groups repeated rollouts of one task.
+file, without surrounding whitespace). `_ng_task_index` groups repeated rollouts of one
+task.
 
 Multi-turn agents, such as Gym's gymnasium and simulated-user agents, append each
 environment observation or user reply to the response output as a user message before

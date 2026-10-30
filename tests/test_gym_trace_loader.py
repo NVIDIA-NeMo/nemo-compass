@@ -163,6 +163,7 @@ def test_native_gym_mapping_and_cached_description(tmp_path):
         "distinct_cases": 1,
         "distinct_sessions": 0,
         "gap_count": 1,
+        "duplicate_record_count": 0,
     }
     loader.config.path.unlink()
     assert loader.load() is snapshot
@@ -266,8 +267,14 @@ def test_legacy_records_missing_files_and_duplicate_rollouts(tmp_path):
         loader_for(tmp_path, {"response": {"output": []}}).load()
     with pytest.raises(GymTraceLoadError):
         GymTraceLoader(GymTraceConfig(path=tmp_path / "missing")).load()
+    # The same rollout ID with different content is ambiguous.
     with pytest.raises(GymTraceLoadError):
-        loader_for(tmp_path, rollout(), rollout()).load()
+        loader_for(tmp_path, rollout(), {**rollout(), "reward": 1.0}).load()
+    # A byte-identical record is the same rollout recorded again.
+    loader = loader_for(tmp_path, rollout(), rollout())
+    (trace,) = loader.load()
+    assert trace.id == "rollout-1" and trace.source_url.endswith("#L1")
+    assert loader.describe()["duplicate_record_count"] == 1
 
 
 def test_explicit_cli_source_selection(tmp_path):
@@ -786,9 +793,11 @@ def test_eval_author_responses_fixtures_load(tmp_path):
         assert tool.tool_name == "lookup_item" and tool.input == {"sku": "BOLT-17"}
         assert tool.tool_call is not None and tool.tool_call.results is not UNSET
         assert tool.tool_call.result_count == len(tool.tool_call.results) == 1
-    # Byte-identical rows share a content identity, so one JSONL corpus is a duplicate.
-    with pytest.raises(GymTraceLoadError):
-        GymTraceLoader(GymTraceConfig(path=RESPONSES_FIXTURES / "ambiguous.jsonl")).load()
+    # Byte-identical rows are one rollout recorded twice: it loads once.
+    loader = GymTraceLoader(GymTraceConfig(path=RESPONSES_FIXTURES / "ambiguous.jsonl"))
+    (trace,) = loader.load()
+    assert trace.id == "gym-" + hashlib.sha256(lines[0].strip()).hexdigest()[:16]
+    assert loader.describe()["duplicate_record_count"] == 1
 
 
 # Conversation turns, ported from Eval Author's gym-to-atif converter
