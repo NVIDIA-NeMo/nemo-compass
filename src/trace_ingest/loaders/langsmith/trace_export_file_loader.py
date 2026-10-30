@@ -100,6 +100,8 @@ class _ExportRun:
     extra: dict[str, JsonValue]
     tags: JsonValue | None
     total_cost: float | None
+    prompt_tokens: object
+    completion_tokens: object
     feedback_stats: JsonValue
     dotted_order: None = None
     app_path: None = None
@@ -366,7 +368,7 @@ def _parse_run(value: object, *, path: Path, line_number: int) -> _ExportRun:
     custom_metadata = _optional_mapping(
         value["custom_metadata"], path, line_number, "custom_metadata"
     )
-    _optional_mapping(value["token_usage"], path, line_number, "token_usage")
+    token_usage = _optional_mapping(value["token_usage"], path, line_number, "token_usage") or {}
     costs = _optional_mapping(value["costs"], path, line_number, "costs")
     tags = value["tags"]
     if tags is not None and not (
@@ -414,6 +416,8 @@ def _parse_run(value: object, *, path: Path, line_number: int) -> _ExportRun:
         extra=extra,
         tags=_json_value(tags),
         total_cost=_total_cost(costs, path, line_number),
+        prompt_tokens=token_usage.get("prompt_tokens"),
+        completion_tokens=token_usage.get("completion_tokens"),
         feedback_stats=_json_value(value["feedback_stats"]),
     )
 

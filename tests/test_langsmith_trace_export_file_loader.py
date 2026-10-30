@@ -15,7 +15,7 @@ from compass.trace_loaders.langsmith import (
     LangSmithTraceLoadError,
 )
 from compass.traces import SpanKind, Trace
-from trace_ingest.models import UNSET, Authorship, ToolResult, TurnRole
+from trace_ingest.models import UNSET, Authorship, TokenCounts, ToolResult, TurnRole
 
 
 def _records(trace: Trace) -> list[dict]:
@@ -588,3 +588,72 @@ def test_loader_keeps_langgraph_interrupts_apart_from_errors(tmp_path):
     langsmith = tool.attributes["langsmith"]
     assert isinstance(langsmith, dict)
     assert langsmith["interrupt"] == interrupt
+
+
+def test_loader_reads_model_and_token_counts_of_model_calls(tmp_path):
+    def llm(run_id: str, prompt: int, completion: int, cache_read: int):
+        return trace_export_run_record(
+            run_id,
+            parent_run_id="trace-1",
+            name="ChatAnthropic",
+            run_type="llm",
+            token_usage={
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "total_tokens": prompt + completion,
+            },
+            custom_metadata={
+                "ls_model_name": "claude-sonnet-4-6",
+                "usage_metadata": {
+                    "input_tokens": prompt,
+                    "output_tokens": completion,
+                    "input_token_details": {"cache_read": cache_read, "cache_creation": 0},
+                },
+            },
+        )
+
+    write_trace_export_file(
+        tmp_path / "trace-1.jsonl",
+        # The root's token_usage rolls up its model calls.
+        trace_export_run_record(
+            "trace-1",
+            token_usage={"prompt_tokens": 30, "completion_tokens": 5, "total_tokens": 35},
+        ),
+        llm("llm-1", 10, 2, 4),
+        llm("llm-2", 20, 3, 0),
+    )
+
+    (trace,) = LangSmithTraceExportFileLoader(LangSmithTraceExportFileConfig(path=tmp_path)).load()
+
+    (root,) = trace.root_spans
+    assert root.model is None
+    assert root.token_counts is None
+    assert [(span.model, span.token_counts) for span in root.children] == [
+        (
+            "claude-sonnet-4-6",
+            TokenCounts(
+                input_total=10,
+                cached_input_tokens=4,
+                output_tokens=2,
+                cache_write_tokens=0,
+                source="langsmith",
+            ),
+        ),
+        (
+            "claude-sonnet-4-6",
+            TokenCounts(
+                input_total=20,
+                cached_input_tokens=0,
+                output_tokens=3,
+                cache_write_tokens=0,
+                source="langsmith",
+            ),
+        ),
+    ]
+    assert trace.aggregate.token_counts == TokenCounts(
+        input_total=30,
+        cached_input_tokens=4,
+        output_tokens=5,
+        cache_write_tokens=0,
+        source="langsmith",
+    )

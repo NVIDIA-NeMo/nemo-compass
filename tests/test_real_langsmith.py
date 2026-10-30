@@ -25,7 +25,15 @@ from trace_ingest.loaders.langsmith import (
     LangSmithTraceLoader,
 )
 from trace_ingest.loaders.langsmith._normalization import walk_spans
-from trace_ingest.models import UNSET, Span, SpanKind, Trace, TraceSnapshot, TurnRole
+from trace_ingest.models import (
+    UNSET,
+    Span,
+    SpanKind,
+    TokenCounts,
+    Trace,
+    TraceSnapshot,
+    TurnRole,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "real" / "langsmith"
 MEMORY = "01a189c7-63c9-72b2-a6c6-7dfb9b6bd47d"  # no thread key
@@ -292,3 +300,36 @@ def test_langgraph_interrupts_are_not_errors(snapshot):
         assert isinstance(langsmith, dict)
         assert str(langsmith["interrupt"]).startswith("GraphInterrupt((Interrupt(value=")
     assert all(span.error is None for span in _spans(trace))
+
+
+def test_model_calls_carry_model_and_token_counts(snapshot):
+    memory = _trace(snapshot, MEMORY)
+    calls = _named(memory, "ChatAnthropic")
+    assert [span.model for span in calls] == ["claude-sonnet-4-6", "claude-sonnet-4-6"]
+    assert [
+        (count.input_total, count.cached_input_tokens, count.output_tokens)
+        for span in calls
+        if (count := span.token_counts) is not None
+    ] == [(548, 0, 51), (627, 0, 40)]
+    assert memory.aggregate.token_counts == TokenCounts(
+        input_total=548 + 627,
+        cached_input_tokens=0,
+        output_tokens=51 + 40,
+        cache_write_tokens=0,
+        source="langsmith",
+    )
+    assert all(span.model is None for span in _spans(memory) if span.kind is not SpanKind.LLM)
+    account = _trace(snapshot, f"session:{ACCOUNT_THREAD}")
+    assert [span.model for span in _named(account, "ChatOpenAI")] == ["gpt-5.5", "gpt-5.5"]
+    # OpenAI's input_token_details has no cache_creation.
+    assert account.aggregate.token_counts == TokenCounts(
+        input_total=134 + 175, cached_input_tokens=0, output_tokens=14 + 14, source="langsmith"
+    )
+    thread = _trace(snapshot, "session:1")
+    assert [span.model for span in _spans(thread) if span.kind is SpanKind.LLM] == [
+        "gpt-5.5",
+        "gpt-5.5",
+        "gpt-5-nano",
+    ]
+    # 01a189c9-5b35 calls no model, so the thread reports no totals.
+    assert thread.aggregate.token_counts is None

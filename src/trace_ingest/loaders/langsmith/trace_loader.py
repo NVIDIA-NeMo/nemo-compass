@@ -49,6 +49,8 @@ _RUN_SELECT_FIELDS = [
     "trace_id",
     "dotted_order",
     "total_cost",
+    "prompt_tokens",
+    "completion_tokens",
     "app_path",
     "feedback_stats",
 ]
