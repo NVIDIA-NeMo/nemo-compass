@@ -398,3 +398,15 @@ def test_tool_results_match_result_counts(rows):
     assert len(first.tool_call.results) == first.tool_call.result_count == 1
     assert first.tool_call.results[0].is_error is (True if first.error else None)
     assert second.tool_call.results == [] and second.tool_call.result_count == 0
+
+
+@pytest.mark.parametrize("column", ["metadata", "metrics", "span_attributes"])
+def test_null_object_columns_are_accepted(rows, column):
+    # The query API declares these columns nullable; real rows carry "metadata": null.
+    rows[3][column] = None
+    with client_for(rows) as client:
+        trace = next(iter(BraintrustTraceLoader(config(), client=client).load()))
+    [llm] = trace.root_spans[0].children
+    braintrust = llm.attributes["braintrust"]
+    assert isinstance(braintrust, dict)
+    assert braintrust[column] is None

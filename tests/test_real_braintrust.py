@@ -37,6 +37,10 @@ def ruby_rows() -> list[dict]:
     return [json.loads(line) for line in text.splitlines()]
 
 
+def harbor_rows(name: str) -> list[dict]:
+    return json.loads((FIXTURES / f"{name}.fetch-response.json").read_text())["events"]
+
+
 def load(rows: list[dict], *, project_id: str | None = None, experiment_id: str | None = None):
     """Replay the recorded rows as Braintrust would answer the loader's two BTQL queries."""
 
@@ -235,3 +239,52 @@ def test_ruby_experiment_eval_and_task_spans():
     assert task.output == {"result": "5"}
     assert (task.start_time, task.end_time) == (at(1772766230.701499), at(1772766230.7015128))
     assert task.children == []
+
+
+def test_python_harbor_rows_with_null_metadata():
+    rows = harbor_rows("tool_calls_per_turn")
+    # The root and the trajectory step span were logged without metadata.
+    assert [row["span_id"] for row in rows if row["metadata"] is None] == [
+        "072a770c29393da6",
+        "e18806b7b5dc6cc3",
+    ]
+    _, traces = load(rows, experiment_id="5338e98e-ec96-47bd-8aab-99dc1aefcc74")
+
+    [trace] = traces
+    assert trace.id == "72e7027c0bca3e9e21011705849951f7"
+    assert trace.aggregate.latency_ms == 4000
+    [root] = trace.root_spans
+    assert root.id == "e18806b7b5dc6cc3"
+    assert root.kind is SpanKind.AGENT
+    assert root.attributes["braintrust"]["metadata"] is None
+    assert root.model is None
+    assert root.turns is UNSET  # root input is null
+    assert {child.id: (child.kind, child.model) for child in root.children} == {
+        "e85ba18b067a54df": (SpanKind.LLM, "gpt-4o-mini"),
+        "0da5cd06d84547d0": (SpanKind.TOOL, None),
+        "efe8b93dc41a3c81": (SpanKind.LLM, "gpt-4o-mini"),
+        "942ad65273083ced": (SpanKind.TOOL, None),
+        "072a770c29393da6": (SpanKind.CHAIN, None),
+    }
+    tools = {child.id: child for child in root.children if child.kind is SpanKind.TOOL}
+    assert {key: (tool.tool_name, tool.input, tool.output) for key, tool in tools.items()} == {
+        "0da5cd06d84547d0": ("read_file", {"path": "/app/answer.txt"}, "42"),
+        "942ad65273083ced": ("read_file", {"path": "/app/notes.txt"}, "none"),
+    }
+
+
+def test_python_harbor_skips_rows_of_other_traces():
+    rows = harbor_rows("round_trips")
+    _, traces = load(rows, experiment_id="7aba8758-862e-41ef-9e77-6247c4b71287")
+
+    # One stale tool row belongs to a root that is not in the page; it is never selected.
+    [trace] = traces
+    assert trace.id == "756e122672cb74dd5a53964ea59f2853"
+    assert trace.aggregate.latency_ms == 3000
+    [root] = trace.root_spans
+    assert root.attributes["braintrust"]["metadata"] is None
+    assert {child.id: child.kind for child in root.children} == {
+        "f8e4e029c001460e": SpanKind.LLM,
+        "942655bdec6ae4dd": SpanKind.TOOL,
+        "e55e28b6572e18a1": SpanKind.LLM,
+    }

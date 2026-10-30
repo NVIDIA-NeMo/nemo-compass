@@ -103,9 +103,10 @@ class _ProviderSpan(BaseModel):
     root_span_id: str = Field(min_length=1)
     is_root: bool | None = None
     span_parents: list[str] | None = None
-    span_attributes: dict[str, JsonValue] = Field(default_factory=dict)
-    metadata: dict[str, JsonValue] = Field(default_factory=dict)
-    metrics: dict[str, JsonValue] = Field(default_factory=dict)
+    # The API declares these columns nullable; SDKs log spans without metadata.
+    span_attributes: dict[str, JsonValue] | None = None
+    metadata: dict[str, JsonValue] | None = None
+    metrics: dict[str, JsonValue] | None = None
     scores: dict[str, float | None] | None = None
     input: JsonValue | UNSET = UNSET
     output: JsonValue | UNSET = UNSET
@@ -373,7 +374,7 @@ def _normalize_trace(
 
 
 def _metric(span: _ProviderSpan, name: str) -> float | None:
-    value = span.metrics.get(name)
+    value = (span.metrics or {}).get(name)
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -387,7 +388,8 @@ def _start_key(span: _ProviderSpan) -> float:
 
 
 def _normalize_span(provider: _ProviderSpan, pointer: dict[str, JsonValue]) -> Span:
-    provider_type = provider.span_attributes.get("type")
+    span_attributes = provider.span_attributes or {}
+    provider_type = span_attributes.get("type")
     kind = {
         "llm": SpanKind.LLM,
         "tool": SpanKind.TOOL,
@@ -398,8 +400,8 @@ def _normalize_span(provider: _ProviderSpan, pointer: dict[str, JsonValue]) -> S
     }.get(str(provider_type), SpanKind.UNKNOWN)
     start = _metric(provider, "start")
     end = _metric(provider, "end")
-    name = provider.span_attributes.get("name")
-    model = provider.metadata.get("model")
+    name = span_attributes.get("name")
+    model = (provider.metadata or {}).get("model")
     return Span(
         id=provider.span_id,
         kind=kind,
