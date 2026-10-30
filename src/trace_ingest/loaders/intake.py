@@ -135,6 +135,8 @@ class _EvaluatorResult(_WireModel):
     value: float | None = Field(default=None, allow_inf_nan=False)
     string_value: str | None = None
     data_type: Literal["NUMERIC", "BOOLEAN", "CATEGORICAL", "TEXT"]
+    # A FAILED result records an evaluator that ran but could not score; it has no value.
+    status: Literal["SCORED", "FAILED"] = "SCORED"
     comment: str | None = None
     created_by: str | None = None
     created_at: datetime
@@ -142,6 +144,8 @@ class _EvaluatorResult(_WireModel):
 
     @model_validator(mode="after")
     def value_matches_type(self) -> _EvaluatorResult:
+        if self.status == "FAILED":
+            return self
         if self.data_type in {"NUMERIC", "BOOLEAN"} and self.value is None:
             raise ValueError(f"{self.data_type} evaluator result requires value")
         if self.data_type in {"CATEGORICAL", "TEXT"} and self.string_value is None:

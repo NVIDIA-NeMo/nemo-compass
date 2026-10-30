@@ -6,8 +6,8 @@
 See tests/fixtures/real/intake/README.md for how the recording was made.
 
 Not asserted, because the loader is known to get them wrong on this data: token counts
-(Intake span and trace token fields are dropped); evaluator result `status`; and losses,
-since the dropped tokens are not reported as one.
+(Intake span and trace token fields are dropped); and losses, since the dropped tokens are
+not reported as one.
 """
 
 from __future__ import annotations
@@ -29,7 +29,9 @@ from compass.trace_loaders.intake import (
 from compass.traces import Span, Trace, TraceSnapshot
 from trace_ingest.models import UNSET
 
-RECORDING = Path(__file__).parent / "fixtures" / "real" / "intake" / "all-sessions.json"
+FIXTURES = Path(__file__).parent / "fixtures" / "real" / "intake"
+RECORDING = FIXTURES / "all-sessions.json"
+FAILED_RESULT_RECORDING = FIXTURES / "langchain-session-with-failed-evaluator-result.json"
 BASE_URL = "http://127.0.0.1:18731"
 
 LANGCHAIN_SESSION = "langchain-openinference-smoke"
@@ -39,9 +41,12 @@ ATIF_ROOT = f"{ATIF_SESSION}/span-e299ea5f59c8bbcf0982e2aba19e4839"
 QUESTION = "What is 6 times 7? Use the multiply tool."
 
 
-def _replay() -> httpx.MockTransport:
-    """Serve each recorded body unchanged for the exact URL and query it was recorded for."""
-    exchanges = json.loads(RECORDING.read_text())
+def _replay(*recordings: Path) -> httpx.MockTransport:
+    """Serve each recorded body unchanged for the exact URL and query it was recorded for.
+
+    An exchange recorded in an earlier file wins over the same request in a later one.
+    """
+    exchanges = [exchange for path in recordings for exchange in json.loads(path.read_text())]
 
     def handler(request: httpx.Request) -> httpx.Response:
         url = str(request.url.copy_with(query=None))
@@ -69,7 +74,7 @@ def loaded() -> tuple[IntakeTraceLoader, TraceSnapshot]:
                 started_at_lte=datetime(2026, 10, 31, tzinfo=timezone.utc),
             ),
         ),
-        transport=_replay(),
+        transport=_replay(RECORDING),
     )
     return loader, loader.load()
 
@@ -297,3 +302,45 @@ def test_real_intake_atif_turns(loaded):
     # The ATIF step that only calls Write records no message.
     assert turns[1].content is UNSET
     assert turns[2].content == "Created `/app/hello.txt` containing `Hello, world!`."
+
+
+def test_real_intake_keeps_a_failed_evaluator_result_without_value():
+    # The recording stops after evaluator results (the load used to fail there); the spans
+    # Intake serves for these traces were recorded in all-sessions.json.
+    loader = IntakeTraceLoader(
+        config=IntakeTraceLoaderConfig(
+            base_url=BASE_URL,
+            workspace="default",
+            query=IntakeTraceQuery(
+                started_at_gte=datetime(2026, 8, 1, tzinfo=timezone.utc),
+                started_at_lte=datetime(2026, 10, 31, tzinfo=timezone.utc),
+                session_id=LANGCHAIN_SESSION,
+                max_traces=1,
+            ),
+        ),
+        transport=_replay(FAILED_RESULT_RECORDING, RECORDING),
+    )
+    (trace,) = loader.load()
+
+    assert trace.id == f"session:{LANGCHAIN_SESSION}"
+    assert set(trace.evaluator_results) == {"answer_correct", "faithfulness/v1"}
+    assert _result_fields(trace.evaluator_results["answer_correct"], "status", "value") == [
+        (LANGCHAIN_TRACES[1], {"status": "SCORED", "value": 1.0})
+    ]
+    results = trace.evaluator_results["faithfulness/v1"]
+    assert isinstance(results, list)
+    (failed,) = results
+    assert isinstance(failed, dict)
+    assert failed["trace_id"] == LANGCHAIN_TRACES[0]
+    assert failed["value"] == {
+        "evaluator_result_id": "eval-29543f2f558e0d59dfd9f5420139a1f6",
+        "span_id": "3871b4b2a9ab1db6",
+        "session_id": LANGCHAIN_SESSION,
+        "workspace": "default",
+        "name": "faithfulness/v1",
+        "data_type": "NUMERIC",
+        "status": "FAILED",
+        "comment": "judge timed out",
+        "created_at": "2026-10-30T16:04:58.807000",
+        "ingested_at": "2026-10-30T16:04:58.807000",
+    }

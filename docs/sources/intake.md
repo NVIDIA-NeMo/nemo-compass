@@ -60,7 +60,8 @@ shares a `session_id` is merged into one trace with id `session:<session_id>`. E
 trace's spans sit under the merged trace's root span, ordered by their earliest start, with
 ids `<trace id>/<span id>`. Per-trace Intake attributes are listed in `attributes.records`.
 Evaluator results are listed per metric as `{"trace_id", "value"}` entries; a result's
-`span_id` is the Intake span id, so prefix it with `<trace id>/` to find the span.
+`span_id` is the Intake span id, so prefix it with `<trace id>/` to find the span. A result
+with `status: FAILED` (the evaluator ran but could not score) is kept and has no value.
 
 `trace.max_traces` overrides `query.max_traces`, and both count merged traces, one per
 `session_id`; each selected `session_id` is loaded completely within the window. Without
