@@ -15,6 +15,7 @@ from typing import Any, Generic, TypeVar
 
 from nooa import Agent, strategy
 from nooa.config import CodeActConfig
+from nooa.errors import GenerationAborted, GenerationError
 from nooa.strategies import CodeActStrategy
 from nooa.strategy_validation import InvariantError
 from nooa.unifiedllm import UnifiedLLM
@@ -115,7 +116,7 @@ async def extract_evidence(
             return extraction.apply(extractor)
 
         @strategy(
-            CodeActStrategy(config=CodeActConfig(max_iterations=12, postconditions=[complete]))
+            CodeActStrategy(config=CodeActConfig(max_iterations=25, postconditions=[complete]))
         )
         async def collect(self, schema: dict[str, Any], instructions: str) -> None:
             """Inspect representative layouts from records() without loading the whole dataset.
@@ -127,7 +128,13 @@ async def extract_evidence(
             ...
 
     async with llm:
-        await Extractor(llm=llm).collect(schema.model_json_schema(), instructions)
+        try:
+            await Extractor(llm=llm).collect(schema.model_json_schema(), instructions)
+        except GenerationAborted:
+            raise
+        except GenerationError:
+            if extraction.result is None:
+                raise
     if extraction.result is None:
         raise RuntimeError("Evidence extraction did not complete")
     return extraction.result

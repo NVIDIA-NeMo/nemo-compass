@@ -159,6 +159,48 @@ def test_nooa_requires_complete_application_before_returning():
     assert evidence.get_trace_by_id("t").root_spans[0].attributes["seconds"] == 0.5
 
 
+@pytest.mark.parametrize("completed", [False, True])
+def test_cost_extraction_budget_preserves_completed_work_or_skips(completed):
+    import json
+
+    from nooa.unifiedllm import LLMResponse, ToolCall
+    from test_cost_efficiency import tool_change_session
+
+    snapshot = TraceSnapshot(tool_change_session(i) for i in range(4))
+    llm = FakeLLMClient(
+        [
+            LLMResponse(
+                raw_response=None,
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id=str(turn),
+                        name="execute_python",
+                        arguments=json.dumps(
+                            {
+                                "code": "self.apply(lambda trace, span: {})"
+                                if completed and turn == 24
+                                else "pass"
+                            }
+                        ),
+                    )
+                ],
+                finish_reason="tool_calls",
+                assistant_message={},
+            )
+            for turn in range(25)
+        ]
+    )
+    result = asyncio.run(CostEfficiencyCompassSignal(llm=llm).analyze(snapshot))
+    assert llm.call_count == 25
+    if completed:
+        assert result == CostEfficiencyCompassSignal().analyze_snapshot(snapshot)
+        assert result.finding_count > 0
+    else:
+        assert result.skip_reason == "Could not extract the required evidence."
+        assert result.problems == () and result.artifacts is None
+
+
 @pytest.mark.parametrize("mode", ["abstain", "missing", "conflicting"])
 def test_enrichment_preserves_recorded_facts_and_tool_ownership(mode):
     from test_cost_efficiency import tool_change_session

@@ -16,6 +16,7 @@ import asyncio
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
+from nooa.errors import GenerationAborted, GenerationError
 from nooa.unifiedllm import UnifiedLLM
 from pydantic import BaseModel, Field
 
@@ -73,7 +74,18 @@ class CostEfficiencyCompassSignal:
     async def analyze(self, snapshot: TraceSnapshot) -> CompassSignalResult:
         if self.llm is None:
             raise ValueError("cost-efficiency evidence extraction requires an LLM client")
-        view = await extract_evidence(snapshot, CacheEvidence, INSTRUCTIONS, self.llm, enrich_trace)
+        try:
+            view = await extract_evidence(
+                snapshot, CacheEvidence, INSTRUCTIONS, self.llm, enrich_trace
+            )
+        except GenerationAborted:
+            raise
+        except GenerationError:
+            return CompassSignalResult(
+                signal_name=self.name,
+                problems=(),
+                skip_reason="Could not extract the required evidence.",
+            )
         result = await asyncio.to_thread(self.analyze_snapshot, view)
         calls = missing = 0
         for trace in view:
