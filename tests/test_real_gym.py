@@ -12,6 +12,7 @@ from trace_ingest.models import UNSET, Authorship, SpanKind, TextPart, TokenCoun
 FIXTURES = Path(__file__).parent / "fixtures" / "real" / "gym_responses"
 SINGLE = FIXTURES / "example_single_tool_call.example_rollouts.jsonl"
 MULTIREWARD = FIXTURES / "example_tool_call_multireward.example_rollouts.jsonl"
+MULTI_TURN = FIXTURES / "example_multi_turn_gymnasium.example_rollouts.jsonl"
 
 
 def rows(path):
@@ -165,3 +166,58 @@ def test_multireward_rollouts_keep_task_index_and_reward_components():
     london = traces[4].root_spans[0]
     assert london.turns[1].content == "is it raining in London right now?"
     assert london.children[1].input == {"city": "London"}
+
+
+def test_multi_turn_gymnasium_rollouts_keep_environment_user_messages():
+    source = rows(MULTI_TURN)
+    traces = load(MULTI_TURN)
+
+    assert len(traces) == 5
+    assert [trace.case_id for trace in traces] == [
+        f"gym-task-index-{row['_ng_task_index']}" for row in source
+    ]
+    assert [trace.evaluator_results for trace in traces] == [{"gym.reward": 1.0}] * 5
+    for trace, row in zip(traces, source, strict=True):
+        (root,) = trace.root_spans
+        output = row["response"]["output"]
+        (model,) = root.children
+        assert (model.kind, model.model, model.output) == (
+            SpanKind.LLM,
+            "Qwen/Qwen3-4B-Instruct-2507",
+            output,
+        )
+        assert root.input == row["responses_create_params"]["input"]
+        assert root.output == output[-1]["content"][0]["text"]
+        # Gym's gymnasium agent appends each environment observation to the output as a
+        # user message, then calls the model again: the turns alternate from the request.
+        question, *rest = root.turns
+        assert (question.role, question.authorship, question.content) == (
+            TurnRole.USER,
+            Authorship.UNKNOWN,
+            row["responses_create_params"]["input"][0]["content"],
+        )
+        assert len(rest) == len(output)
+        for turn, item in zip(rest, output, strict=True):
+            if item["role"] == "user":
+                assert (turn.role, turn.authorship, turn.llm_span_ids) == (
+                    TurnRole.USER,
+                    Authorship.UNKNOWN,
+                    [],
+                )
+                assert turn.content == item["content"]
+            else:
+                assert (turn.role, turn.authorship, turn.llm_span_ids) == (
+                    TurnRole.AGENT,
+                    Authorship.MODEL,
+                    [model.id],
+                )
+                assert turn.content == [TextPart(text=item["content"][0]["text"])]
+        assert trace.losses == []
+
+    assert [len(trace.root_spans[0].turns) for trace in traces] == [4, 4, 4, 6, 4]
+    paris = traces[3].root_spans[0]
+    assert [turn.content for turn in paris.turns if turn.role is TurnRole.USER] == [
+        "What is the capital of France?",
+        "What is the approximate population of that city?",
+        "Name one famous landmark there.",
+    ]

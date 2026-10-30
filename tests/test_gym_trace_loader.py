@@ -645,7 +645,6 @@ def test_response_error_code_marks_model_span(tmp_path):
         "orphan_result",
         "history",
         "prompt_after_echo",
-        "prompt_without_input",
         "remote",
         "remote_on_response",
         "item",
@@ -673,9 +672,6 @@ def test_ambiguous_responses_records_rejected(tmp_path, mutation):
             copy.deepcopy(request["input"][0]),
             {"type": "message", "role": "user", "content": "Another prompt"},
         ]
-    elif mutation == "prompt_without_input":
-        source["responses_create_params"]["input"] = []
-        output.insert(0, {"type": "message", "role": "user", "content": "Hidden prompt"})
     elif mutation == "remote":
         source["responses_create_params"]["previous_response_id"] = "resp-0"
     elif mutation == "remote_on_response":
@@ -703,11 +699,41 @@ def test_standalone_response_with_remote_state_rejected(tmp_path, field, value):
         loader_for(tmp_path, response, format="json").load()
 
 
-def test_standalone_response_with_prompt_output_rejected(tmp_path):
+def test_prompt_role_output_after_model_items_or_without_input_loads(tmp_path):
+    # A multi-turn agent appends the environment's reply as a user message, then calls
+    # the model again.
+    source = envelope()
+    output = source["response"]["output"]
+    output[2]["arguments"] = "{}"  # Undecodable arguments leave turns unset.
+    reply = {"type": "message", "role": "user", "content": "And nuts?"}
+    answer = {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "9 nuts."}],
+    }
+    output += [reply, answer]
+    (root,) = next(iter(loader_for(tmp_path, source).load())).root_spans
+    assert root.output == "9 nuts."
+    assert [
+        (turn.role, turn.authorship, turn.llm_span_ids, turn.content) for turn in root.turns[-2:]
+    ] == [
+        (TurnRole.USER, Authorship.UNKNOWN, [], "And nuts?"),
+        (TurnRole.AGENT, Authorship.MODEL, ["gym/response/model"], [TextPart(text="9 nuts.")]),
+    ]
+    assert root.turns[-2].extra["gym"]["item_path"] == "$.response.output[5]"
+    # Without request input, the output is the whole conversation.
     response = envelope()["response"]
-    response["output"].insert(0, {"type": "message", "role": "system", "content": "Injected"})
-    with pytest.raises(GymTraceLoadError, match="prompt-role items"):
-        loader_for(tmp_path, response, format="json").load()
+    response["output"][2]["arguments"] = "{}"
+    response["output"][:0] = [
+        {"type": "message", "role": "system", "content": "Rules"},
+        {"type": "message", "role": "user", "content": "How many bolts?"},
+    ]
+    (root,) = next(iter(loader_for(tmp_path, response, format="json").load())).root_spans
+    assert [(turn.role, turn.authorship) for turn in root.turns[:2]] == [
+        (TurnRole.SYSTEM, Authorship.UNKNOWN),
+        (TurnRole.USER, Authorship.UNKNOWN),
+    ]
+    assert root.children[1].tool_call.prior_user_text == "How many bolts?"
 
 
 def test_eval_author_responses_fixtures_load(tmp_path):

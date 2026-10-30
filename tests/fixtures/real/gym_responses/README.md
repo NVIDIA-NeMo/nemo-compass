@@ -17,12 +17,17 @@ fields). Nothing is trimmed or edited.
   `resources_servers/example_tool_call_multireward/data/example_rollouts.jsonl`. 5 rows
   from `nvidia/qwen/eccn-qwen3.6-35b-a3b`, with `reasoning` items, one tool call each,
   `_ng_task_index` and per-component rewards (`reward_components`).
+- `example_multi_turn_gymnasium.example_rollouts.jsonl`: upstream
+  `resources_servers/example_multi_turn_gymnasium/data/example_rollouts.jsonl`. 5 rows
+  from `Qwen/Qwen3-4B-Instruct-2507`. Gym's `gymnasium_agent` appends each environment
+  follow-up question to `response.output` as a `role: user` message, then calls the model
+  again.
 
 To regenerate, in a Gym checkout:
 
 ```sh
 rev=399e6783e0e879424fc20a23f8e2d46ffa4cfdee
-for env in example_single_tool_call example_tool_call_multireward; do
+for env in example_single_tool_call example_tool_call_multireward example_multi_turn_gymnasium; do
   git show "$rev:resources_servers/$env/data/example_rollouts.jsonl" > "$env.example_rollouts.jsonl"
 done
 ```
