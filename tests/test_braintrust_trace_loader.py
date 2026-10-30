@@ -398,3 +398,117 @@ def test_tool_results_match_result_counts(rows):
     assert len(first.tool_call.results) == first.tool_call.result_count == 1
     assert first.tool_call.results[0].is_error is (True if first.error else None)
     assert second.tool_call.results == [] and second.tool_call.result_count == 0
+
+
+@pytest.mark.parametrize("column", ["metadata", "metrics", "span_attributes"])
+def test_null_object_columns_are_accepted(rows, column):
+    # The query API declares these columns nullable; real rows carry "metadata": null.
+    rows[3][column] = None
+    with client_for(rows) as client:
+        trace = next(iter(BraintrustTraceLoader(config(), client=client).load()))
+    [llm] = trace.root_spans[0].children
+    braintrust = llm.attributes["braintrust"]
+    assert isinstance(braintrust, dict)
+    assert braintrust[column] is None
+
+
+def test_structured_error_is_kept_as_json_text(rows):
+    # The query API types the error column as any JSON value.
+    rows[0]["error"] = {"message": "not found", "status": 404}
+    with client_for(rows) as client:
+        trace = next(iter(BraintrustTraceLoader(config(), client=client).load()))
+    failed = next(s for s in trace.root_spans[0].children[0].children if s.id == "tool-b")
+    assert failed.error == '{"message": "not found", "status": 404}'
+    braintrust = failed.attributes["braintrust"]
+    assert isinstance(braintrust, dict)
+    assert braintrust["error"] == {"message": "not found", "status": 404}
+
+
+def test_trace_totals_count_billable_llm_calls_once(rows):
+    # A parent may repeat its children's totals for display; scorer calls are not task cost.
+    rows[1]["metrics"] |= {"prompt_tokens": 20, "completion_tokens": 5, "estimated_cost": 0.001}
+    scorer = {
+        "id": "row-scorer",
+        "span_id": "scorer",
+        "root_span_id": "root",
+        "span_parents": ["root-span"],
+        "span_attributes": {"name": "judge", "type": "llm", "purpose": "scorer"},
+        "metrics": {"start": 1788220804, "prompt_tokens": 7, "estimated_cost": 0.5},
+    }
+    second = {
+        "id": "row-second",
+        "span_id": "second",
+        "root_span_id": "root",
+        "span_parents": ["root-span"],
+        "span_attributes": {"name": "chat", "type": "llm"},
+        "metrics": {
+            "start": 1788220804,
+            "prompt_tokens": 30,
+            "prompt_cached_tokens": 10,
+            "completion_tokens": 2,
+            "prompt_cache_creation_5m_tokens": 4,
+            "prompt_cache_creation_1h_tokens": 6,
+            "estimated_cost": 0.002,
+        },
+    }
+    with client_for([*rows, scorer, second]) as client:
+        trace = next(iter(BraintrustTraceLoader(config(), client=client).load()))
+    assert trace.root_spans[0].token_counts is not None  # the parent's own metrics are kept
+    second_span = next(s for s in trace.root_spans[0].children if s.id == "second")
+    assert second_span.token_counts is not None
+    assert second_span.token_counts.model_dump(exclude_none=True) == {
+        "input_total": 30,
+        "cached_input_tokens": 10,
+        "output_tokens": 2,
+        "cache_write_tokens": 10,
+        "cache_writes_by_ttl": {300: 4, 3600: 6},
+        "source": "braintrust",
+    }
+    assert trace.aggregate.cost_usd == pytest.approx(0.003)
+    assert trace.aggregate.token_counts is not None
+    # Counts the first call does not report stay unknown in the total.
+    assert trace.aggregate.token_counts.model_dump(exclude_none=True) == {
+        "input_total": 50,
+        "output_tokens": 7,
+        "source": "braintrust",
+    }
+
+
+def test_trace_cost_is_unknown_when_a_call_has_none(rows):
+    del rows[3]["metrics"]["estimated_cost"]
+    with client_for(rows) as client:
+        trace = next(iter(BraintrustTraceLoader(config(), client=client).load()))
+    assert trace.aggregate.cost_usd is None
+    assert trace.aggregate.token_counts is not None
+
+
+def test_follows_redirect_to_stored_results_and_its_cursor(rows):
+    # docs.braintrust.dev/api-reference/query: hosted deployments redirect large
+    # responses to a stored copy whose cursor is in x-amz-meta-bt_cursor.
+    queries = []
+
+    def handle(request):
+        if request.url.host == "results.example.test":
+            assert "Authorization" not in request.headers
+            return httpx.Response(
+                200, json={"data": rows[:2]}, headers={"x-amz-meta-bt_cursor": "stored-page"}
+            )
+        assert request.headers["Authorization"] == "Bearer secret"
+        query = json.loads(request.content)["query"]
+        queries.append(query)
+        if "WHERE is_root" in query:
+            return httpx.Response(
+                200, json={"data": [{"root_span_id": "root", "created": START.isoformat()}]}
+            )
+        if "OFFSET" not in query:
+            return httpx.Response(303, headers={"Location": "https://results.example.test/r"})
+        assert "OFFSET 'stored-page'" in query
+        return httpx.Response(200, json={"data": rows[2:]})
+
+    with httpx.Client(
+        transport=httpx.MockTransport(handle), headers={"Authorization": "Bearer secret"}
+    ) as client:
+        loader = BraintrustTraceLoader(config(), client)
+        assert loader.load().trace_count == 1
+    assert len(queries) == 3
+    assert loader.describe()["span_count"] == 4

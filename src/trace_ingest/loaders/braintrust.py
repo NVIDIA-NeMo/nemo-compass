@@ -10,6 +10,7 @@ Span fields: https://www.braintrust.dev/docs/instrument/advanced-tracing
 from __future__ import annotations
 
 import heapq
+import json
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -19,11 +20,15 @@ from urllib.parse import quote, urlencode
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError
 
+from trace_ingest.loaders.helper.llm_span.token_usage import token_counts as _token_counts
+from trace_ingest.loaders.helper.llm_span.token_usage._core import count
+from trace_ingest.loaders.helper.turns import with_run_root_turns
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
     UNSET,
     Span,
     SpanKind,
+    TokenCounts,
     ToolCall,
     ToolResult,
     Trace,
@@ -102,13 +107,15 @@ class _ProviderSpan(BaseModel):
     root_span_id: str = Field(min_length=1)
     is_root: bool | None = None
     span_parents: list[str] | None = None
-    span_attributes: dict[str, JsonValue] = Field(default_factory=dict)
-    metadata: dict[str, JsonValue] = Field(default_factory=dict)
-    metrics: dict[str, JsonValue] = Field(default_factory=dict)
+    # The API declares these columns nullable; SDKs log spans without metadata.
+    span_attributes: dict[str, JsonValue] | None = None
+    metadata: dict[str, JsonValue] | None = None
+    metrics: dict[str, JsonValue] | None = None
     scores: dict[str, float | None] | None = None
     input: JsonValue | UNSET = UNSET
     output: JsonValue | UNSET = UNSET
-    error: str | None = None
+    # The API types the error column as any JSON value, not only text.
+    error: JsonValue = None
 
 
 @dataclass
@@ -260,13 +267,20 @@ def _query_rows(client: httpx.Client, api_url: str, query: str) -> Iterator[dict
     seen: set[str] = set()
     while True:
         paged_query = query if cursor is None else f"{query} OFFSET {_literal(cursor)}"
-        response = client.post(f"{api_url}/btql", json={"query": paged_query, "fmt": "json"})
+        # Hosted deployments redirect large responses to stored results, which carry
+        # the cursor in x-amz-meta-bt_cursor. httpx drops the API key on the
+        # cross-origin redirect.
+        response = client.post(
+            f"{api_url}/btql",
+            json={"query": paged_query, "fmt": "json"},
+            follow_redirects=True,
+        )
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
             raise BraintrustTraceLoadError("Braintrust query response requires a data array")
         rows = payload["data"]
-        cursor = response.headers.get("x-bt-cursor")
+        cursor = response.headers.get("x-bt-cursor") or response.headers.get("x-amz-meta-bt_cursor")
         if cursor:
             if cursor in seen or not rows:
                 raise BraintrustTraceLoadError("Braintrust pagination made no progress")
@@ -326,7 +340,7 @@ def _normalize_trace(
                     raise BraintrustTraceLoadError("Braintrust trace is incomplete: missing parent")
                 children[parent].append(key)
 
-        ready = [(_start_key(by_id[root_id]), root_id)]
+        ready = [(_order_key(by_id[root_id]), root_id)]
         normalized: dict[str, Span] = {}
         tool_index = 0
         while ready:
@@ -340,36 +354,100 @@ def _normalize_trace(
                     else [ToolResult(content=span.output, is_error=True if span.error else None)]
                 )
                 span.tool_call = ToolCall(
-                    call_id=key, index=tool_index, result_count=len(results), results=results
+                    call_id=_tool_call_id(provider) or key,
+                    index=tool_index,
+                    result_count=len(results),
+                    results=results,
                 )
                 tool_index += 1
             normalized[key] = span
             if provider.span_parents:
                 normalized[provider.span_parents[0]].children.append(span)
             for child in children[key]:
-                heapq.heappush(ready, (_start_key(by_id[child]), child))
+                heapq.heappush(ready, (_order_key(by_id[child]), child))
         if len(normalized) != len(by_id):
             raise BraintrustTraceLoadError(f"Braintrust trace {trace_id!r} contains a parent cycle")
         starts = [s.start_time for s in normalized.values() if s.start_time is not None]
         ends = [s.end_time for s in normalized.values() if s.end_time is not None]
         root = by_id[root_id]
-        return Trace(
+        # Braintrust's cost queries count LLM spans except scorer calls; parent spans
+        # may repeat their children's totals for display.
+        billable = [
+            normalized[key]
+            for key, provider in by_id.items()
+            if normalized[key].kind is SpanKind.LLM
+            and (provider.span_attributes or {}).get("purpose") != "scorer"
+        ]
+        costs = [span.cost_usd for span in billable if span.cost_usd is not None]
+        trace = Trace(
             id=trace_id,
             root_spans=[normalized[root_id]],
             aggregate=TraceAggregate(
+                cost_usd=sum(costs) if billable and len(costs) == len(billable) else None,
                 latency_ms=(max(ends) - min(starts)).total_seconds() * 1000
                 if starts and ends
-                else None
+                else None,
+                token_counts=_summed_token_counts([span.token_counts for span in billable]),
             ),
             evaluator_results=dict(root.scores or {}),
             attributes={"source_pointer": pointer},
+        )
+        return with_run_root_turns(
+            trace, conversation_input=root.input, conversation_output=root.output
         )
     except (ValidationError, ValueError, OverflowError) as error:
         raise BraintrustTraceLoadError(f"Invalid Braintrust trace {trace_id!r}: {error}") from error
 
 
+def _span_token_counts(span: _ProviderSpan) -> TokenCounts | None:
+    """Braintrust's canonical token metrics; prompt_tokens includes cache reads and writes.
+
+    https://github.com/braintrustdata/braintrust-spec/blob/main/skills/instrumentation-spec/references/features/token-and-cost-metrics.md
+    """
+    metrics = span.metrics or {}
+    by_ttl = {
+        300: count(metrics.get("prompt_cache_creation_5m_tokens")),
+        3600: count(metrics.get("prompt_cache_creation_1h_tokens")),
+    }
+    writes = metrics.get("prompt_cache_creation_tokens")
+    if writes is None and by_ttl[300] is not None and by_ttl[3600] is not None:
+        writes = by_ttl[300] + by_ttl[3600]  # the TTL split represents the whole cache write
+    return _token_counts(
+        input_total=metrics.get("prompt_tokens"),
+        cached_input_tokens=metrics.get("prompt_cached_tokens"),
+        output_tokens=metrics.get("completion_tokens"),
+        cache_write_tokens=writes,
+        cache_writes_by_ttl=by_ttl,
+        source="braintrust",
+    )
+
+
+def _summed_token_counts(counts: list[TokenCounts | None]) -> TokenCounts | None:
+    """Totals over the calls; a count any call does not report is None, never a partial sum."""
+    if not counts or None in counts:
+        return None
+    reported = [entry for entry in counts if entry is not None]
+
+    def total(field: str) -> int | None:
+        values = [getattr(entry, field) for entry in reported]
+        return None if None in values else sum(values)
+
+    ttls = [entry.cache_writes_by_ttl or {} for entry in reported]
+    return _token_counts(
+        input_total=total("input_total"),
+        input_tokens=total("input_tokens"),
+        cached_input_tokens=total("cached_input_tokens"),
+        output_tokens=total("output_tokens"),
+        cache_write_tokens=total("cache_write_tokens"),
+        cache_writes_by_ttl={
+            ttl: sum(entry[ttl] for entry in ttls) for ttl in set.intersection(*map(set, ttls))
+        },
+        source="braintrust",
+    )
+
+
 def _metric(span: _ProviderSpan, name: str) -> float | None:
-    value = span.metrics.get(name)
+    value = (span.metrics or {}).get(name)
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -377,13 +455,42 @@ def _metric(span: _ProviderSpan, name: str) -> float | None:
     return float(value)
 
 
-def _start_key(span: _ProviderSpan) -> float:
-    value = _metric(span, "start")
-    return value if value is not None else float("inf")
+def _tool_call_id(span: _ProviderSpan) -> str | None:
+    """The model's ID for the call, from the tool span's metadata.
+
+    Braintrust SDKs record it as ``tool_call_id`` (Python ATIF import),
+    ``tool_use_id`` (Java, Anthropic tool use) or ``tool_id`` (Java, OpenAI
+    Responses built-in tools).
+    """
+    metadata = span.metadata or {}
+    for name in ("tool_call_id", "tool_use_id", "tool_id"):
+        value = metadata.get(name)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _order_key(span: _ProviderSpan) -> tuple[float, float, str]:
+    """Start time, then SDK creation order for equal starts, then span ID.
+
+    SDKs may record whole-second starts, so an LLM span and the tool span it
+    requested can start together. The Python SDK numbers spans in creation
+    order with ``span_attributes.exec_counter``.
+    """
+    start = _metric(span, "start")
+    counter = (span.span_attributes or {}).get("exec_counter")
+    return (
+        start if start is not None else float("inf"),
+        counter
+        if isinstance(counter, (int, float)) and not isinstance(counter, bool)
+        else float("inf"),
+        span.span_id,
+    )
 
 
 def _normalize_span(provider: _ProviderSpan, pointer: dict[str, JsonValue]) -> Span:
-    provider_type = provider.span_attributes.get("type")
+    span_attributes = provider.span_attributes or {}
+    provider_type = span_attributes.get("type")
     kind = {
         "llm": SpanKind.LLM,
         "tool": SpanKind.TOOL,
@@ -394,8 +501,8 @@ def _normalize_span(provider: _ProviderSpan, pointer: dict[str, JsonValue]) -> S
     }.get(str(provider_type), SpanKind.UNKNOWN)
     start = _metric(provider, "start")
     end = _metric(provider, "end")
-    name = provider.span_attributes.get("name")
-    model = provider.metadata.get("model")
+    name = span_attributes.get("name")
+    model = (provider.metadata or {}).get("model")
     return Span(
         id=provider.span_id,
         kind=kind,
@@ -403,10 +510,13 @@ def _normalize_span(provider: _ProviderSpan, pointer: dict[str, JsonValue]) -> S
         end_time=datetime.fromtimestamp(end, timezone.utc) if end is not None else None,
         input=provider.input,
         output=provider.output,
-        error=provider.error,
+        error=provider.error
+        if provider.error is None or isinstance(provider.error, str)
+        else json.dumps(provider.error, ensure_ascii=False),
         tool_name=name if kind is SpanKind.TOOL and isinstance(name, str) else None,
         model=model if isinstance(model, str) else None,
         cost_usd=_metric(provider, "estimated_cost"),
+        token_counts=_span_token_counts(provider),
         attributes={
             "name": name,
             "subtype": provider_type,

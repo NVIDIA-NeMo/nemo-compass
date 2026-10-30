@@ -3,7 +3,7 @@
   "root_spans": [
     {
       "id": "root-span",
-      "kind": "CHAIN",
+      "kind": "AGENT",
       "children": [
         {
           "id": "llm",
@@ -153,7 +153,13 @@
             }
           ],
           "cost_usd": 0.001,
-          "token_counts": null,
+          "token_counts": {
+            "input_total": 20,
+            "input_tokens": null,
+            "cached_input_tokens": null,
+            "output_tokens": 5,
+            "source": "braintrust"
+          },
           "model": "test-model",
           "tool_name": null,
           "tool_call": null,
@@ -262,13 +268,50 @@
           "span_parents": null,
           "is_root": true
         }
-      }
+      },
+      "turns": [
+        {
+          "id": "root-span/turn/1",
+          "index": 1,
+          "role": "user",
+          "authorship": "unknown",
+          "content": "{\"question\": \"Find a source\"}",
+          "llm_span_ids": [],
+          "dispatch_span_id": null,
+          "tool_call_span_ids": [],
+          "unlinked_results": [],
+          "extra": {}
+        },
+        {
+          "id": "root-span/turn/2",
+          "index": 2,
+          "role": "agent",
+          "authorship": "model",
+          "content": "Searching",
+          "llm_span_ids": [
+            "llm"
+          ],
+          "dispatch_span_id": null,
+          "tool_call_span_ids": [
+            "tool-a",
+            "tool-b"
+          ],
+          "unlinked_results": [],
+          "extra": {}
+        }
+      ]
     }
   ],
   "aggregate": {
-    "cost_usd": null,
+    "cost_usd": 0.001,
     "latency_ms": 5000.0,
-    "token_counts": null
+    "token_counts": {
+      "input_total": 20,
+      "input_tokens": null,
+      "cached_input_tokens": null,
+      "output_tokens": 5,
+      "source": "braintrust"
+    }
   },
   "evaluator_results": {
     "accuracy": 0.0
