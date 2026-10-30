@@ -5,9 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from trace_ingest.loaders.helper.llm_span import SpanData, langfuse_sdk
-from trace_ingest.loaders.helper.llm_span.openinference import otel_int
-from trace_ingest.loaders.helper.llm_span.token_usage import anthropic, openai, token_counts
+from trace_ingest.loaders.helper.token_counts import token_counts
 
 
 def counts(value) -> dict | None:
@@ -35,98 +33,3 @@ def counts(value) -> dict | None:
 )
 def test_core_copies_valid_counts(kwargs, expected):
     assert counts(token_counts(**kwargs)) == expected
-
-
-@pytest.mark.parametrize(
-    ("usage", "expected"),
-    [
-        # Each count is read on its own: a missing input leaves only itself unknown.
-        ({"output_tokens": 7}, {"output_tokens": 7}),
-        (
-            {"input_tokens": 1200, "input_tokens_details": {"cached_tokens": 1024}},
-            {"input_total": 1200, "cached_input_tokens": 1024},
-        ),
-        ({"input": 10, "output": 4}, None),
-    ],
-)
-def test_openai_reads_each_count(usage, expected):
-    assert counts(openai.token_counts(usage)) == expected
-
-
-USAGE = {"input_tokens": 3, "output_tokens": 50, "cache_creation_input_tokens": 1000}
-
-
-def creation(five_minutes: int, one_hour: int) -> dict:
-    return {"ephemeral_5m_input_tokens": five_minutes, "ephemeral_1h_input_tokens": one_hour}
-
-
-@pytest.mark.parametrize(
-    ("usage", "expected"),
-    [
-        # Writes to both TTLs stay apart.
-        ({**USAGE, "cache_creation": creation(100, 900)}, {300: 100, 3600: 900}),
-        # Gateways that keep the breakdown only per iteration.
-        ({**USAGE, "iterations": [{"cache_creation": creation(0, 1000)}]}, {300: 0, 3600: 1000}),
-        # Several iterations would need summing, so the split stays unknown.
-        (
-            {**USAGE, "iterations": [{"cache_creation": creation(0, 400)}] * 2},
-            None,
-        ),
-        (USAGE, None),
-    ],
-)
-def test_anthropic_cache_writes_by_ttl(usage, expected):
-    result = anthropic.token_counts(usage)
-    assert result is not None
-    assert result.cache_write_tokens == 1000
-    assert result.cache_writes_by_ttl == expected
-
-
-def sdk(usage: dict) -> SpanData:
-    return SpanData("LLM", "GENERATION", "langfuse-sdk", {}, usage)
-
-
-def test_langfuse_sdk_reads_anthropic_cache_creation_key():
-    # The Claude Code hook can send Anthropic's own write key instead of Langfuse's split.
-    usage = {
-        "input": 3,
-        "output": 50,
-        "cache_read_input_tokens": 40000,
-        "cache_creation_input_tokens": 21621,
-    }
-    assert counts(langfuse_sdk.token_counts(sdk(usage))) == {
-        "input_tokens": 3,
-        "cached_input_tokens": 40000,
-        "output_tokens": 50,
-        "cache_write_tokens": 21621,
-    }
-
-
-def test_langfuse_sdk_leaves_invalid_counts_unknown():
-    usage = {"input": 2, "output": 5, "cache_read_input_tokens": -7, "input_cache_creation_5m": 100}
-    assert counts(langfuse_sdk.token_counts(sdk(usage))) == {
-        "input_tokens": 2,
-        "output_tokens": 5,
-        "cache_writes_by_ttl": {300: 100},
-    }
-
-
-def test_langfuse_sdk_unknown_output_bucket_leaves_output_unknown():
-    usage = {"input": 2, "output": 10, "output_audio_tokens": 3}
-    assert counts(langfuse_sdk.token_counts(sdk(usage))) == {"input_tokens": 2}
-
-
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        (12, 12),
-        ("12", 12),
-        ({"intValue": 12}, 12),
-        (12.0, 12),
-        (12.7, None),
-        ("12.7", None),
-        (True, None),
-    ],
-)
-def test_otel_int_does_not_round(value, expected):
-    assert otel_int(value) == expected
