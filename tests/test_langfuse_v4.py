@@ -39,7 +39,6 @@ def observation(id, *, trace_id="t", parent=None, start=START, **extra):
         endTime=(start + timedelta(seconds=1)).isoformat(),
         name="lookup",
         level="DEFAULT",
-        sessionId="s",
         traceName="assistant",
         **extra,
     )
@@ -114,6 +113,7 @@ def test_v4_pagination_full_tree_scores_and_context(direct):
                     None if q.get("cursor") else "details-next",
                 ),
             )
+        assert q["fields"] == "core,basic"
         conditions = json.loads(q["filter"])
         assert conditions[-2]["column"] == "startTime"
         assert conditions[-1]["operator"] == "<"
@@ -141,7 +141,7 @@ def test_v4_pagination_full_tree_scores_and_context(direct):
     assert tool.tool_call.result_count == 1
     assert trace.aggregate.cost_usd == 0.12
     assert trace.aggregate.latency_ms == 11000
-    assert (trace.session_id, trace.session_basis) == ("s", "langfuse.sessionId")
+    assert trace.session_id is None
     context = trace.attributes["langfuse"]
     assert isinstance(context, dict)
     assert context["input"] == {"question": "where?"}
@@ -365,9 +365,8 @@ def test_v4_cli_runs_evidence(tmp_path, monkeypatch, select_signals, offline):
 
 
 def test_v4_missing_parent_and_conflicting_sessions_remain_visible():
-    orphan = observation("orphan", parent="absent")
-    other = observation("other")
-    other["sessionId"] = "another-session"
+    orphan = observation("orphan", parent="absent", sessionId="s")
+    other = observation("other", sessionId="another-session")
 
     def handler(request):
         if request.url.path.endswith("/v3/scores"):
@@ -378,8 +377,55 @@ def test_v4_missing_parent_and_conflicting_sessions_remain_visible():
     trace = list(instance.load())[0]
     assert instance.describe()["unresolved_parent_count"] == 1
     assert trace.session_id is None and trace.session_basis is None
+    assert trace.id == "t"
     assert len(trace.root_spans) == 2
     assert trace.root_spans[0].attributes["langfuse"]["session_id"] in {"s", "another-session"}
+
+
+@pytest.mark.parametrize("max_traces", [1, 2])
+def test_v4_traces_sharing_a_session_merge_and_cap_marks_them_partial(max_traces):
+    selection = [
+        observation("a-root", trace_id="a", sessionId="s"),
+        observation("b-root", trace_id="b", start=START + timedelta(seconds=1), sessionId="s"),
+        observation("c-root", trace_id="c", start=START + timedelta(seconds=2)),
+    ]
+
+    def handler(request):
+        q = request.url.params
+        if request.url.path.endswith("/v3/scores"):
+            return httpx.Response(200, json=page([]))
+        if q.get("traceId"):
+            return httpx.Response(
+                200, json=page([row for row in selection if row["traceId"] == q["traceId"]])
+            )
+        # A capped selection stops before requesting the next page.
+        assert max_traces == 2 or not q.get("cursor")
+        return httpx.Response(200, json=page([]) if q.get("cursor") else page(selection, "more"))
+
+    instance = loader(handler, max_traces=max_traces)
+    traces = list(instance.load())
+
+    assert [trace.id for trace in traces] == ["session:s", "c"][:max_traces]
+    merged = traces[0]
+    assert (merged.session_id, merged.session_basis) == ("s", "langfuse.sessionId")
+    assert [span.id for span in merged.root_spans[0].children] == ["a/a-root", "b/b-root"]
+    records = merged.attributes["records"]
+    assert isinstance(records, list)
+    assert [record["trace_id"] for record in records if isinstance(record, dict)] == ["a", "b"]
+    assert all(
+        isinstance(record, dict)
+        and isinstance(record["attributes"], dict)
+        and "observation_window" in record["attributes"]
+        for record in records
+    )
+    partial = [loss.detail for loss in merged.losses if loss.code == "merge_incomplete"]
+    assert partial == (
+        [{"reason": "max_traces", "loaded_record_count": 2}] if max_traces == 1 else []
+    )
+    description = instance.describe()
+    assert description["trace_count"] == max_traces
+    assert description["distinct_sessions"] == 1
+    assert description["observation_count"] == max_traces + 1
 
 
 def test_v4_trace_details_include_time_bounds_to_avoid_server_timeout():
@@ -658,6 +704,75 @@ def test_v4_file_limits_and_partial_trees(tmp_path):
     assert instance.describe()["unresolved_parent_count"] == 1
     assert instance.describe()["export_trace_count"] == 2
     assert instance.describe()["truncated"] is True
+
+
+@pytest.mark.parametrize("max_traces", [1, 2])
+def test_v4_file_merges_sessions_before_keeping_the_newest(tmp_path, max_traces):
+    instance = file_loader(
+        tmp_path,
+        [
+            observation("root", trace_id="c", start=START + timedelta(seconds=2)),
+            observation("root", trace_id="b", start=START + timedelta(seconds=1), sessionId="s"),
+            observation("root", trace_id="a", sessionId="s"),
+        ],
+        max_traces=max_traces,
+    )
+    traces = list(instance.load())
+    assert [trace.id for trace in traces] == ["session:s", "c"][-max_traces:]
+    assert all(loss.code != "merge_incomplete" for trace in traces for loss in trace.losses)
+    assert instance.describe()["export_trace_count"] == 3
+    assert instance.describe()["truncated"] is (max_traces == 1)
+
+
+def test_v4_file_ranks_traces_by_their_newest_observation_like_live_selection(tmp_path):
+    # Live selection lists observations newest first, so "long" is selected first.
+    instance = file_loader(
+        tmp_path,
+        [
+            observation("root", trace_id="long"),
+            observation("late", trace_id="long", parent="root", start=END),
+            observation("root", trace_id="short", start=START + timedelta(seconds=1)),
+        ],
+        max_traces=1,
+    )
+    assert [trace.id for trace in instance.load()] == ["long"]
+
+
+def test_v4_flattened_metadata_still_selects_the_llm_reader(tmp_path):
+    # v4 returns metadata with dotted keys where v3 nests it.
+    sdk = observation(
+        "sdk",
+        parent="root",
+        usageDetails={"input": 95, "output": 21, "total": 116},
+        metadata={"scope.name": "langfuse-sdk", "scope.version": "4.17.0"},
+    )
+    openinference = observation(
+        "oi",
+        parent="root",
+        metadata={
+            "scope.name": "openinference.instrumentation.langchain",
+            "attributes.openinference.span.kind": "LLM",
+            "attributes.llm.token_count.prompt": 900,
+        },
+    )
+    instance = file_loader(
+        tmp_path,
+        [
+            observation("root"),
+            {**sdk, "type": "GENERATION"},
+            {**openinference, "type": "SPAN"},
+        ],
+    )
+    (trace,) = instance.load()
+    spans = {span.id: span for span in trace.root_spans[0].children}
+    assert spans["sdk"].token_counts is not None
+    assert (spans["sdk"].token_counts.input_tokens, spans["sdk"].token_counts.output_tokens) == (
+        95,
+        21,
+    )
+    assert spans["oi"].kind is SpanKind.LLM
+    assert spans["oi"].token_counts is not None
+    assert spans["oi"].token_counts.input_total == 900
 
 
 @pytest.mark.parametrize("which", ["observations", "scores"])

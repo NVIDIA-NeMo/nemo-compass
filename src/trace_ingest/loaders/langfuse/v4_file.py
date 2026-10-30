@@ -6,17 +6,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, JsonValue
 
+from trace_ingest.loaders.helper.merge import Record
 from trace_ingest.loaders.langfuse.config import (
     LANGFUSE_DEFAULT_MAX_TRACES,
     LangfuseTraceLoadError,
     _describe_corpus,
     _LangfuseCorpusDescription,
 )
+from trace_ingest.loaders.langfuse.file_io import _newest_conversations
 from trace_ingest.loaders.langfuse.normalization import _normalize_v4_trace, _started_at
 from trace_ingest.loaders.langfuse.v4_records import _group_observations, _group_scores
 from trace_ingest.models import TraceSnapshot
@@ -83,7 +86,7 @@ class LangfuseV4FileTraceDescription(_LangfuseCorpusDescription):
 
 @dataclass
 class LangfuseV4FileTraceLoader:
-    """Join observation and score records, then reuse online normalization."""
+    """Join observation and score records, reuse online normalization, and merge by session."""
 
     config: LangfuseV4FileTraceConfig
     _snapshot: TraceSnapshot = field(
@@ -91,6 +94,7 @@ class LangfuseV4FileTraceLoader:
     )
     _export_trace_count: int = field(default=0, init=False)
     _ignored_score_count: int = field(default=0, init=False)
+    _merged_trace_count: int = field(default=0, init=False)
 
     def load(self) -> TraceSnapshot:
         from langfuse.api.commons.types.observation_v2 import ObservationV2
@@ -108,16 +112,22 @@ class LangfuseV4FileTraceLoader:
             raise LangfuseTraceLoadError(f"Invalid Langfuse export records: {error}") from error
         groups = _group_observations(observations)
         by_trace, ignored = _group_scores(groups, scores)
-        traces = []
+        records: list[tuple[datetime, str, Record]] = []
         for trace_id, items in groups.items():
             trace = _normalize_v4_trace(trace_id, items, by_trace[trace_id], self.config.base_url)
             if trace.source_url is None:
                 trace.source_url = file_source_url(self.config.path)
             trace.attributes["export_path"] = str(self.config.path.resolve())
-            traces.append((min(_started_at(obs) for obs in items), trace_id, trace))
-        self._snapshot = TraceSnapshot(
-            trace for _, _, trace in sorted(traces)[-self.config.max_traces :]
+            langfuse = trace.attributes["langfuse"]
+            assert isinstance(langfuse, dict)
+            record = Record(trace, langfuse.get("input"), langfuse.get("output"))
+            # Live selection lists observations newest first, so a trace ranks by its newest.
+            records.append((max(_started_at(obs) for obs in items), trace_id, record))
+        traces, self._merged_trace_count = _newest_conversations(
+            [(time, record) for time, _, record in sorted(records, key=lambda item: item[:2])],
+            self.config.max_traces,
         )
+        self._snapshot = TraceSnapshot(traces)
         self._export_trace_count = len(groups)
         self._ignored_score_count = ignored
         return self._snapshot
@@ -131,7 +141,7 @@ class LangfuseV4FileTraceLoader:
             else None,
             "export_trace_count": self._export_trace_count,
             "max_traces": self.config.max_traces,
-            "truncated": self._export_trace_count > self._snapshot.trace_count,
+            "truncated": self._merged_trace_count > self._snapshot.trace_count,
             "base_url": self.config.base_url,
             "ignored_score_count": self._ignored_score_count,
         }
