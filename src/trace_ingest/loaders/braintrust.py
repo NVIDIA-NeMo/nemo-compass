@@ -344,7 +344,10 @@ def _normalize_trace(
                     else [ToolResult(content=span.output, is_error=True if span.error else None)]
                 )
                 span.tool_call = ToolCall(
-                    call_id=key, index=tool_index, result_count=len(results), results=results
+                    call_id=_tool_call_id(provider) or key,
+                    index=tool_index,
+                    result_count=len(results),
+                    results=results,
                 )
                 tool_index += 1
             normalized[key] = span
@@ -382,6 +385,21 @@ def _metric(span: _ProviderSpan, name: str) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise BraintrustTraceLoadError(f"Braintrust metric {name!r} must be numeric")
     return float(value)
+
+
+def _tool_call_id(span: _ProviderSpan) -> str | None:
+    """The model's ID for the call, from the tool span's metadata.
+
+    Braintrust SDKs record it as ``tool_call_id`` (Python ATIF import),
+    ``tool_use_id`` (Java, Anthropic tool use) or ``tool_id`` (Java, OpenAI
+    Responses built-in tools).
+    """
+    metadata = span.metadata or {}
+    for name in ("tool_call_id", "tool_use_id", "tool_id"):
+        value = metadata.get(name)
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def _order_key(span: _ProviderSpan) -> tuple[float, float, str]:

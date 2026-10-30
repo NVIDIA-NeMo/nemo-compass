@@ -94,6 +94,8 @@ span times. Other metrics remain in `attributes.braintrust.metrics`.
 
 Spans are ordered by start time. SDKs may record whole-second starts, so for equal starts the
 Python SDK's span creation counter (`span_attributes.exec_counter`) decides, then the span ID.
+A tool span's call ID is the model's tool-call ID from its `metadata.tool_call_id`,
+`tool_use_id` or `tool_id`, or the span ID when none is recorded.
 
 Tool catalogs are not normalized into schemas, which limits tool-schema checks.
 Duplicate IDs, missing parents, cycles, and multiple-parent spans produce an error.
