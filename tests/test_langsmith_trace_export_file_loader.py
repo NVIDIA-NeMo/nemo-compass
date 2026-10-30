@@ -588,3 +588,24 @@ def test_loader_keeps_langgraph_interrupts_apart_from_errors(tmp_path):
     langsmith = tool.attributes["langsmith"]
     assert isinstance(langsmith, dict)
     assert langsmith["interrupt"] == interrupt
+
+
+def test_loader_reads_the_model_of_model_calls(tmp_path):
+    write_trace_export_file(
+        tmp_path / "trace-1.jsonl",
+        trace_export_run_record("trace-1", custom_metadata={"ls_model_name": "not-a-call"}),
+        trace_export_run_record(
+            "llm-1",
+            parent_run_id="trace-1",
+            name="ChatAnthropic",
+            run_type="llm",
+            custom_metadata={"ls_model_name": "claude-sonnet-4-6"},
+        ),
+    )
+
+    (trace,) = LangSmithTraceExportFileLoader(LangSmithTraceExportFileConfig(path=tmp_path)).load()
+
+    (root,) = trace.root_spans
+    # Only model calls carry a model; chain runs only pass it along.
+    assert root.model is None
+    assert [span.model for span in root.children] == ["claude-sonnet-4-6"]

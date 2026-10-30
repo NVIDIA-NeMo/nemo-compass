@@ -288,6 +288,8 @@ def _normalize_run(
         langsmith["interrupt"] = str(interrupt)
     name = getattr(run, "name", None)
     name = str(name) if name not in (None, "") else None
+    metadata = _metadata(run)
+    model = metadata.get("ls_model_name") if kind is SpanKind.LLM else None
     return Span(
         id=run_id,
         kind=kind,
@@ -297,6 +299,7 @@ def _normalize_run(
         output=_optional_json_field(getattr(run, "outputs", None)),
         tool_name=name if kind is SpanKind.TOOL else None,
         cost_usd=cost_usd,
+        model=model if isinstance(model, str) and model else None,
         error=error,
         attributes={
             "name": name,
@@ -398,6 +401,12 @@ def _run_cost_usd(run: _LangSmithRun, run_id: str) -> float | None:
     if not math.isfinite(cost) or cost < 0:
         raise LangSmithTraceLoadError(f"LangSmith Run {run_id!r} has invalid cost {value!r}")
     return cost
+
+
+def _metadata(run: _LangSmithRun) -> Mapping[str, object]:
+    extra = getattr(run, "extra", None)
+    metadata = extra.get("metadata") if isinstance(extra, Mapping) else None
+    return metadata if isinstance(metadata, Mapping) else {}
 
 
 def _ancestors(run_id: str, parents: Mapping[str, str | None]) -> Iterator[str]:

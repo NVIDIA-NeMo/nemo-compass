@@ -292,3 +292,18 @@ def test_langgraph_interrupts_are_not_errors(snapshot):
         assert isinstance(langsmith, dict)
         assert str(langsmith["interrupt"]).startswith("GraphInterrupt((Interrupt(value=")
     assert all(span.error is None for span in _spans(trace))
+
+
+def test_model_calls_carry_their_model(snapshot):
+    memory = _trace(snapshot, MEMORY)
+    calls = _named(memory, "ChatAnthropic")
+    assert [span.model for span in calls] == ["claude-sonnet-4-6", "claude-sonnet-4-6"]
+    assert all(span.model is None for span in _spans(memory) if span.kind is not SpanKind.LLM)
+    account = _trace(snapshot, f"session:{ACCOUNT_THREAD}")
+    assert [span.model for span in _named(account, "ChatOpenAI")] == ["gpt-5.5", "gpt-5.5"]
+    thread = _trace(snapshot, "session:1")
+    assert [span.model for span in _spans(thread) if span.kind is SpanKind.LLM] == [
+        "gpt-5.5",
+        "gpt-5.5",
+        "gpt-5-nano",
+    ]
