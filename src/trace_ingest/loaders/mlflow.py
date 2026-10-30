@@ -17,6 +17,7 @@ from urllib.parse import quote, urlencode
 
 from pydantic import JsonValue
 
+from trace_ingest.loaders.helper.turns import has_input, parse_json, with_run_root_turns
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
     UNSET,
@@ -156,14 +157,22 @@ class MLflowTraceLoader:
                 nonlocal unresolved_parent_count, span_count, call_count
                 for page in self._search_trace_pages(client, experiment_id):
                     for provider_trace in page:
-                        trace, detached, trace_span_count, trace_call_count = _normalize_trace(
-                            provider_trace,
-                            source_pointer={
-                                "provider": "mlflow",
-                                "tracking_uri": tracking_uri,
-                                "experiment_name": self.config.experiment_name,
-                                "experiment_id": experiment_id,
-                            },
+                        trace, conversation, detached, trace_span_count, trace_call_count = (
+                            _normalize_trace(
+                                provider_trace,
+                                source_pointer={
+                                    "provider": "mlflow",
+                                    "tracking_uri": tracking_uri,
+                                    "experiment_name": self.config.experiment_name,
+                                    "experiment_id": experiment_id,
+                                },
+                            )
+                        )
+                        with_run_root_turns(
+                            trace,
+                            conversation_input=conversation[0],
+                            conversation_output=conversation[1],
+                            orchestration_subtypes=_ORCHESTRATION_SUBTYPES,
                         )
                         trace.source_url = _trace_url(tracking_uri, experiment_id, trace.id)
                         sort_keys[trace.id] = _trace_sort_key(provider_trace)
@@ -323,12 +332,20 @@ class MLflowFileTraceLoader:
                             f"MLflow export trace {trace_id!r} has no spans; export complete traces "
                             "without --no-include-spans"
                         )
-                    trace, detached, trace_span_count, trace_call_count = _normalize_trace(
-                        provider_trace,
-                        source_pointer={
-                            "provider": "mlflow",
-                            "export_path": str(resolved_path),
-                        },
+                    trace, conversation, detached, trace_span_count, trace_call_count = (
+                        _normalize_trace(
+                            provider_trace,
+                            source_pointer={
+                                "provider": "mlflow",
+                                "export_path": str(resolved_path),
+                            },
+                        )
+                    )
+                    with_run_root_turns(
+                        trace,
+                        conversation_input=conversation[0],
+                        conversation_output=conversation[1],
+                        orchestration_subtypes=_ORCHESTRATION_SUBTYPES,
                     )
                     trace.source_url = file_source_url(resolved_path)
                     sort_keys[trace.id] = _trace_sort_key(provider_trace)
@@ -492,7 +509,7 @@ def _normalize_trace(
     provider_trace: MLflowTrace,
     *,
     source_pointer: dict[str, JsonValue],
-) -> tuple[Trace, int, int, int]:
+) -> tuple[Trace, tuple[object | None, object | None], int, int, int]:
     trace_id = _trace_id(provider_trace)
     provider_spans = provider_trace.data.spans
     by_id: dict[str, MLflowSpan] = {}
@@ -581,11 +598,55 @@ def _normalize_trace(
         evaluator_results=evaluator_results,
         attributes=attributes,
     )
+    root_span_id = root_spans[0].id if len(root_spans) == 1 else None
     return (
         trace,
+        _conversation_io(provider_trace, by_id, root_span_id),
         len(unresolved),
         len(normalized_by_id),
         tool_call_index,
+    )
+
+
+_INPUT_KEYS = (_INPUTS_ATTRIBUTE, "input.value", "gen_ai.input.messages")
+_OUTPUT_KEYS = (_OUTPUTS_ATTRIBUTE, "output.value", "gen_ai.output.messages")
+_ORCHESTRATION_SUBTYPES = frozenset({"TASK", "WORKFLOW"})
+
+
+def _conversation_io(
+    provider_trace: MLflowTrace, by_id: dict[str, MLflowSpan], root_span_id: str | None
+) -> tuple[object | None, object | None]:
+    """The trace's recorded conversation input and output.
+
+    Each comes from the root span's attributes, then the trace metadata, then
+    the request or response preview; the first non-empty value wins.
+    """
+
+    metadata = dict(provider_trace.info.trace_metadata or {})
+    root_attributes = by_id[root_span_id].attributes if root_span_id is not None else {}
+
+    def first(
+        span_keys: tuple[str, ...], metadata_keys: tuple[str, str], preview: object
+    ) -> object:
+        candidates = [
+            parse_json(root_attributes[key]) for key in span_keys if key in root_attributes
+        ]
+        candidates += [parse_json(metadata[key]) for key in metadata_keys if key in metadata]
+        candidates.append(parse_json(preview))
+        return next((value for value in candidates if has_input(value)), None)
+
+    info = provider_trace.info
+    return (
+        first(
+            _INPUT_KEYS,
+            ("mlflow.traceInputs", "inputs"),
+            getattr(info, "request_preview", None),
+        ),
+        first(
+            _OUTPUT_KEYS,
+            ("mlflow.traceOutputs", "outputs"),
+            getattr(info, "response_preview", None),
+        ),
     )
 
 

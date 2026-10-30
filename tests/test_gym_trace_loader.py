@@ -20,7 +20,15 @@ from compass.compass_signals.tool_issues.signal import to_tool_issue_trace
 from compass.config import RunConfig, TraceConfig
 from trace_ingest.catalog import tool_catalog
 from trace_ingest.loaders import GymTraceConfig, GymTraceLoader, GymTraceLoadError
-from trace_ingest.models import UNSET, SpanKind, TokenCounts
+from trace_ingest.models import (
+    UNSET,
+    Authorship,
+    ImagePart,
+    SpanKind,
+    TextPart,
+    TokenCounts,
+    TurnRole,
+)
 
 
 def rollout():
@@ -716,6 +724,14 @@ def test_eval_author_responses_fixtures_load(tmp_path):
         {"role": "user", "content": "How many units of BOLT-17 are available?"}
     ]
     assert_result_counts(trace)
+    # Eval Author's converter projected this record to user, call and answer steps.
+    turns = trace.root_spans[0].turns
+    assert turns is not UNSET
+    assert [(turn.role, turn.tool_call_span_ids) for turn in turns] == [
+        (TurnRole.USER, []),
+        (TurnRole.AGENT, ["gym/response/tool/0"]),
+        (TurnRole.AGENT, []),
+    ]
     lines = (RESPONSES_FIXTURES / "ambiguous.jsonl").read_bytes().splitlines()
     assert len(lines) == 2
     for index, line in enumerate(lines):
@@ -729,3 +745,235 @@ def test_eval_author_responses_fixtures_load(tmp_path):
     # Byte-identical rows share a content identity, so one JSONL corpus is a duplicate.
     with pytest.raises(GymTraceLoadError):
         GymTraceLoader(GymTraceConfig(path=RESPONSES_FIXTURES / "ambiguous.jsonl")).load()
+
+
+# Conversation turns, ported from Eval Author's gym-to-atif converter
+# (tests/test_gym_to_atif.py) onto Span.turns.
+
+IMAGE = "data:image/png;base64,iVBORw0KGgo="
+
+
+def turn_rollout():
+    return {
+        "responses_create_params": {
+            "instructions": "Recorded system instructions",
+            "input": [
+                {"role": "developer", "content": "Recorded developer rules"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "Read the public fixture."},
+                        {"type": "input_image", "image_url": IMAGE},
+                    ],
+                },
+            ],
+            "tools": [{"type": "function", "name": "read", "parameters": {"type": "object"}}],
+        },
+        "response": {
+            "object": "response",
+            "id": "response-fixture",
+            "model": "example-model",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "Recorded summary"}],
+                    "encrypted_content": "OPAQUE-CONTENT",
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "read",
+                    "arguments": '{"path": "fixture.json"}',
+                },
+                {"type": "function_call", "call_id": "call-2", "name": "read", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call-2", "output": "second"},
+                {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": [
+                        {"type": "input_image", "image_url": "https://example.org/fixture.png"}
+                    ],
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Done."}],
+                },
+            ],
+        },
+    }
+
+
+def test_responses_items_become_ordered_linked_turns(tmp_path):
+    trace = next(iter(loader_for(tmp_path, turn_rollout()).load()))
+    (root,) = trace.root_spans
+    model, first, second = root.children
+    assert (first.tool_call.call_id, second.tool_call.call_id) == ("call-1", "call-2")
+    rows = [
+        (
+            turn.id,
+            turn.role,
+            turn.authorship,
+            turn.content,
+            turn.llm_span_ids,
+            turn.tool_call_span_ids,
+            turn.extra["gym"],
+        )
+        for turn in root.turns
+    ]
+    copied, unknown, generated = Authorship.COPIED_CONTEXT, Authorship.UNKNOWN, Authorship.MODEL
+    assert rows == [
+        (
+            "gym/response/turn/1",
+            TurnRole.SYSTEM,
+            copied,
+            "Recorded system instructions",
+            [],
+            [],
+            {"item_path": "$.responses_create_params.instructions", "role": "system"},
+        ),
+        (
+            "gym/response/turn/2",
+            TurnRole.SYSTEM,
+            copied,
+            "Recorded developer rules",
+            [],
+            [],
+            {"item_path": "$.responses_create_params.input[0]", "role": "developer"},
+        ),
+        (
+            "gym/response/turn/3",
+            TurnRole.USER,
+            unknown,
+            [
+                TextPart(text="Read the public fixture."),
+                ImagePart(media_type="image/png", path=IMAGE),
+            ],
+            [],
+            [],
+            {"item_path": "$.responses_create_params.input[1]", "role": "user"},
+        ),
+        (
+            "gym/response/turn/4",
+            TurnRole.AGENT,
+            generated,
+            UNSET,
+            [model.id],
+            [],
+            {
+                "item_path": "$.response.output[0]",
+                "reasoning_summary": [{"type": "summary_text", "text": "Recorded summary"}],
+            },
+        ),
+        # Adjacent calls form one turn; results stay on their TOOL spans.
+        (
+            "gym/response/turn/5",
+            TurnRole.AGENT,
+            generated,
+            UNSET,
+            [model.id],
+            [first.id, second.id],
+            {"item_path": "$.response.output[1]"},
+        ),
+        (
+            "gym/response/turn/6",
+            TurnRole.AGENT,
+            generated,
+            [TextPart(text="Done.")],
+            [model.id],
+            [],
+            {"item_path": "$.response.output[5]", "role": "assistant"},
+        ),
+    ]
+    assert all(turn.reasoning is UNSET for turn in root.turns)
+    assert "OPAQUE-CONTENT" not in json.dumps([turn.model_dump(mode="json") for turn in root.turns])
+    assert trace.losses == []
+
+
+def test_request_history_turns_are_not_attributed_to_the_response(tmp_path):
+    source = envelope()
+    history = [
+        {"type": "message", "role": "user", "content": "How many bolts?"},
+        {"type": "function_call", "call_id": "a", "name": "lookup", "arguments": "{}"},
+    ]
+    source["responses_create_params"]["input"] = history
+    source["response"]["output"] = [
+        {**history[0], "id": "msg-1", "status": "completed"},
+        history[1],
+        {"type": "function_call", "call_id": "b", "name": "lookup", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "a", "output": "14"},
+    ]
+    (root,) = next(iter(loader_for(tmp_path, source).load())).root_spans
+    model, called, generated = root.children
+    # The echoed request prefix is counted once; calls split at the request boundary.
+    # Request history is copied context; its calls still link their TOOL spans.
+    assert [
+        (turn.role, turn.authorship, turn.llm_span_ids, turn.tool_call_span_ids)
+        for turn in root.turns
+    ] == [
+        (TurnRole.SYSTEM, Authorship.COPIED_CONTEXT, [], []),
+        (TurnRole.USER, Authorship.UNKNOWN, [], []),
+        (TurnRole.AGENT, Authorship.COPIED_CONTEXT, [], [called.id]),
+        (TurnRole.AGENT, Authorship.MODEL, [model.id], [generated.id]),
+    ]
+
+
+def test_bridge_serialized_images_become_image_parts(tmp_path):
+    source = turn_rollout()
+    image = {"type": "image", "source": {"media_type": "image/png", "path": "/unread/local.png"}}
+    source["atif_conversion"] = {"source_trajectory_paths": ["/unread/source.json"]}
+    source["responses_create_params"]["input"][1]["content"] = json.dumps([image])
+    source["response"]["output"][-1]["content"][0]["text"] = json.dumps([image])
+    (root,) = next(iter(loader_for(tmp_path, source).load())).root_spans
+    part = ImagePart(media_type="image/png", path="/unread/local.png")
+    assert root.turns[2].content == [part]
+    assert root.turns[-1].content == [part]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "standalone",
+        "no_user",
+        "unknown_role",
+        "non_object_arguments",
+        "unsupported_part",
+        "opaque_image",
+        "null_result",
+        "multi_trajectory_bridge",
+    ],
+)
+def test_records_without_a_mappable_conversation_leave_turns_unset(tmp_path, mutation):
+    source = turn_rollout()
+    request, output = source["responses_create_params"], source["response"]["output"]
+    if mutation == "standalone":
+        source = source["response"]
+    elif mutation == "no_user":
+        request["input"] = request["input"][:1]
+    elif mutation == "unknown_role":
+        request["input"][0]["role"] = "tool"
+    elif mutation == "non_object_arguments":
+        output[1]["arguments"] = "[]"
+    elif mutation == "unsupported_part":
+        output[-1]["content"] = [{"type": "output_audio", "data": "..."}]
+    elif mutation == "opaque_image":
+        request["input"][1]["content"][1]["image_url"] = "https://example.org/opaque"
+    elif mutation == "null_result":
+        output[3]["output"] = None
+    else:
+        source["atif_conversion"] = {"trajectories": [{"session_id": "a"}, {"session_id": "b"}]}
+    trace = next(iter(loader_for(tmp_path, source).load()))
+    (root,) = trace.root_spans
+    assert root.kind is SpanKind.AGENT and root.turns is UNSET
+    assert [span.kind for span in root.children] == [SpanKind.LLM, SpanKind.TOOL, SpanKind.TOOL]
+    assert trace.losses == []
+
+
+def test_native_attachment_records_have_no_turns(tmp_path):
+    trace = next(iter(loader_for(tmp_path, rollout()).load()))
+    pending = list(trace.root_spans)
+    while pending:
+        span = pending.pop()
+        assert span.turns is UNSET
+        pending.extend(span.children)
