@@ -97,6 +97,14 @@ def normalize_trace(
         )
 
     ordered = _canonical_run_order(trace_id, by_id, effective_parents)
+    # LangSmith's total_cost on a Run includes every descendant's cost, so only a Run
+    # without costed descendants has its own cost, and the trace costs its topmost Runs.
+    costs = {
+        run_id: cost
+        for run_id, run in by_id.items()
+        if (cost := _run_cost_usd(run, run_id)) is not None
+    }
+    rollups = {ancestor for run_id in costs for ancestor in _ancestors(run_id, effective_parents)}
     base_pointer: dict[str, JsonValue] = {**source_pointer, "trace_id": trace_id}
     normalized_by_id: dict[str, Span] = {}
     root_spans: list[Span] = []
@@ -109,6 +117,8 @@ def normalize_trace(
             unresolved_parent_id=unresolved.get(run_id),
             base_pointer=base_pointer,
             source_pointer=(run_source_pointers or {}).get(run_id),
+            cost_usd=None if run_id in rollups else costs.get(run_id),
+            total_cost=costs.get(run_id),
         )
         feedback = getattr(run, "feedback_stats", None)
         if feedback is not None:
@@ -151,7 +161,12 @@ def normalize_trace(
         else:
             normalized_by_id[parent_id].children.append(normalized)
 
-    cost = _trace_cost_usd(runs, trace_id)
+    top_costs = [
+        cost
+        for run_id, cost in costs.items()
+        if not any(ancestor in costs for ancestor in _ancestors(run_id, effective_parents))
+    ]
+    cost = sum(top_costs) if top_costs else None
     session = session_key(root)
     attributes: dict[str, JsonValue] = {
         "source_pointer": base_pointer,
@@ -235,6 +250,8 @@ def _normalize_run(
     unresolved_parent_id: str | None,
     base_pointer: Mapping[str, JsonValue],
     source_pointer: Mapping[str, JsonValue] | None,
+    cost_usd: float | None,
+    total_cost: float | None,
 ) -> Span:
     run_id = required_id(run, "id", "LangSmith Run")
     kind, subtype = _map_run_kind(getattr(run, "run_type", None))
@@ -268,7 +285,7 @@ def _normalize_run(
         input=_optional_json_field(getattr(run, "inputs", None)),
         output=_optional_json_field(getattr(run, "outputs", None)),
         tool_name=name if kind is SpanKind.TOOL else None,
-        cost_usd=_run_cost_usd(run, run_id),
+        cost_usd=cost_usd,
         error=error,
         attributes={
             "name": name,
@@ -282,6 +299,7 @@ def _normalize_run(
                 "extra": _json_value(getattr(run, "extra", None)),
                 "feedback_stats": _json_value(getattr(run, "feedback_stats", None)),
                 "dotted_order": str(getattr(run, "dotted_order", None) or "") or None,
+                "total_cost": total_cost,
             },
         },
     )
@@ -359,26 +377,6 @@ def _json_value(value: object) -> JsonValue:
         ) from error
 
 
-def _trace_cost_usd(runs: Sequence[_LangSmithRun], trace_id: str) -> float | None:
-    costs: list[float] = []
-    for run in runs:
-        value = getattr(run, "total_cost", None)
-        if value is None:
-            continue
-        try:
-            cost = float(value)
-        except (TypeError, ValueError) as error:
-            raise LangSmithTraceLoadError(
-                f"LangSmith trace {trace_id!r} has invalid Run cost {value!r}"
-            ) from error
-        if not math.isfinite(cost) or cost < 0:
-            raise LangSmithTraceLoadError(
-                f"LangSmith trace {trace_id!r} has invalid Run cost {value!r}"
-            )
-        costs.append(cost)
-    return sum(costs) if costs else None
-
-
 def _run_cost_usd(run: _LangSmithRun, run_id: str) -> float | None:
     value = getattr(run, "total_cost", None)
     if value is None:
@@ -392,6 +390,13 @@ def _run_cost_usd(run: _LangSmithRun, run_id: str) -> float | None:
     if not math.isfinite(cost) or cost < 0:
         raise LangSmithTraceLoadError(f"LangSmith Run {run_id!r} has invalid cost {value!r}")
     return cost
+
+
+def _ancestors(run_id: str, parents: Mapping[str, str | None]) -> Iterator[str]:
+    parent = parents[run_id]
+    while parent is not None:
+        yield parent
+        parent = parents[parent]
 
 
 def _trace_latency_ms(runs: Sequence[_LangSmithRun]) -> float | None:

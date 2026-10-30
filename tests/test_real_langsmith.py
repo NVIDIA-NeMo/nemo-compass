@@ -264,3 +264,19 @@ def test_bound_keeps_the_conversation_with_the_newest_root():
     assert [(loss.code, loss.detail) for loss in live.losses] == [
         ("merge_incomplete", {"reason": "max_traces", "loaded_record_count": 2})
     ]
+
+
+def test_cost_counts_each_model_call_once(snapshot):
+    # Each Run's total_cost includes its descendants: the root holds the trace total
+    # and every `model` chain repeats its ChatAnthropic/ChatOpenAI child's cost.
+    memory = _trace(snapshot, MEMORY)
+    assert memory.aggregate.cost_usd == pytest.approx(0.002409 + 0.002481)
+    assert [span.cost_usd for span in _spans(memory) if span.cost_usd is not None] == [
+        0.002409,
+        0.002481,
+    ]
+    assert [span.cost_usd for span in _named(memory, "ChatAnthropic")] == [0.002409, 0.002481]
+    account = _trace(snapshot, f"session:{ACCOUNT_THREAD}")
+    assert account.aggregate.cost_usd == pytest.approx(0.00109 + 0.001295)
+    # 01a189c9-5b35 calls no model and reports no cost, so the thread total is unknown.
+    assert _trace(snapshot, "session:1").aggregate.cost_usd is None
