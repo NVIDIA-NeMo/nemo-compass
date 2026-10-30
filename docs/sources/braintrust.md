@@ -86,7 +86,8 @@ using each referenced event’s row ID for both project logs and experiments.
 
 ## What is preserved
 
-Inputs, outputs, errors, scores, and provider metadata are retained. Missing outputs stay
+Inputs, outputs, errors, scores, and provider metadata are retained; an error logged as a JSON
+object rather than text becomes its JSON text. Missing outputs stay
 missing; explicit JSON null remains a recorded result. Root scores become trace evaluation
 results, span `metrics.estimated_cost` becomes cost, and whole-trace latency is derived from
 span times. Other metrics remain in `attributes.braintrust.metrics`.
