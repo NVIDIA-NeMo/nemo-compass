@@ -1,0 +1,90 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "session_id": "session-1",
+  "agent": {
+    "name": "qwen-code",
+    "version": "0.19.11",
+    "model_name": "qwen3-coder-plus"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "timestamp": "2026-01-01T00:00:00Z",
+      "source": "user",
+      "message": "Delegate repository exploration."
+    },
+    {
+      "step_id": 2,
+      "timestamp": "2026-01-01T00:00:01Z",
+      "source": "agent",
+      "model_name": "qwen3-coder-plus",
+      "message": "",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_parent",
+          "function_name": "agent",
+          "arguments": {
+            "subagent_type": "Explore",
+            "prompt": "Inspect the repository"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_parent",
+            "content": "Exploration completed.",
+            "subagent_trajectory_ref": [
+              {
+                "trajectory_id": "Explore-call_parent",
+                "session_id": "session-1",
+                "extra": {
+                  "agent_name": "Explore"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "final_metrics": {
+    "total_steps": 2
+  },
+  "subagent_trajectories": [
+    {
+      "schema_version": "ATIF-v1.7",
+      "session_id": "session-1",
+      "trajectory_id": "Explore-call_parent",
+      "agent": {
+        "name": "qwen-code",
+        "version": "0.19.11",
+        "model_name": "qwen3-coder-plus",
+        "extra": {
+          "subagent_id": "Explore-call_parent",
+          "subagent_name": "Explore",
+          "parent_agent_id": null
+        }
+      },
+      "steps": [
+        {
+          "step_id": 1,
+          "timestamp": "2026-01-01T00:00:00Z",
+          "source": "user",
+          "message": "Inspect the repository."
+        },
+        {
+          "step_id": 2,
+          "timestamp": "2026-01-01T00:00:01Z",
+          "source": "agent",
+          "model_name": "qwen3-coder-plus",
+          "message": "The repository contains Python sources.",
+          "reasoning_content": "First inspect files."
+        }
+      ],
+      "final_metrics": {
+        "total_steps": 2
+      }
+    }
+  ]
+}

@@ -5,9 +5,12 @@
 
 Source contract: https://github.com/harbor-framework/harbor/blob/main/rfcs/0001-trajectory-format.md
 
-Each non-blank line is one trajectory with a ``trajectory_id`` or ``session_id``.
-``Trace.session_id`` is the ``session_id``, when recorded (``session_basis``
-``atif.session_id``).
+Each non-blank line is one trajectory. The trace id is its ``trajectory_id``,
+else ``"atif-" + sha256(line)[:16]`` over the line without surrounding
+whitespace (a repeated line is a duplicate). ``session_id`` is not the trace id:
+it is run-scoped, and a trajectory, its continuations and its siblings may share
+it. ``Trace.session_id`` is the ``session_id``, when recorded
+(``session_basis`` ``atif.session_id``).
 
 Accepted input is Harbor's ``Trajectory`` field set for ATIF-v1.0 through v1.8,
 validated strictly (no type coercion, unknown keys rejected), plus
@@ -56,6 +59,7 @@ follow. Each ``Loss.detail`` is structured:
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -722,10 +726,9 @@ def _agent_span(source: _Trajectory, prefix: str, losses: list[Loss]) -> Span:
     )
 
 
-def _normalize(source: _Trajectory) -> Trace:
-    trace_id = source.trajectory_id or source.session_id
-    if not trace_id:
-        raise ValueError("trajectory_id or session_id is required for stable trace identity")
+def _normalize(source: _Trajectory, raw: bytes) -> Trace:
+    # session_id is run-scoped (RFC 0001 v1.7): documents of one run may share it.
+    trace_id = source.trajectory_id or "atif-" + hashlib.sha256(raw.strip()).hexdigest()[:16]
     losses: list[Loss] = []
     root = _agent_span(source, "trajectory", losses)
     return Trace(
@@ -757,7 +760,7 @@ class ATIFTraceLoader:
                 for _line_number, raw in enumerate(corpus, 1):
                     if not raw.strip():
                         continue
-                    trace = _normalize(_Trajectory.model_validate_json(raw))
+                    trace = _normalize(_Trajectory.model_validate_json(raw), raw)
                     trace.source_url = file_source_url(path, _line_number)
                     pending = list(trace.root_spans)
                     while pending:
