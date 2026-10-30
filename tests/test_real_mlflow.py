@@ -9,8 +9,12 @@ below are the hex form of the base64 OTLP ids in the export.
 
 from __future__ import annotations
 
+import base64
+import json
 from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 from compass.trace_loaders.mlflow import MLflowFileTraceConfig, MLflowFileTraceLoader
 from compass.traces import UNSET, SpanKind
@@ -214,3 +218,50 @@ def test_sessionless_agent_trace_matches_its_traces_get_export():
             ),
         ]
     assert fetched.attributes["mlflow"] == searched.attributes["mlflow"]
+
+
+def spans_of(spans):
+    for span in spans:
+        yield span
+        yield from spans_of(span.children)
+
+
+def raw_model_and_cost(traces_by_id):
+    """Per model call and per trace, MLflow's recorded model and cost."""
+    spans, costs = {}, {}
+    for trace_id, raw in traces_by_id.items():
+        costs[trace_id] = json.loads(raw["info"]["trace_metadata"]["mlflow.trace.cost"])[
+            "total_cost"
+        ]
+        for span in raw["data"]["spans"]:
+            attributes = span["attributes"]
+            if "mlflow.chat.tokenUsage" not in attributes:
+                continue
+            span_id = base64.b64decode(span["span_id"]).hex()
+            spans[span_id] = (
+                json.loads(attributes["mlflow.llm.model"]),
+                json.loads(attributes["mlflow.llm.cost"])["total_cost"],
+            )
+    return spans, costs
+
+
+def test_model_and_cost_match_the_recorded_values():
+    raw = {t["info"]["trace_id"]: t for t in json.loads(SESSION_EXPORT.read_text())["traces"]}
+    raw_spans, raw_costs = raw_model_and_cost(raw)
+    merged, sessionless = load(SESSION_EXPORT)[0]
+
+    llm_spans = {
+        span.id.rsplit("/", 1)[-1]: span
+        for trace in (merged, sessionless)
+        for span in spans_of(trace.root_spans)
+        if span.kind is SpanKind.LLM
+    }
+    assert llm_spans.keys() == raw_spans.keys()
+    for span_id, (model, cost) in raw_spans.items():
+        span = llm_spans[span_id]
+        assert (span.model, span.cost_usd) == (model, cost)
+    assert {span.model for span in llm_spans.values()} == {"gpt-4o-mini"}
+
+    assert sessionless.aggregate.cost_usd == raw_costs[SESSIONLESS]
+    # The conversation sums its records' trace-level cost.
+    assert merged.aggregate.cost_usd == pytest.approx(sum(raw_costs[t] for t in (TURN_1, TURN_2)))

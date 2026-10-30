@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import heapq
 import json
+import math
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -44,6 +45,9 @@ _OUTPUTS_ATTRIBUTE = "mlflow.spanOutputs"
 _SPAN_TYPE_ATTRIBUTE = "mlflow.spanType"
 _SESSION_METADATA = "mlflow.trace.session"
 _SESSION_ATTRIBUTE = "session.id"
+_MODEL_ATTRIBUTE = "mlflow.llm.model"
+_COST_ATTRIBUTE = "mlflow.llm.cost"
+_COST_METADATA = "mlflow.trace.cost"
 _ORDER_BY = ["timestamp_ms DESC", "request_id ASC"]
 _SEARCH_PAGE_SIZE = 500
 
@@ -580,7 +584,10 @@ def _normalize_trace(
         session_id=session[0] if session is not None else None,
         session_basis=session[1] if session is not None else None,
         root_spans=root_spans,
-        aggregate=TraceAggregate(latency_ms=_trace_latency_ms(ordered)),
+        aggregate=TraceAggregate(
+            cost_usd=_cost_usd(metadata.get(_COST_METADATA)),
+            latency_ms=_trace_latency_ms(ordered),
+        ),
         evaluator_results=evaluator_results,
         attributes=attributes,
     )
@@ -701,6 +708,8 @@ def _normalize_span(
     if status == "ERROR":
         error = status_description or "MLflow span status ERROR"
     name = provider_span.name
+    attributes = provider_span.attributes
+    model = attributes.get(_MODEL_ATTRIBUTE)
     return Span(
         id=span_id,
         kind=kind,
@@ -710,6 +719,8 @@ def _normalize_span(
         output=_span_field(provider_span, _OUTPUTS_ATTRIBUTE, provider_span.outputs),
         tool_name=name if kind is SpanKind.TOOL else None,
         error=error,
+        cost_usd=_cost_usd(attributes.get(_COST_ATTRIBUTE)),
+        model=model if isinstance(model, str) and model else None,
         attributes={
             "name": str(name) if name is not None else None,
             "subtype": subtype,
@@ -720,6 +731,14 @@ def _normalize_span(
             "mlflow": {"attributes": _json_value(provider_span.attributes)},
         },
     )
+
+
+def _cost_usd(value: object) -> float | None:
+    cost = parse_json(value)
+    total = cost.get("total_cost") if isinstance(cost, dict) else None
+    if isinstance(total, bool) or not isinstance(total, int | float):
+        return None
+    return float(total) if math.isfinite(total) and total >= 0 else None
 
 
 def _provider_span_type(provider_span: MLflowSpan) -> str:
