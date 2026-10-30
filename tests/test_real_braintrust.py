@@ -83,6 +83,8 @@ def test_java_openai_responses_web_search_tool_call():
     assert trace.aggregate.latency_ms == pytest.approx(
         (1788197836.7153447 - 1788197827.907864) * 1000
     )
+    # The LLM span's estimated cost.
+    assert trace.aggregate.cost_usd == 0.00221
 
     [root] = trace.root_spans
     assert root.id == "245e64ea156b947a"
@@ -149,6 +151,7 @@ def test_java_o4_mini_two_llm_calls_in_start_order():
     assert trace.aggregate.latency_ms == pytest.approx(
         (1788197855.0829535 - 1788197840.683676) * 1000
     )
+    assert trace.aggregate.cost_usd == pytest.approx(0.0023683 + 0.0026268)
     [root] = trace.root_spans
     assert root.id == "8d6f13c58b832744"
     assert root.kind is SpanKind.AGENT
@@ -222,6 +225,8 @@ def test_ruby_experiment_eval_and_task_spans():
     assert trace.id == "4a5fdda0f881776e093341bdb782f5cc"
     assert trace.session_id is None
     assert trace.evaluator_results == {}
+    # No LLM span, so no trace cost.
+    assert trace.aggregate.cost_usd is None
     # Span times are datetimes, so latency has microsecond resolution.
     assert trace.aggregate.latency_ms == pytest.approx(
         (1772766230.701538 - 1772766230.701321) * 1000, abs=1e-3
@@ -256,6 +261,8 @@ def test_python_harbor_rows_with_null_metadata():
     [trace] = traces
     assert trace.id == "72e7027c0bca3e9e21011705849951f7"
     assert trace.aggregate.latency_ms == 4000
+    # Neither LLM call logged estimated_cost, so the trace cost is unknown.
+    assert trace.aggregate.cost_usd is None
     [root] = trace.root_spans
     assert root.id == "e18806b7b5dc6cc3"
     assert root.kind is SpanKind.AGENT
@@ -296,6 +303,8 @@ def test_python_harbor_skips_rows_of_other_traces():
     [trace] = traces
     assert trace.id == "756e122672cb74dd5a53964ea59f2853"
     assert trace.aggregate.latency_ms == 3000
+    # Only the first LLM call logged estimated_cost (0.001): no partial trace cost.
+    assert trace.aggregate.cost_usd is None
     [root] = trace.root_spans
     assert root.attributes["braintrust"]["metadata"] is None
     assert [(child.id, child.kind) for child in root.children] == [
@@ -303,6 +312,7 @@ def test_python_harbor_skips_rows_of_other_traces():
         ("942655bdec6ae4dd", SpanKind.TOOL),
         ("e55e28b6572e18a1", SpanKind.LLM),
     ]
+    assert [child.cost_usd for child in root.children] == [0.001, None, None]
 
 
 def test_java_anthropic_server_tool_use():
@@ -319,7 +329,7 @@ def test_java_anthropic_server_tool_use():
     assert llm.id == "57273781b5b257ec"
     assert llm.kind is SpanKind.LLM
     assert llm.model == "claude-sonnet-4-5-20250929"
-    assert llm.cost_usd == 0.02736
+    assert llm.cost_usd == trace.aggregate.cost_usd == 0.02736
     server_tool_use = llm.output["content"][0]
     assert server_tool_use["type"] == "server_tool_use"
 

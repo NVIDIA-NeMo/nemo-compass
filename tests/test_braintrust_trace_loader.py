@@ -422,3 +422,39 @@ def test_structured_error_is_kept_as_json_text(rows):
     braintrust = failed.attributes["braintrust"]
     assert isinstance(braintrust, dict)
     assert braintrust["error"] == {"message": "not found", "status": 404}
+
+
+def test_trace_cost_counts_billable_llm_calls_once(rows):
+    # A parent may repeat its children's totals for display; scorer calls are not task cost.
+    rows[1]["metrics"] |= {"estimated_cost": 0.001}
+    scorer = {
+        "id": "row-scorer",
+        "span_id": "scorer",
+        "root_span_id": "root",
+        "span_parents": ["root-span"],
+        "span_attributes": {"name": "judge", "type": "llm", "purpose": "scorer"},
+        "metrics": {"start": 1788220804, "estimated_cost": 0.5},
+    }
+    second = {
+        "id": "row-second",
+        "span_id": "second",
+        "root_span_id": "root",
+        "span_parents": ["root-span"],
+        "span_attributes": {"name": "chat", "type": "llm"},
+        "metrics": {"start": 1788220804, "prompt_tokens": 30, "estimated_cost": 0.002},
+    }
+    with client_for([*rows, scorer, second]) as client:
+        trace = next(iter(BraintrustTraceLoader(config(), client=client).load()))
+    assert trace.aggregate.cost_usd == pytest.approx(0.003)
+    second_span = next(s for s in trace.root_spans[0].children if s.id == "second")
+    # Token metrics stay native for cost extraction.
+    braintrust = second_span.attributes["braintrust"]
+    assert isinstance(braintrust, dict)
+    assert braintrust["metrics"]["prompt_tokens"] == 30
+
+
+def test_trace_cost_is_unknown_when_a_call_has_none(rows):
+    del rows[3]["metrics"]["estimated_cost"]
+    with client_for(rows) as client:
+        trace = next(iter(BraintrustTraceLoader(config(), client=client).load()))
+    assert trace.aggregate.cost_usd is None

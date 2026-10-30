@@ -297,7 +297,7 @@
     }
   ],
   "aggregate": {
-    "cost_usd": null,
+    "cost_usd": 0.001,
     "latency_ms": 5000.0,
     "token_counts": null
   },

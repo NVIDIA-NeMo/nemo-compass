@@ -360,13 +360,23 @@ def _normalize_trace(
         starts = [s.start_time for s in normalized.values() if s.start_time is not None]
         ends = [s.end_time for s in normalized.values() if s.end_time is not None]
         root = by_id[root_id]
+        # Braintrust's cost queries count LLM spans except scorer calls; parent spans
+        # may repeat their children's totals for display.
+        billable = [
+            normalized[key]
+            for key, provider in by_id.items()
+            if normalized[key].kind is SpanKind.LLM
+            and (provider.span_attributes or {}).get("purpose") != "scorer"
+        ]
+        costs = [span.cost_usd for span in billable if span.cost_usd is not None]
         trace = Trace(
             id=trace_id,
             root_spans=[normalized[root_id]],
             aggregate=TraceAggregate(
+                cost_usd=sum(costs) if billable and len(costs) == len(billable) else None,
                 latency_ms=(max(ends) - min(starts)).total_seconds() * 1000
                 if starts and ends
-                else None
+                else None,
             ),
             evaluator_results=dict(root.scores or {}),
             attributes={"source_pointer": pointer},
