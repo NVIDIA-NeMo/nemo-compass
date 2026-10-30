@@ -36,11 +36,14 @@ from trace_ingest.loaders.atif import (
     tool_definitions_from_atif,
     tool_result_from_atif,
 )
+from trace_ingest.loaders.helper.llm_span.token_usage import token_counts
+from trace_ingest.loaders.helper.merge import Record, assemble
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
     UNSET,
     Span,
     SpanKind,
+    TokenCounts,
     ToolCall,
     ToolResult,
     Trace,
@@ -73,6 +76,20 @@ class _WireModel(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+class _TokenUsage(_WireModel):
+    input_tokens: int | None = Field(default=None, ge=0)
+    output_tokens: int | None = Field(default=None, ge=0)
+    cached_tokens: int | None = Field(default=None, ge=0)
+
+    def token_counts(self) -> TokenCounts | None:
+        # Intake input_tokens include cached_tokens, as the recorded prompt totals do.
+        return token_counts(
+            input_total=self.input_tokens,
+            cached_input_tokens=self.cached_tokens,
+            output_tokens=self.output_tokens,
+        )
+
+
 class _Pagination(_WireModel):
     page: int = Field(ge=1)
     page_size: int = Field(ge=1)
@@ -86,10 +103,10 @@ class _EvaluationContext(_WireModel):
     test_case_name: str | None = None
 
 
-class _IntakeTrace(_WireModel):
+class _IntakeTrace(_TokenUsage):
     id: str
     root_span_id: str | None = None
-    session_id: str
+    session_id: str = Field(min_length=1)
     workspace: str
     name: str | None = None
     input: str | None = None
@@ -103,7 +120,7 @@ class _IntakeTrace(_WireModel):
     cost_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
-class _IntakeSpan(_WireModel):
+class _IntakeSpan(_TokenUsage):
     span_id: str
     session_id: str
     workspace: str
@@ -134,6 +151,8 @@ class _EvaluatorResult(_WireModel):
     value: float | None = Field(default=None, allow_inf_nan=False)
     string_value: str | None = None
     data_type: Literal["NUMERIC", "BOOLEAN", "CATEGORICAL", "TEXT"]
+    # A FAILED result records an evaluator that ran but could not score; it has no value.
+    status: Literal["SCORED", "FAILED"] = "SCORED"
     comment: str | None = None
     created_by: str | None = None
     created_at: datetime
@@ -141,6 +160,8 @@ class _EvaluatorResult(_WireModel):
 
     @model_validator(mode="after")
     def value_matches_type(self) -> _EvaluatorResult:
+        if self.status == "FAILED":
+            return self
         if self.data_type in {"NUMERIC", "BOOLEAN"} and self.value is None:
             raise ValueError(f"{self.data_type} evaluator result requires value")
         if self.data_type in {"CATEGORICAL", "TEXT"} and self.string_value is None:
@@ -187,7 +208,9 @@ class IntakeTraceQuery(_StrictModel):
     test_case_name: str | None = None
     session_id: str | None = None
     status: IntakeStatus | None = None
-    max_traces: int | None = Field(default=None, ge=1)
+    max_traces: int | None = Field(
+        default=None, ge=1, description="Maximum traces loaded, one per session_id"
+    )
     sort: Literal["started_at", "-started_at"] = "started_at"
 
     @field_validator("started_at_gte", "started_at_lte")
@@ -433,39 +456,69 @@ class IntakeTraceLoader:
         self._snapshot = snapshot
         return snapshot
 
-    def _traces(self, client: _IntakeClient) -> Iterator[Trace]:
-        count = 0
-        for intake_trace in client.traces(self.config.query):
-            raw_spans = [
-                span for span_page in client.span_pages(intake_trace.id) for span in span_page.data
-            ]
+    def _traces(self, client: _IntakeClient) -> list[Trace]:
+        query = self.config.query
+        # Select session_ids from trace records; stop as soon as the limit is reached.
+        sessions: dict[str, list[_IntakeTrace]] = {}
+        capped = False
+        for intake_trace in client.traces(query):
+            sessions.setdefault(intake_trace.session_id, []).append(intake_trace)
+            if len(sessions) == query.max_traces:
+                capped = True
+                break
+
+        records: list[Record] = []
+        seen: set[str] = set()
+        for session_id, session_traces in sessions.items():
+            if capped:
+                # Selection stopped early, so it may not have read every trace with this key.
+                selection = query.model_copy(update={"session_id": session_id, "max_traces": None})
+                session_traces = list(client.traces(selection))
             raw_results = [
                 result
-                for result_page in client.evaluator_result_pages(intake_trace.session_id)
+                for result_page in client.evaluator_result_pages(session_id)
                 for result in result_page.data
             ]
-            try:
-                yield _normalize_trace(
-                    intake_trace,
-                    raw_spans,
-                    raw_results,
-                    base_url=self.config.base_url,
-                    workspace=self.config.workspace,
+            for intake_trace in session_traces:
+                if intake_trace.id in seen:
+                    raise IntakeLoadError(f"Intake returned duplicate trace id {intake_trace.id!r}")
+                seen.add(intake_trace.id)
+                raw_spans = [
+                    span
+                    for span_page in client.span_pages(intake_trace.id)
+                    for span in span_page.data
+                ]
+                try:
+                    trace = _normalize_trace(
+                        intake_trace,
+                        raw_spans,
+                        raw_results,
+                        base_url=self.config.base_url,
+                        workspace=self.config.workspace,
+                    )
+                except (ValueError, TypeError) as error:
+                    raise IntakeLoadError(
+                        f"failed to normalize Intake trace {intake_trace.id!r}: {error}"
+                    ) from error
+                intake = trace.attributes["intake"]
+                assert isinstance(intake, dict)
+                records.append(
+                    Record(
+                        trace,
+                        conversation_input=trace.attributes.get("task_text"),
+                        conversation_output=intake.get("output"),
+                    )
                 )
-            except (ValueError, TypeError) as error:
-                raise IntakeLoadError(
-                    f"failed to normalize Intake trace {intake_trace.id!r}: {error}"
-                ) from error
-            count += 1
-            if count == self.config.query.max_traces:
-                return
+        # Each selected session_id is complete within the window; traces outside it are not loaded.
+        return assemble(records)
 
     def describe(self) -> IntakeTraceDescription:
         """Describe the configured source and most recently loaded corpus."""
         traces = self._snapshot or ()
         span_count = call_count = 0
         for trace in traces:
-            pending = list(trace.root_spans)
+            # Count Intake spans only, not the conversation root that merging adds.
+            pending = [child for root in trace.root_spans for child in root.children]
             while pending:
                 span = pending.pop()
                 span_count += 1
@@ -588,8 +641,8 @@ def _normalize_trace(
 
     return Trace(
         id=raw.id,
-        session_id=raw.session_id or None,
-        session_basis="intake.session_id" if raw.session_id else None,
+        session_id=raw.session_id,
+        session_basis="intake.session_id",
         case_id=(
             raw.evaluation_context.test_case_name or None
             if raw.evaluation_context is not None
@@ -599,6 +652,7 @@ def _normalize_trace(
         root_spans=root_spans,
         aggregate=TraceAggregate(
             cost_usd=raw.cost_usd,
+            token_counts=raw.token_counts(),
             latency_ms=_trace_duration_ms(raw),
         ),
         attributes=attributes,
@@ -653,6 +707,10 @@ def _normalize_span(
         input_value, output_value, tool_name, tool_call, payload_result = (
             _normalize_atif_tool_payload(raw, input_value=input_value, output_value=output_value)
         )
+    elif kind is SpanKind.TOOL:
+        call_id = _langchain_tool_call_id(raw_output)
+        if call_id is not None:
+            tool_call = ToolCall(call_id=call_id, result_id=call_id)
 
     started_at = _aware_utc(raw.started_at)
     ended_at = _aware_utc(raw.ended_at) if raw.ended_at is not None else None
@@ -734,6 +792,7 @@ def _normalize_span(
         output=output_value,
         model=raw.model,
         cost_usd=raw.cost_total_usd,
+        token_counts=raw.token_counts(),
         tool_name=tool_name if kind is SpanKind.TOOL else None,
         tool_call=tool_call,
         error=error,
@@ -787,6 +846,17 @@ def _canonical_spans(trace_id: str, spans: list[_IntakeSpan]) -> list[_IntakeSpa
     if len(result) != len(spans):
         raise ValueError(f"trace {trace_id!r} contains a parent cycle")
     return result
+
+
+def _langchain_tool_call_id(output: JsonValue | UNSET) -> str | None:
+    """The call id of a LangChain ToolMessage output, as OpenInference records it."""
+    if not isinstance(output, Mapping) or output.get("type") != "tool":
+        return None
+    data = output.get("data")
+    if not isinstance(data, Mapping):
+        return None
+    call_id = data.get("tool_call_id")
+    return call_id if isinstance(call_id, str) and call_id else None
 
 
 def _normalize_atif_tool_payload(
