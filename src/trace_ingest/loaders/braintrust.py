@@ -330,7 +330,7 @@ def _normalize_trace(
                     raise BraintrustTraceLoadError("Braintrust trace is incomplete: missing parent")
                 children[parent].append(key)
 
-        ready = [(_start_key(by_id[root_id]), root_id)]
+        ready = [(_order_key(by_id[root_id]), root_id)]
         normalized: dict[str, Span] = {}
         tool_index = 0
         while ready:
@@ -351,7 +351,7 @@ def _normalize_trace(
             if provider.span_parents:
                 normalized[provider.span_parents[0]].children.append(span)
             for child in children[key]:
-                heapq.heappush(ready, (_start_key(by_id[child]), child))
+                heapq.heappush(ready, (_order_key(by_id[child]), child))
         if len(normalized) != len(by_id):
             raise BraintrustTraceLoadError(f"Braintrust trace {trace_id!r} contains a parent cycle")
         starts = [s.start_time for s in normalized.values() if s.start_time is not None]
@@ -384,9 +384,22 @@ def _metric(span: _ProviderSpan, name: str) -> float | None:
     return float(value)
 
 
-def _start_key(span: _ProviderSpan) -> float:
-    value = _metric(span, "start")
-    return value if value is not None else float("inf")
+def _order_key(span: _ProviderSpan) -> tuple[float, float, str]:
+    """Start time, then SDK creation order for equal starts, then span ID.
+
+    SDKs may record whole-second starts, so an LLM span and the tool span it
+    requested can start together. The Python SDK numbers spans in creation
+    order with ``span_attributes.exec_counter``.
+    """
+    start = _metric(span, "start")
+    counter = (span.span_attributes or {}).get("exec_counter")
+    return (
+        start if start is not None else float("inf"),
+        counter
+        if isinstance(counter, (int, float)) and not isinstance(counter, bool)
+        else float("inf"),
+        span.span_id,
+    )
 
 
 def _normalize_span(provider: _ProviderSpan, pointer: dict[str, JsonValue]) -> Span:
