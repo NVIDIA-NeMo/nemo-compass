@@ -178,7 +178,8 @@ def test_loader_queries_bounded_roots_then_hydrates_and_normalizes_complete_trac
     assert snapshot.trace_count == 1
     trace = next(iter(snapshot))
     assert trace.id == "session:thread-7"
-    assert trace.aggregate.cost_usd == 0.0175
+    # The root's total_cost already includes the LLM's 0.005.
+    assert trace.aggregate.cost_usd == 0.0125
     assert trace.aggregate.latency_ms == 3000
     assert (trace.session_id, trace.session_basis) == ("thread-7", "langsmith.metadata.thread_id")
     assert trace.losses == []
@@ -195,6 +196,7 @@ def test_loader_queries_bounded_roots_then_hydrates_and_normalizes_complete_trac
         f"{TRACE_ID}/{TOOL_ID}",
     ]
     assert [span.kind for span in root_span.children] == [SpanKind.LLM, SpanKind.TOOL]
+    assert [span.cost_usd for span in [root_span, *root_span.children]] == [None, 0.005, None]
     assert session_root.turns is not UNSET
     assert [
         (turn.role, turn.content, turn.llm_span_ids, turn.tool_call_span_ids)

@@ -122,7 +122,8 @@ def test_loader_reads_native_cli_export_and_preserves_hierarchy_and_provenance(t
     assert snapshot.trace_count == 1
     trace = next(iter(snapshot))
     assert trace.id == "session:session-7"
-    assert trace.aggregate.cost_usd == 0.025
+    # The root's total_cost already includes the LLM's 0.005.
+    assert trace.aggregate.cost_usd == 0.02
     assert trace.aggregate.latency_ms == 3000
     assert (trace.session_id, trace.session_basis) == (
         "session-7",
@@ -150,6 +151,7 @@ def test_loader_reads_native_cli_export_and_preserves_hierarchy_and_provenance(t
     assert root_span.input == {"messages": [{"role": "user", "content": "find it"}]}
     assert [span.id for span in root_span.children] == ["trace-1/llm-1", "trace-1/tool-1"]
     assert [span.kind for span in root_span.children] == [SpanKind.LLM, SpanKind.TOOL]
+    assert [span.cost_usd for span in [root_span, *root_span.children]] == [None, 0.005, None]
     assert session_root.turns is not UNSET
     assert [(turn.content, turn.tool_call_span_ids) for turn in session_root.turns] == [
         ("find it", []),
@@ -158,6 +160,7 @@ def test_loader_reads_native_cli_export_and_preserves_hierarchy_and_provenance(t
     ]
     langsmith = root_span.attributes["langsmith"]
     assert isinstance(langsmith, dict)
+    assert langsmith["total_cost"] == 0.02
     assert langsmith["tags"] == ["production"]
     extra = langsmith["extra"]
     assert isinstance(extra, dict)
