@@ -50,6 +50,10 @@ Responses shape instead: a rollout envelope (``responses_create_params`` plus
   (``previous_response_id``/``conversation`` on the request or the response),
   namespaced functions and item types other than message, reasoning,
   function_call and function_call_output are rejected.
+- With ``response.contains_transitions`` true (Gym's aviary agent),
+  ``response.output`` is a list of transitions, each the model input after one
+  environment step. Each must extend the previous one; the last is the output,
+  with item paths ``$.response.output[<last>][<i>]``.
 - Identity: ``"gym-" + sha256(record bytes)[:16]`` where the record bytes are
   the JSONL line or whole JSON file with surrounding ASCII whitespace stripped,
   so byte-identical records collide and are rejected as duplicates.
@@ -606,7 +610,26 @@ def _normalize_responses(record: dict[str, Any], raw: bytes) -> Trace:
             "or a standalone Responses object"
         )
     response = _object(response)
-    output = _rows(response.get("output"))
+    output_path = "$.response.output" if shape == "rollout_envelope" else "$.output"
+    output = response.get("output")
+    if response.get("contains_transitions") is True:
+        # Gym's aviary agent records the model input after each environment step;
+        # each transition extends the previous one, so the last is the conversation.
+        if not isinstance(output, list) or not output:
+            raise GymTraceLoadError("Gym response transitions must be a nonempty array")
+        transitions = [_rows(transition) for transition in output]
+        signatures = [[_message_signature(item) for item in step] for step in transitions]
+        if any(
+            later[: len(earlier)] != earlier
+            for earlier, later in zip(signatures, signatures[1:], strict=False)
+        ):
+            raise GymTraceLoadError(
+                "Gym response transitions must each extend the previous transition"
+            )
+        output = transitions[-1]
+        output_path += f"[{len(transitions) - 1}]"
+    else:
+        output = _rows(output)
     if any(
         source.get("previous_response_id") or source.get("conversation")
         for source in (request, response)
@@ -642,7 +665,6 @@ def _normalize_responses(record: dict[str, Any], raw: bytes) -> Trace:
         for i, item in enumerate(incoming)
     ]
     offset = len(incoming) if echoed else 0
-    output_path = "$.response.output" if shape == "rollout_envelope" else "$.output"
     items += [
         (item, {"item_path": f"{output_path}[{offset + i}]"}) for i, item in enumerate(generated)
     ]
@@ -671,7 +693,7 @@ def _normalize_responses(record: dict[str, Any], raw: bytes) -> Trace:
         id="gym/response/model",
         kind=SpanKind.LLM,
         input=request if shape == "rollout_envelope" else UNSET,
-        output=response["output"],
+        output=output,
         model=model if isinstance(model, str) and model else None,
         token_counts=token_counts,
         error=error or _error(response),

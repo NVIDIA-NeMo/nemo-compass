@@ -13,6 +13,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "real" / "gym_responses"
 SINGLE = FIXTURES / "example_single_tool_call.example_rollouts.jsonl"
 MULTIREWARD = FIXTURES / "example_tool_call_multireward.example_rollouts.jsonl"
 MULTI_TURN = FIXTURES / "example_multi_turn_gymnasium.example_rollouts.jsonl"
+AVIARY = FIXTURES / "aviary.example_rollouts.jsonl"
 
 
 def rows(path):
@@ -221,3 +222,54 @@ def test_multi_turn_gymnasium_rollouts_keep_environment_user_messages():
         "What is the approximate population of that city?",
         "Name one famous landmark there.",
     ]
+
+
+def test_aviary_transitions_load_the_last_transition():
+    source = rows(AVIARY)
+    traces = load(AVIARY)
+
+    assert len(traces) == 5
+    assert [trace.evaluator_results["gym.reward"] for trace in traces] == [0.0, 0.0, 1.0, 0.0, 0.0]
+    for trace, row in zip(traces, source, strict=True):
+        # Gym's aviary agent records the model input after each environment step; each
+        # transition extends the previous one, so the last is the whole conversation.
+        transitions = row["response"]["output"]
+        assert row["response"]["contains_transitions"] is True
+        last = len(transitions) - 1
+        conversation = transitions[last]
+        (root,) = trace.root_spans
+        model, *tools = root.children
+        assert (model.kind, model.model, model.output) == (
+            SpanKind.LLM,
+            "gpt-4.1-2025-04-14",
+            conversation,
+        )
+        calls = [item for item in conversation if item["type"] == "function_call"]
+        outputs = {
+            item["call_id"]: item["output"]
+            for item in conversation
+            if item["type"] == "function_call_output"
+        }
+        assert [(tool.tool_name, tool.input, tool.output) for tool in tools] == [
+            (call["name"], json.loads(call["arguments"]), outputs[call["call_id"]])
+            for call in calls
+        ]
+        assert tools[0].attributes["gym"]["item_path"] == f"$.response.output[{last}][1]"
+        assert tools[0].tool_call.prior_user_text == conversation[0]["content"]
+        question, *rest = root.turns
+        assert (question.role, question.authorship, question.content) == (
+            TurnRole.USER,
+            Authorship.UNKNOWN,
+            conversation[0]["content"],
+        )
+        assert question.extra["gym"]["item_path"] == f"$.response.output[{last}][0]"
+        assert {(turn.role, turn.authorship) for turn in rest} == {
+            (TurnRole.AGENT, Authorship.MODEL)
+        }
+        final = conversation[-1]
+        if final["type"] == "message":
+            assert root.output == final["content"][0]["text"]
+        else:
+            assert root.output is UNSET
+        assert trace.losses == []
+    assert [len(trace.root_spans[0].children) - 1 for trace in traces] == [1, 1, 5, 3, 3]

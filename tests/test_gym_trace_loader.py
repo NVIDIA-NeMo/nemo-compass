@@ -736,6 +736,24 @@ def test_prompt_role_output_after_model_items_or_without_input_loads(tmp_path):
     assert root.children[1].tool_call.prior_user_text == "How many bolts?"
 
 
+@pytest.mark.parametrize(
+    "transitions, flag, match",
+    [
+        # A later transition that rewrites history (aviary's collapse_old_env_states).
+        ([[{"role": "user", "content": "A"}], [{"role": "user", "content": "B"}]], True, "extend"),
+        ([], True, "nonempty array"),
+        ([[{"role": "user", "content": "A"}]], False, "invalid Gym rollout"),
+    ],
+)
+def test_unusable_transitions_rejected(tmp_path, transitions, flag, match):
+    source = envelope()
+    source["responses_create_params"]["input"] = []
+    source["response"]["output"] = transitions
+    source["response"]["contains_transitions"] = flag
+    with pytest.raises(GymTraceLoadError, match=match):
+        loader_for(tmp_path, source).load()
+
+
 def test_eval_author_responses_fixtures_load(tmp_path):
     """Fixtures copied verbatim from eval-author skills/gym-to-atif/evals/files (Apache-2.0)."""
 

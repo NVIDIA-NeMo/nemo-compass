@@ -96,7 +96,10 @@ duplicates. `_ng_task_index` groups repeated rollouts of one task.
 Multi-turn agents, such as Gym's gymnasium and simulated-user agents, append each
 environment observation or user reply to the response output as a user message before
 calling the model again; these messages load in order with the rest of the output. When
-the request has no input, the output holds the whole conversation.
+the request has no input, the output holds the whole conversation. Gym's aviary agent
+records `"contains_transitions": true` and a list of transitions as the output, each the
+model input after one environment step; the last transition loads as the output, and
+a transition that does not extend the previous one is rejected.
 
 Records referencing remote conversation state (`previous_response_id` or
 `conversation`, on the request or the response), a request with input whose response
