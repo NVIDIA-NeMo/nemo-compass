@@ -171,7 +171,7 @@ def test_loader_queries_bounded_roots_then_hydrates_and_normalizes_complete_trac
     assert trace.id == str(TRACE_ID)
     assert trace.aggregate.cost_usd == 0.0175
     assert trace.aggregate.latency_ms == 3000
-    assert trace.attributes["logical_case_id"] == "thread-7"
+    assert (trace.session_id, trace.session_basis) == ("thread-7", "langsmith.metadata.thread_id")
     assert [span.id for span in trace.root_spans] == [str(TRACE_ID)]
     root_span = trace.root_spans[0]
     assert root_span.input == {"messages": [{"role": "user", "content": "Find the weather"}]}
@@ -203,7 +203,8 @@ def test_loader_queries_bounded_roots_then_hydrates_and_normalizes_complete_trac
         "source": f"langsmith:https://langsmith.test/api/v1#projects/{PROJECT_ID}",
         "trace_count": 1,
         "call_count": 1,
-        "distinct_logical_cases": 1,
+        "distinct_cases": 1,
+        "distinct_sessions": 1,
         "run_count": 3,
         "unresolved_parent_count": 0,
         "project_name": "glamr-ux",
@@ -344,7 +345,10 @@ def test_loader_uses_explicit_api_url_and_maps_unknown_pending_run():
     trace = next(iter(loader.load()))
 
     assert trace.evaluator_results == {}
-    assert trace.attributes["logical_case_id"] == "conversation-3"
+    assert (trace.session_id, trace.session_basis) == (
+        "conversation-3",
+        "langsmith.metadata.conversation_id",
+    )
     assert trace.root_spans[0].kind is SpanKind.UNKNOWN
     assert trace.root_spans[0].attributes["subtype"] == "PROMPT"
     assert trace.root_spans[0].attributes["status"] == "UNKNOWN"

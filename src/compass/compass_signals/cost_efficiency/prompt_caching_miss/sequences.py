@@ -12,14 +12,14 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
-from compass.compass_signals._trace import SpanVisit, session_of, walk_spans
+from compass.compass_signals._trace import SpanVisit, walk_spans
 from compass.traces import SpanKind, Trace
 
 
 @dataclass(frozen=True)
 class CallSequence:
     session: str  # grouping key: the source session ID, else the trace ID
-    session_id: str | None  # the trace's logical_case_id, if the source recorded one
+    session_id: str | None  # the trace's session_id, if the source recorded one
     key: str
     calls: tuple[SpanVisit, ...]  # LLM spans, ordered by start
 
@@ -71,7 +71,7 @@ def build_sequences(traces: Iterable[Trace]) -> list[CallSequence]:
     groups: dict[tuple[str, str], list[SpanVisit]] = defaultdict(list)
     session_ids: dict[str, str | None] = {}
     for trace in traces:
-        session_id = session_of(trace)
+        session_id = trace.session_id
         session = session_id or trace.id
         session_ids[session] = session_id
         for key, visit in sequence_keys(trace):

@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from pydantic import JsonValue
 
@@ -25,10 +25,42 @@ def tool_catalog(trace: Trace) -> dict[str, JsonValue] | None:
     when no span declares definitions. This projection does not prove that the
     source captured every tool or establish availability for an individual call.
     """
+    return _catalog(trace.root_spans, (), trace.attributes.get("tool_catalog"))
 
-    agents: list[Span] = []
+
+def record_tool_catalogs(trace: Trace) -> list[tuple[list[Span], dict[str, JsonValue] | None]]:
+    """Pair each provider record's root spans with that record's ``tool_catalog``.
+
+    A trace that merges a session's records (``attributes.records``, under one
+    session root span) gets one catalog per record, so turns may offer different
+    tools. Definitions on the session root, moved there from the records' demoted
+    AGENT roots, count as every record's agent declarations. Any other trace is
+    one record.
+    """
+    legacy = trace.attributes.get("tool_catalog")
+    records = trace.attributes.get("records")
+    if len(trace.root_spans) != 1 or not isinstance(records, list):
+        return [(trace.root_spans, tool_catalog(trace))]
+    (session,) = trace.root_spans
+    children = {span.id: span for span in session.children}
+    scopes: list[list[Span]] = []
+    for record in records:
+        ids = record.get("root_span_ids") if isinstance(record, dict) else None
+        if not isinstance(ids, list) or not all(
+            isinstance(span_id, str) and span_id in children for span_id in ids
+        ):
+            return [(trace.root_spans, tool_catalog(trace))]
+        scopes.append([children[span_id] for span_id in ids])
+    inherited = (session,) if session.tool_definitions is not UNSET else ()
+    return [(roots, _catalog(roots, inherited, legacy)) for roots in scopes]
+
+
+def _catalog(
+    roots: Sequence[Span], inherited: Sequence[Span], legacy: JsonValue
+) -> dict[str, JsonValue] | None:
+    agents: list[Span] = list(inherited)
     calls: list[Span] = []
-    pending = list(trace.root_spans)
+    pending = list(roots)
     while pending:
         span = pending.pop()
         pending.extend(span.children)
@@ -40,7 +72,6 @@ def tool_catalog(trace: Trace) -> dict[str, JsonValue] | None:
     use_calls = any(span.tool_definitions is not UNSET for span in calls)
     selected = calls if use_calls else agents
     if not selected:
-        legacy = trace.attributes.get("tool_catalog")
         return dict(legacy) if isinstance(legacy, Mapping) else None
 
     catalog: dict[str, JsonValue] = {}
@@ -68,4 +99,4 @@ def _canonical(value: JsonValue) -> str:
     return json.dumps(value, sort_keys=True)
 
 
-__all__ = ["tool_catalog"]
+__all__ = ["record_tool_catalogs", "tool_catalog"]

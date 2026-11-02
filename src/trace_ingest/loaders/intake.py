@@ -46,6 +46,7 @@ from trace_ingest.models import (
     Trace,
     TraceAggregate,
     TraceSnapshot,
+    case_key,
 )
 
 _JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
@@ -477,9 +478,8 @@ class IntakeTraceLoader:
             ),
             "trace_count": len(traces),
             "call_count": call_count,
-            "distinct_logical_cases": len(
-                {str(trace.attributes.get("logical_case_id") or trace.id) for trace in traces}
-            ),
+            "distinct_cases": len({case_key(trace) for trace in traces}),
+            "distinct_sessions": len({trace.session_id for trace in traces if trace.session_id}),
             "span_count": span_count,
             "workspace": self.config.workspace,
             "query": self.config.query.describe(),
@@ -579,11 +579,6 @@ def _normalize_trace(
     }
     if trace_input is not UNSET:
         attributes["task_text"] = trace_input
-    logical_case_id = (
-        raw.evaluation_context.test_case_name if raw.evaluation_context is not None else None
-    )
-    if logical_case_id is not None:
-        attributes["logical_case_id"] = logical_case_id
     unowned = _attach_atif_tool_definitions(ordered, normalized_by_id)
     if unowned:
         attributes["intake_loader_gaps"] = [
@@ -593,6 +588,13 @@ def _normalize_trace(
 
     return Trace(
         id=raw.id,
+        session_id=raw.session_id or None,
+        session_basis="intake.session_id" if raw.session_id else None,
+        case_id=(
+            raw.evaluation_context.test_case_name or None
+            if raw.evaluation_context is not None
+            else None
+        ),
         evaluator_results=_normalize_evaluator_results(raw, raw_spans, raw_results),
         root_spans=root_spans,
         aggregate=TraceAggregate(

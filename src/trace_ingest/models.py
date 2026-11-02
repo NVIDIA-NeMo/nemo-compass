@@ -24,7 +24,7 @@ from trace_ingest.source_links import SourceURL
 # on this distinction.
 UNSET = MISSING
 
-TRACE_SCHEMA_VERSION = "2"
+TRACE_SCHEMA_VERSION = "3"
 
 
 class _TraceModel(BaseModel):
@@ -391,7 +391,8 @@ class Loss(_TraceModel):
             "Structured loss data, never an encoded string. Keys by code: "
             "unresolved_subagent_ref has ref (the reference as written); "
             "continued_trajectory_not_followed has continued_trajectory_ref; "
-            "llm_calls_aggregated has llm_call_count."
+            "llm_calls_aggregated has llm_call_count; "
+            "merge_incomplete has reason and loaded_record_count."
         ),
     )
     span_id: str | None = Field(default=None, description="Span the loss concerns.")
@@ -570,7 +571,8 @@ class TraceAggregate(_TraceModel):
 
 
 class Trace(_TraceModel):
-    """Canonical representation of one complete end-to-end agent run.
+    """Canonical representation of one conversation: one provider record, or every record
+    that shares a provider session key, merged by the loader.
 
     Source loaders deterministically construct this model before any Compass
     Signal runs. Provider-specific parsing or compatibility logic does not
@@ -581,9 +583,27 @@ class Trace(_TraceModel):
         min_length=1,
         description="Stable trace identifier, unique within the loaded corpus.",
     )
-    schema_version: Literal["2"] = Field(
+    schema_version: Literal["3"] = Field(
         default=TRACE_SCHEMA_VERSION,
         description="Canonical trace contract version.",
+    )
+    session_id: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description="Provider conversation key shared by every record in this trace.",
+    )
+    session_basis: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description="Provider field session_id was read from, e.g. langfuse.sessionId.",
+    )
+    case_id: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description="Task or retry identity; never a session key.",
     )
     source_url: SourceURL | None = Field(
         default=None,
@@ -608,6 +628,12 @@ class Trace(_TraceModel):
         default_factory=list,
         description="Information the source lacked or the loader could not represent.",
     )
+
+    @model_validator(mode="after")
+    def session_basis_matches_session_id(self) -> Trace:
+        if (self.session_id is None) != (self.session_basis is None):
+            raise ValueError("session_basis is required exactly when session_id is set")
+        return self
 
     @model_validator(mode="after")
     def validate_references(self) -> Trace:
@@ -665,6 +691,11 @@ class Trace(_TraceModel):
             if loss.turn_id is not None and loss.turn_id not in turn_ids:
                 raise ValueError(f"loss references unknown turn {loss.turn_id!r}")
         return self
+
+
+def case_key(trace: Trace) -> str:
+    """Independent-case identity: case_id, else the trace id."""
+    return trace.case_id or trace.id
 
 
 class _DiskTraceIndex(Mapping[str, Trace]):
@@ -771,6 +802,7 @@ __all__ = [
     "ToolResult",
     "TraceAggregate",
     "TraceSnapshot",
+    "case_key",
     "Trace",
     "ToolCall",
     "Turn",
