@@ -20,7 +20,14 @@ from trace_ingest import (
     TraceAggregate,
     TurnRole,
 )
-from trace_ingest.loaders.helper.merge import join_turns, merge_records, prepare_record
+from trace_ingest.loaders.helper.merge import (
+    Record,
+    assemble,
+    join_turns,
+    merge_records,
+    prepare_record,
+    select_sessions,
+)
 
 U = TurnRole.USER
 A = TurnRole.AGENT
@@ -32,8 +39,10 @@ def at(second):
     return datetime(2026, 1, 1, 0, 0, second, tzinfo=UTC)
 
 
-def llm(span_id, second):
-    return Span(id=span_id, kind=SpanKind.LLM, start_time=at(second), end_time=at(second + 1))
+def llm(span_id, second, **values):
+    return Span(
+        id=span_id, kind=SpanKind.LLM, start_time=at(second), end_time=at(second + 1), **values
+    )
 
 
 def record(trace_id, *roots, **values):
@@ -290,6 +299,132 @@ def test_case_id_is_dropped_when_records_disagree():
     ]
 
     assert merge_records(records, session_id="s", session_basis="b").case_id is None
+
+
+def session_record(trace_id, second, conversation_input, session_id="s"):
+    trace = record(
+        trace_id,
+        chain("c", llm("l", second, output="reply")),
+        session_id=session_id,
+        session_basis="test.session",
+    )
+    return Record(trace, conversation_input=conversation_input)
+
+
+def test_assemble_groups_by_session_id_and_keeps_records_without_one():
+    loose = Record(
+        record("loose", chain("c", llm("l", 9, output="hi"))), conversation_input="hello"
+    )
+    # Records arrive newest-first, as Intake returns them for a descending sort.
+    traces = assemble(
+        [session_record("r2", 5, "q2"), loose, session_record("r1", 1, "q1")], partial={"s"}
+    )
+
+    merged, single = traces
+    assert (merged.id, single.id) == ("session:s", "loose")
+    merged_turns = merged.root_spans[0].turns
+    assert merged_turns is not UNSET
+    assert [turn.content for turn in merged_turns] == ["q1", "reply", "q2", "reply"]
+    assert [loss.code for loss in merged.losses] == ["merge_incomplete"]
+    (root,) = single.root_spans
+    assert (root.id, root.kind, root.attributes["subtype"]) == ("c", SpanKind.AGENT, "CHAIN")
+    assert root.turns is not UNSET
+    assert [turn.content for turn in root.turns] == ["hello", "hi"]
+    assert single.losses == []
+
+
+def test_assemble_marks_only_partial_sessions():
+    complete, partial = assemble(
+        [session_record("r1", 1, "q1"), session_record("x1", 2, "q", session_id="t")],
+        partial={"t"},
+    )
+
+    assert (complete.id, partial.id) == ("session:s", "session:t")
+    assert complete.losses == []
+    assert [(loss.code, loss.detail) for loss in partial.losses] == [
+        ("merge_incomplete", {"reason": "max_traces", "loaded_record_count": 1})
+    ]
+
+
+def test_select_sessions_reads_past_the_last_key_only_when_needed():
+    def reread(session_id):
+        raise AssertionError(f"unexpected re-read of {session_id!r}")
+
+    items = [("s", "a"), ("s", "b")]
+    selected, partial = select_sessions(
+        items,
+        key=lambda item: ("session", item[0]),
+        item_id=lambda item: item[1],
+        limit=1,
+        reread=reread,
+    )
+
+    assert selected == items
+    assert partial == frozenset()
+
+
+def test_select_sessions_rereads_session_groups_after_the_limit():
+    rereads = []
+
+    def reread(session_id):
+        rereads.append(session_id)
+        return [("session", "s", "0"), ("session", "s", "3"), ("session", "v", "9")]
+
+    selected, partial = select_sessions(
+        [("session", "s", "1"), ("trace", "x", "2"), ("session", "s", "3"), ("session", "u", "4")],
+        key=lambda item: (item[0], item[1]),
+        item_id=lambda item: item[2],
+        limit=2,
+        reread=reread,
+    )
+
+    assert rereads == ["s"]
+    # The re-read replaces the session, drops the other session's row, and keeps "1",
+    # which it did not return, so the session is reported incomplete.
+    assert selected == [
+        ("session", "s", "0"),
+        ("session", "s", "3"),
+        ("session", "s", "1"),
+        ("trace", "x", "2"),
+    ]
+    assert partial == frozenset({"s"})
+
+
+def test_session_without_a_recorded_input_has_no_turns():
+    (merged,) = assemble([session_record("r1", 1, "q1"), session_record("r2", 5, None)])
+
+    assert merged.root_spans[0].turns is UNSET
+
+
+def unknown(span_id, subtype, *children):
+    return Span(
+        id=span_id, kind=SpanKind.UNKNOWN, children=list(children), attributes={"subtype": subtype}
+    )
+
+
+@pytest.mark.parametrize(
+    ("roots", "has_turns"),
+    [
+        (lambda: [chain("c", llm("l", 1, output="reply"))], True),
+        (lambda: [unknown("u", "TASK", llm("l", 1, output="reply"))], True),
+        (lambda: [unknown("u", "RETRIEVER", llm("l", 1, output="reply"))], False),
+        (lambda: [llm("l", 1, output="reply")], False),
+        (lambda: [chain("c1", llm("l", 1, output="reply")), chain("c2")], False),
+    ],
+    ids=["chain", "orchestrating", "retriever", "llm", "two-roots"],
+)
+def test_a_session_record_owns_turns_only_through_its_run_root(roots, has_turns):
+    """A session id does not change whether a record's conversation becomes turns."""
+
+    def turns(**session):
+        (loaded,) = assemble(
+            [Record(record("r", *roots(), **session), conversation_input="q")],
+            orchestration_subtypes=frozenset({"TASK"}),
+        )
+        return loaded.root_spans[0].turns
+
+    assert (turns() is not UNSET) is has_turns
+    assert (turns(session_id="s", session_basis="test.session") is not UNSET) is has_turns
 
 
 def test_session_basis_requires_session_id():

@@ -420,26 +420,32 @@ def agent_turns(
     return turns, losses
 
 
-def promote_run_root(
-    trace: Trace, *, orchestration_subtypes: frozenset[str] = frozenset()
-) -> Span | None:
-    """The trace's single orchestrating root as the AGENT span that owns the run.
+def run_root(trace: Trace, *, orchestration_subtypes: frozenset[str] = frozenset()) -> Span | None:
+    """The trace's single root when it orchestrates the run.
 
     An AGENT, CHAIN, or UNKNOWN root whose subtype is in ``orchestration_subtypes``
-    qualifies; a non-AGENT root keeps its source kind as its subtype.
+    qualifies, unless it records an LLM call.
     """
     if len(trace.root_spans) != 1:
         return None
     root = trace.root_spans[0]
-    if root.kind is SpanKind.AGENT:
-        return root
-    orchestrates = root.kind is SpanKind.CHAIN or (
+    orchestrates = root.kind in (SpanKind.AGENT, SpanKind.CHAIN) or (
         root.kind is SpanKind.UNKNOWN and root.attributes.get("subtype") in orchestration_subtypes
     )
-    if not orchestrates or root.llm_call is not UNSET:
-        return None
-    root.attributes["subtype"] = root.attributes.get("subtype") or root.kind.value
-    root.kind = SpanKind.AGENT
+    return root if orchestrates and root.llm_call is UNSET else None
+
+
+def promote_run_root(
+    trace: Trace, *, orchestration_subtypes: frozenset[str] = frozenset()
+) -> Span | None:
+    """The trace's ``run_root`` as the AGENT span that owns the run.
+
+    A non-AGENT root keeps its source kind as its subtype.
+    """
+    root = run_root(trace, orchestration_subtypes=orchestration_subtypes)
+    if root is not None and root.kind is not SpanKind.AGENT:
+        root.attributes["subtype"] = root.attributes.get("subtype") or root.kind.value
+        root.kind = SpanKind.AGENT
     return root
 
 
@@ -480,6 +486,7 @@ __all__ = [
     "message_text",
     "parse_json",
     "promote_run_root",
+    "run_root",
     "text",
     "with_run_root_turns",
 ]
