@@ -8,7 +8,8 @@ on:
     branches: ['release/**']
     types: [closed]
 permissions:
-  contents: read
+  contents: write
+  pull-requests: write
 concurrency:
   group: forward-port-${{ github.event.pull_request.number }}
   cancel-in-progress: false
@@ -18,19 +19,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
-        id: app
-        with:
-          app-id: ${{ vars.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: main
-          token: ${{ steps.app.outputs.token }}
       - uses: korthout/backport-action@8560fb503c275d433c56f05a2f64850093baa9f7 # v4
         id: port
         with:
-          github_token: ${{ steps.app.outputs.token }}
+          github_token: ${{ github.token }}
           target_branches: main
           label_pattern: ''
           add_author_as_assignee: true
@@ -38,7 +33,7 @@ jobs:
           experimental: '{"conflict_resolution":"draft_commit_conflicts"}'
       - name: Enable normal auto-merge for clean forward-ports
         env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
           PULL_NUMBERS: ${{ steps.port.outputs.created_pull_numbers }}
         run: |
           for number in $PULL_NUMBERS; do
