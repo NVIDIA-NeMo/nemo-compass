@@ -13,6 +13,7 @@ import pytest
 from mlflow import MlflowClient
 from mlflow.entities import Feedback
 from mlflow.entities import Trace as MLflowTrace
+from mlflow.utils.search_utils import SearchTraceUtils
 
 from compass.compass_signals.anomaly_and_patterns.signal import to_anomaly_and_patterns_trace
 from compass.compass_signals.tool_issues.signal import MISSING, to_tool_issue_trace
@@ -24,6 +25,7 @@ from compass.trace_loaders.mlflow import (
     MLflowTraceLoadError,
 )
 from compass.traces import UNSET, SpanKind
+from trace_ingest.loaders.mlflow import _session_filter
 from trace_ingest.models import Authorship, ImagePart, Loss, TextPart, TurnRole
 
 MLFLOW_TRACE_FIXTURE = Path(__file__).parent / "data" / "mlflow_trace_v3.json"
@@ -608,20 +610,30 @@ def test_root_span_session_attribute_is_the_fallback_session_key():
     assert (merged.id, merged.session_basis) == ("session:s", "mlflow.span.session.id")
 
 
-def test_live_selection_stops_at_max_traces_conversations_and_marks_them_partial():
+def capped_session_pages():
+    """Selection pages that stop at a second session, then the re-read of the first."""
     turn = [{"role": "user", "content": "hi"}]
-    client = FakeClient(
-        pages=[
-            FakePage(
-                [
-                    session_trace("tr-3", 30, "s1", question=turn, answer="a"),
-                    session_trace("tr-2", 20, "s1", question=turn, answer="b"),
-                ],
-                token="next",
-            ),
-            FakePage([session_trace("tr-1", 10, "s2", question=turn, answer="c")]),
-        ]
-    )
+    return [
+        FakePage(
+            [
+                session_trace("tr-3", 30, "s1", question=turn, answer="a"),
+                session_trace("tr-2", 20, "s1", question=turn, answer="b"),
+            ],
+            token="next",
+        ),
+        FakePage([session_trace("tr-1", 10, "s2", question=turn, answer="c")]),
+        FakePage(
+            [
+                session_trace("tr-3", 30, "s1", question=turn, answer="a"),
+                session_trace("tr-2", 20, "s1", question=turn, answer="b"),
+                session_trace("tr-0", 5, "s1", question=turn, answer="z"),
+            ]
+        ),
+    ]
+
+
+def test_live_selection_rereads_selected_sessions_past_max_traces():
+    client = FakeClient(pages=capped_session_pages())
     loader = MLflowTraceLoader(
         MLflowTraceConfig(experiment_name="agent-traces", max_traces=1), client=client
     )
@@ -629,15 +641,73 @@ def test_live_selection_stops_at_max_traces_conversations_and_marks_them_partial
     (merged,) = loader.load()
 
     assert merged.id == "session:s1"
-    assert [record["trace_id"] for record in provenance(merged)] == ["tr-2", "tr-3"]
+    # tr-0 sits past the point where selection stopped; the session re-read finds it.
+    assert [record["trace_id"] for record in provenance(merged)] == ["tr-0", "tr-2", "tr-3"]
+    assert merged.losses == []
+    assert len(client.search_calls) == 3
+    selection, reread = client.search_calls[0], client.search_calls[2]
+    assert reread["filter_string"] == "metadata.`mlflow.trace.session` = 's1'"
+    assert reread["max_results"] == 500
+    ignored = {"filter_string", "max_results"}
+    assert {k: v for k, v in reread.items() if k not in ignored} == {
+        k: v for k, v in selection.items() if k not in ignored
+    }
+
+
+def test_live_reread_keeps_the_user_filter():
+    client = FakeClient(pages=capped_session_pages())
+
+    MLflowTraceLoader(
+        MLflowTraceConfig(
+            experiment_name="agent-traces", max_traces=1, filter_string="trace.status = 'OK'"
+        ),
+        client=client,
+    ).load()
+
+    assert (
+        client.search_calls[2]["filter_string"]
+        == "trace.status = 'OK' AND metadata.`mlflow.trace.session` = 's1'"
+    )
+
+
+def test_live_span_keyed_session_past_the_limit_is_marked_partial():
+    span_keyed = trace("tr-1", [span("root", span_type="CHAIN", attributes={"session.id": "s"})])
+    other = trace("tr-2", [span("root", span_type="CHAIN")], metadata={"mlflow.trace.session": "x"})
+    client = FakeClient(pages=[FakePage([span_keyed, other]), FakePage([])])
+
+    (merged,) = MLflowTraceLoader(
+        MLflowTraceConfig(experiment_name="agent-traces", max_traces=1), client=client
+    ).load()
+
+    # The metadata search cannot find a session keyed by a span attribute, so the
+    # selected trace is kept and the conversation is marked incomplete.
+    assert merged.id == "session:s"
     assert merged.losses == [
         Loss(
             code="merge_incomplete",
-            detail={"reason": "max_traces", "loaded_record_count": 2},
-            span_id="session:s1",
+            detail={"reason": "max_traces", "loaded_record_count": 1},
+            span_id="session:s",
         )
     ]
-    assert len(client.search_calls) == 2
+
+
+@pytest.mark.parametrize("session_id", ["s1", "it's", 'x"y', "a\\"])
+def test_session_filter_quotes_ids_mlflow_parses(session_id):
+    filter_string = _session_filter("trace.status = 'OK'", session_id)
+    assert filter_string is not None
+
+    parsed = SearchTraceUtils.parse_search_filter_for_search_traces(filter_string)
+
+    assert parsed[-1] == {
+        "type": "request_metadata",
+        "key": "mlflow.trace.session",
+        "comparator": "=",
+        "value": session_id,
+    }
+
+
+def test_session_filter_rejects_ids_with_both_quotes():
+    assert _session_filter(None, "a'b\"c") is None
 
 
 def test_file_loader_keeps_whole_conversations_up_to_the_bound(tmp_path):

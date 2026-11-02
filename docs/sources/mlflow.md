@@ -55,9 +55,12 @@ Traces that share a session (`mlflow.trace.session` metadata, else the root span
 attribute) load as one conversation: trace `session:<id>` holds every trace's spans, named
 `<trace id>/<span id>`, under one `conversation` agent span. Its turns join each trace's turns;
 when any trace has none on its own (see [Conversation turns](#conversation-turns)), the
-conversation has none. `max_traces` counts conversations. When the live search stops at the limit
-with traces left, each merged conversation records a `merge_incomplete` loss, because older
-traces of the session may not have been loaded.
+conversation has none. `max_traces` counts conversations. When the live search finds a trace of
+conversation `max_traces + 1`, it searches again for each selected session with the configured
+filter and ``metadata.`mlflow.trace.session` = '<id>'`` in pages of 500, so the conversation
+loads whole. Sessions keyed only by the root span's `session.id`, or whose id contains both quote
+characters, cannot be searched for; a selected trace missing from that second search is kept and
+its conversation records a `merge_incomplete` loss.
 
 A span's `model` and `cost_usd` come from MLflow's `mlflow.llm.model` and `mlflow.llm.cost`
 (`total_cost`) attributes, and a trace's aggregate cost from its `mlflow.trace.cost` metadata;
