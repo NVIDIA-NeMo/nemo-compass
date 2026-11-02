@@ -67,7 +67,10 @@ jobs:
       release-version: ${{ needs.plan.outputs.version }}
   draft-release:
     name: Store validated artifacts and publish when requested
-    needs: [plan, validate]
+    needs: [plan, validate, nspect-review]
+    if: >-
+      !cancelled() && needs.validate.result == 'success' &&
+      (needs.plan.outputs.action != 'publish' || needs.nspect-review.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -96,8 +99,8 @@ jobs:
 
   stage-ngc:
     name: Stage SDK wheel in NGC
-    needs: [plan, validate, draft-release]
-    if: needs.plan.outputs.action != 'publish'
+    needs: [plan, validate]
+    if: needs.plan.outputs.action == 'publish'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -150,4 +153,15 @@ jobs:
           ngc registry resource download-version "$resource_ref" --file "$WHEEL_FILE" --dest "$destination"
           staged=$(find "$destination" -type f -name "$WHEEL_FILE")
           cmp -- "$WHEEL_FILE" "$staged"
-          printf 'Staged SDK wheel: %s\n' "$resource_ref" >> "$GITHUB_STEP_SUMMARY"
+          {
+            printf 'Final wheel for nSpect: %s\nFile: %s\n' "$resource_ref" "$WHEEL_FILE"
+            sha256sum -- "$WHEEL_FILE"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  nspect-review:
+    name: Approve nSpect review of the staged final wheel
+    needs: stage-ngc
+    environment: nspect-review
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'nSpect review approved; publish the staged artifacts.'

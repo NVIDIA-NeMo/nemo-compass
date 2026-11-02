@@ -230,7 +230,7 @@ shutil.copyfile(remote, pathlib.Path(sys.argv[sys.argv.index("--dest") + 1]) / "
         "NGC_CLI_API_KEY": "test",
         "NGC_CLI_ORG": "org",
         "NGC_CLI_TEAM": "team",
-        "RELEASE_TAG": "v1.2.3rc1",
+        "RELEASE_TAG": "v1.2.3",
         "WHEEL_FILE": wheel.name,
         "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
     }.items():
@@ -238,3 +238,29 @@ shutil.copyfile(remote, pathlib.Path(sys.argv[sys.argv.index("--dest") + 1]) / "
     result = subprocess.run(["bash", "-e", "-c", step["run"]], cwd=tmp_path, env=os.environ)
     assert (result.returncode == 0) == (outcome == "success")
     assert (tmp_path / "summary").exists() == (outcome == "success")
+    if outcome == "success":
+        summary = (tmp_path / "summary").read_text()
+        assert "org/team/nemo-compass:1.2.3" in summary
+        assert "package.whl" in summary
+
+
+def test_only_final_publication_waits_for_ngc_and_nspect_review():
+    root = Path(__file__).resolve().parents[1]
+    jobs = yaml.safe_load((root / ".github/workflows/release.yaml").read_text())["jobs"]
+    assert jobs["stage-ngc"]["if"] == "needs.plan.outputs.action == 'publish'"
+    assert jobs["stage-ngc"]["needs"] == ["plan", "validate"]
+    assert jobs["nspect-review"]["needs"] == "stage-ngc"
+    assert jobs["nspect-review"]["environment"] == "nspect-review"
+    assert "nspect-review" in jobs["draft-release"]["needs"]
+    assert (
+        "needs.plan.outputs.action != 'publish' || needs.nspect-review.result == 'success'"
+        in jobs["draft-release"]["if"]
+    )
+    # Both jobs consume the same CI artifact, with no rebuild after nSpect review.
+    for job in ("stage-ngc", "draft-release"):
+        downloads = [
+            s["with"]["name"]
+            for s in jobs[job]["steps"]
+            if s.get("uses", "").startswith("actions/download-artifact@")
+        ]
+        assert downloads == ["release-distributions"]

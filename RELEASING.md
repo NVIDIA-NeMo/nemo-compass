@@ -9,8 +9,8 @@ Compass and Eval Author release independently.
 1. **Start:** Open [Actions → Release](https://github.com/NVIDIA-NeMo/labs-trace-intel/actions/workflows/release.yaml), select
    `main`, choose **start**, and enter a final version such as `0.3.0`.
    Optionally supply a main commit SHA. Automation validates it, creates
-   `release/0.3.0`, and stages the first RC in a draft GitHub release and NGC.
-2. **Validate:** Wait for the workflow, including NGC staging, to succeed. QA records
+   `release/0.3.0`, and uploads the first RC to a draft GitHub release.
+2. **Validate:** Wait for the candidate workflow to succeed. QA records
    acceptance of the exact RC tag and source SHA in the existing QA tracker.
    Fixes go through ordinary PRs to the release branch. Each merge prepares a new
    RC and automatically opens a forward-port PR to main; it auto-merges when checks
@@ -18,9 +18,12 @@ Compass and Eval Author release independently.
    Do not manually bump RC versions or merge main into the release branch.
 3. **Publish:** Run **publish** on `main` with the accepted RC tag and QA evidence URL.
    Confirm engineering readiness, resolved blockers, and product readiness for major
-   customer-facing changes. Automation rebuilds and validates the final version,
-   then publishes the GitHub release and notes. Give the final wheel URL from the
-   summary to the independent Slack publisher for PyPI. RC preparation never invokes it.
+   customer-facing changes. Automation builds and validates the final version, stages
+   its wheel in NGC, and waits for **nSpect review**. Register the NGC resource/version
+   and file shown in the staging summary using the existing nSpect process. Record
+   the review result in the QA evidence, then approve **nspect-review** in Actions.
+   Automation publishes the same validated artifacts and release notes. Give the final
+   wheel URL to the independent Slack publisher for PyPI. RC preparation never invokes it.
 
 A newer candidate needs new QA acceptance. Publication stops if a branch change is
 detected before publishing; a merge after the final check is excluded from the
@@ -52,5 +55,8 @@ Require **Quality** and up-to-date PRs on main and release branches; restrict di
 and force pushes, protect release tags, and enable auto-merge. Configure a GitHub App
 with contents and pull-request write access using `RELEASE_APP_ID` and
 `RELEASE_APP_PRIVATE_KEY`, so forward-port PRs receive normal CI. Keep
-`AIRE_NGC_SERVICE_KEY` for staging. Land the workflows on main before use and review
-workflow changes as privileged code.
+`AIRE_NGC_SERVICE_KEY` for final-wheel staging. Create the **nspect-review** environment
+with required reviewers before enabling releases; without that configuration GitHub
+will not pause for review. This approval attests to completed nSpect registration and
+review; the workflow does not query nSpect. Land the workflows on main before use and
+review workflow changes as privileged code.

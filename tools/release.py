@@ -141,7 +141,7 @@ def plan() -> None:
             completed["conclusion"] != "success"
             or completed["path"] != ".github/workflows/release.yaml"
         ):
-            raise ValueError("Candidate preparation/staging has not succeeded")
+            raise ValueError("Candidate preparation has not succeeded")
         current(branch, commit)
         if candidate(branch, commit) != tag[1:]:
             raise ValueError("Selected candidate does not match branch history")
