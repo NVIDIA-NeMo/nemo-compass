@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# License metadata corrections. These are not maintainer acknowledgment or legal approval.
-# Preserve upstream terms and notices separately; review corrections when dependencies change.
+# License metadata corrections.
 overrides:
   aiohappyeyeballs: PSF-2.0
   certifi: MPL-2.0

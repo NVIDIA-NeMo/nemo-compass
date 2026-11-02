@@ -30,21 +30,10 @@ where necessary, a verified metadata correction in `third_party/license_override
 The standard texts were sourced from SPDX license-list-data commit
 `16f3aa6c3bdd62e50f8b1cf618f32d2a510250ee`; original package notices are retained separately.
 
-Dependency PRs receive a **Dependency licensing** report covering core, optional
-extras, and development tooling, including transitive dependencies and their immediate
-introducers. Missing metadata or failed analysis leaves the check unresolved.
-For new dependencies or changed license evidence, a maintainer with merge access
-posts the acknowledgment line supplied by the report as a separate PR comment.
-The check records the author and evidence fingerprint; unrelated code edits preserve
-acknowledgment. Changed license/attribution documents also require review when the
-expression is unchanged: the report identifies this reason, rather than assuming
-that unchanged SPDX metadata proves unchanged terms. Unchanged-license version updates and removals do not require it.
-
-Acknowledgment is not legal approval. Maintainers decide whether to escalate to legal
-or OSRB; use a linked ticket/comment recording the owner, affected changes, submission
-date, and outcome. Allow for the four-week review SLA. Record merge and shipping
-restrictions separately in that ticket and the release's QA evidence. Metadata overrides
-and missing-document exceptions are not approval records.
+The **Dependency licensing** PR check reports dependency and license changes.
+If acknowledgment is required, a maintainer with merge access posts the comment
+supplied by the report.
+Expressions outside the checker's allowlist block merging even with acknowledgment.
 
 `make check-licenses` verifies the generated disclosures. Scanner intermediates and
 download caches live in ignored `tmp/`; a cold cache requires network access.

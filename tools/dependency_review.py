@@ -25,6 +25,24 @@ from packaging.utils import canonicalize_name
 from packaging.version import Version
 
 MARKER = "<!-- compass-dependency-review -->"
+# Exact resolved expressions; compound expressions must be explicitly listed.
+# Loaded from trusted default-branch code, never from the PR's overrides.
+ALLOWED_LICENSES = {
+    "APACHE-2.0",
+    "BSD-2-CLAUSE",
+    "BSD-3-CLAUSE",
+    "ISC",
+    "MIT",
+    "ZLIB",
+}
+
+
+def disallowed_licenses(state: dict) -> list[str]:
+    return [
+        f"- {name}=={version}: `{evidence['license']}`"
+        for (name, version), evidence in sorted(state.items())
+        if evidence["license"] not in ALLOWED_LICENSES
+    ]
 
 
 def run(*args: str) -> str:
@@ -286,6 +304,7 @@ def main() -> None:
     )
     conclusion = "failure"
     try:
+        blocked = []
         run("git", "fetch", "--no-tags", "origin", head, base)
         paths = ["uv.lock", "pyproject.toml", "third_party"]
         changed = run("git", "diff", "--name-only", base, head, "--", *paths)
@@ -299,6 +318,7 @@ def main() -> None:
                 for ref, scope in zip((base, head), scopes, strict=True)
             ]
             report, fingerprint = compare(before, after)
+            blocked = disallowed_licenses(after)
         if fingerprint:
             author = acknowledged(number, fingerprint)
             report += f"\n\nEvidence: `{fingerprint}`\n\n"
@@ -314,6 +334,14 @@ def main() -> None:
             conclusion = "success" if author else "failure"
         else:
             conclusion = "success"
+        if blocked:
+            report += "\n\nBlocked license expressions:\n" + "\n".join(blocked)
+            report += (
+                "\n\nAcknowledgment cannot clear this block. Use dependencies with allowed "
+                "expressions or propose a policy change to `ALLOWED_LICENSES` in "
+                "`tools/dependency_review.py` on the default branch."
+            )
+            conclusion = "failure"
         latest = api(f"pulls/{number}")
         if (latest["head"]["sha"], latest["base"]["sha"]) != (head, base):
             raise ValueError("PR changed during analysis; awaiting a fresh check")

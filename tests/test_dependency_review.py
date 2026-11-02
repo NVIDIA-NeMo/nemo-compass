@@ -94,6 +94,31 @@ def test_acknowledgment_covers_only_relevant_license_evidence():
     assert fingerprint and "documents changed (expression unchanged)" in report
 
 
+@pytest.mark.parametrize(
+    "licenses, override, allowed",
+    [
+        (["mit"], None, True),
+        (["Apache-2.0"], None, True),
+        (["GPL-3.0-only"], None, False),
+        (["MIT AND GPL-3.0-only"], None, False),
+        (["MIT OR Apache-2.0"], None, False),
+        (["MIT OR BSD-2-Clause"], None, True),
+        (["Apache-2.0 WITH LLVM-exception"], None, False),
+        (["MIT"], "MPL-2.0", False),
+        (["UNKNOWN"], "MIT", True),
+        (["UNKNOWN"], None, False),
+    ],
+)
+def test_allowlist_checks_complete_resolved_expressions(monkeypatch, licenses, override, allowed):
+    monkeypatch.setattr(
+        review, "ALLOWED_LICENSES", review.ALLOWED_LICENSES | {"MIT OR BSD-2-CLAUSE"}
+    )
+    expression = review.resolve_license(licenses, override)
+    state = {("a", "1"): {"license": expression}}
+    assert bool(review.disallowed_licenses(state)) is not allowed
+    assert review.disallowed_licenses({}) == []  # Removed dependencies cannot block.
+
+
 def test_incomplete_scanner_output_is_unresolved(monkeypatch):
     def scan(args, **kwargs):
         Path(args[-1]).write_text('{"results": []}')
@@ -189,5 +214,20 @@ def test_check_lifecycle_rechecks_acknowledgment_and_pr_identity(tmp_path, monke
         assert writes[-1][1]["conclusion"] == expected
     comment = None
     stale = False
+    review.main()
+    assert writes[-1][1]["conclusion"] == "failure"
+    # Even a valid acknowledgment cannot clear a disallowed corrected expression.
+    comment = {
+        "body": "Licensing acknowledged: fingerprint",
+        "user": {"type": "User", "login": "maintainer"},
+        "html_url": "https://example.com/ack",
+    }
+    monkeypatch.setattr(review, "snapshot", lambda *args: {("a", "1"): {"license": "MPL-2.0"}})
+    review.main()
+    assert writes[-1][1]["conclusion"] == "failure"
+    summary = writes[-1][1]["output"]["summary"]
+    assert "Acknowledged by @maintainer" in summary
+    assert "a==1: `MPL-2.0`" in summary and "Acknowledgment cannot clear" in summary
+    monkeypatch.setattr(review, "compare", lambda *args: ("Version update", None))
     review.main()
     assert writes[-1][1]["conclusion"] == "failure"
