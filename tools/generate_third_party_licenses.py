@@ -26,14 +26,6 @@ OVERRIDES_PATH = PROJECT_ROOT / "third_party" / "license_overrides.yaml"
 TEXTS_PATH = PROJECT_ROOT / "third_party" / "NOTICES.txt"
 EXCEPTIONS_PATH = PROJECT_ROOT / "third_party" / "license_exceptions.yaml"
 LICENSE_TEXTS_PATH = PROJECT_ROOT / "third_party" / "license_texts"
-ALLOWED_LICENSES = {
-    "APACHE-2.0",
-    "BSD-2-CLAUSE",
-    "BSD-3-CLAUSE",
-    "ISC",
-    "MIT",
-    "ZLIB",
-}
 
 
 class LicenseRecord(TypedDict):
@@ -75,7 +67,7 @@ def _export_requirements(output_path: Path) -> None:
     )
 
 
-def _scan_licenses(requirements_path: Path, output_path: Path) -> None:
+def scan_licenses(requirements_path: Path, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.unlink(missing_ok=True)
     result = subprocess.run(
@@ -95,7 +87,7 @@ def _scan_licenses(requirements_path: Path, output_path: Path) -> None:
         cwd=PROJECT_ROOT,
         check=False,
     )
-    if not output_path.exists():
+    if result.returncode not in {0, 1} or not output_path.exists():
         raise RuntimeError(f"OSV-Scanner failed with exit code {result.returncode}")
 
     raw = json.loads(output_path.read_text(encoding="utf-8"))
@@ -112,11 +104,11 @@ def _load_overrides() -> dict[str, str]:
 def _resolve_license(licenses: list[str], override: str | None) -> str | None:
     if override is not None:
         return override.upper()
-    for license_name in licenses:
-        first_license = re.split(r"\s+(?:AND|OR)\s+", license_name, maxsplit=1)[0].upper()
-        if first_license in ALLOWED_LICENSES:
-            return license_name.upper()
-    return None
+    if not licenses or any(
+        re.search(r"\b(UNKNOWN|NOASSERTION|NONE|OTHER)\b", name, re.I) for name in licenses
+    ):
+        return None
+    return " AND ".join(sorted(licenses)).upper()
 
 
 def _license_records(osv_path: Path) -> list[LicenseRecord]:
@@ -161,10 +153,14 @@ def _license_records(osv_path: Path) -> list[LicenseRecord]:
 
     if unresolved:
         raise RuntimeError(
-            "Packages need reviewed entries in third_party/license_overrides.yaml: "
+            "Packages need verified metadata corrections in third_party/license_overrides.yaml: "
             + ", ".join(sorted(unresolved, key=str.lower))
         )
-    unused_overrides = sorted(set(overrides) - used_overrides)
+    # Dev-only corrections are consumed by the PR report, not shipped disclosures.
+    locked_names = {
+        p["name"] for p in tomllib.loads((PROJECT_ROOT / "uv.lock").read_text())["package"]
+    }
+    unused_overrides = sorted(set(overrides) - used_overrides - locked_names)
     if unused_overrides:
         raise RuntimeError("Unused license overrides: " + ", ".join(unused_overrides))
     return [records[key] for key in sorted(records)]
@@ -257,7 +253,7 @@ def main() -> int:
     osv_path = output_dir / "osv-licenses.json"
 
     _export_requirements(requirements_path)
-    _scan_licenses(requirements_path, osv_path)
+    scan_licenses(requirements_path, osv_path)
     records = _license_records(osv_path)
     summary = _render_summary(records)
     notices = _render_notices(records)

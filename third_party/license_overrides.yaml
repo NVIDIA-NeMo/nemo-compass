@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Reviewed overrides for licenses that OSV-Scanner reports as non-standard or
-# that fall outside NeMo Platform's default permissive-license allowlist.
+# License metadata corrections. These are not maintainer acknowledgment or legal approval.
+# Preserve upstream terms and notices separately; review corrections when dependencies change.
 overrides:
   aiohappyeyeballs: PSF-2.0
   certifi: MPL-2.0
