@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from urllib.parse import urljoin
 
-from trace_ingest.loaders.helper.merge import Record, assemble
+from trace_ingest.loaders.helper.merge import Record, assemble, select_sessions
 from trace_ingest.loaders.langfuse.client import _new_langfuse_client, _resolved_base_url
 from trace_ingest.loaders.langfuse.config import (
     LangfuseTraceConfig,
@@ -55,12 +56,25 @@ class LangfuseV3TraceLoader:
 
         base_url = _resolved_base_url(self.config.base_url)
         client = self.client or _new_langfuse_client(base_url)
-        selected, capped = self._select_traces(client)
+        summaries, partial = select_sessions(
+            self._summaries(client),
+            key=lambda summary: (
+                ("session", summary.session_id)
+                if summary.session_id
+                else ("trace", _trace_id(summary))
+            ),
+            item_id=_trace_id,
+            limit=self.config.max_traces,
+            reread=lambda session_id: self._summaries(client, session_id),
+        )
+        selected: dict[str, TraceWithDetails] = {}
+        for summary in summaries:
+            selected.setdefault(_trace_id(summary), summary)
 
         records: list[Record] = []
         # Query-summary timestamps determine ordering, even if detail timestamps differ.
         for summary in sorted(
-            selected, key=lambda trace: (_trace_timestamp(trace), _trace_id(trace))
+            selected.values(), key=lambda trace: (_trace_timestamp(trace), _trace_id(trace))
         ):
             trace_id = _trace_id(summary)
             provider_trace = client.api.trace.get(trace_id)
@@ -79,7 +93,7 @@ class LangfuseV3TraceLoader:
             records.append(Record(trace, *_conversation_io(provider_trace, trace)))
 
         try:
-            traces = assemble(records, orchestration_subtypes=_ORCHESTRATION, capped=capped)
+            traces = assemble(records, orchestration_subtypes=_ORCHESTRATION, partial=partial)
         except ValueError as error:
             raise LangfuseTraceLoadError(str(error)) from error
         snapshot = TraceSnapshot(traces)
@@ -87,16 +101,18 @@ class LangfuseV3TraceLoader:
         self._snapshot = snapshot
         return snapshot
 
-    def _select_traces(self, client: Langfuse) -> tuple[list[TraceWithDetails], bool]:
-        """Newest summaries of up to ``max_traces`` sessions, and whether the cap stopped it."""
-        selected: dict[str, TraceWithDetails] = {}
-        groups: set[str] = set()
+    def _summaries(
+        self, client: Langfuse, session_id: str | None = None
+    ) -> Iterator[TraceWithDetails]:
+        """Trace summaries in the window, newest first, optionally of one session."""
         page = 1
         filter_string = _bounded_filter(
             self.config.filter_string,
             from_timestamp=self.config.from_timestamp,
             to_timestamp=self.config.to_timestamp,
+            session_id=session_id,
         )
+        session = {} if session_id is None else {"session_id": session_id}
 
         while True:
             response = client.api.trace.list(
@@ -107,17 +123,12 @@ class LangfuseV3TraceLoader:
                 order_by="timestamp.desc",
                 fields=_LIST_FIELDS,
                 filter=filter_string,
+                **session,
             )
-            for trace in response.data:
-                trace_id = _trace_id(trace)
-                group = trace.session_id or trace_id
-                if group not in groups and len(groups) == self.config.max_traces:
-                    return list(selected.values()), True
-                groups.add(group)
-                selected.setdefault(trace_id, trace)
+            yield from response.data
 
             if page >= response.meta.total_pages:
-                return list(selected.values()), False
+                return
             if not response.data:
                 raise LangfuseTraceLoadError(
                     "Langfuse returned an empty trace page before the final page"

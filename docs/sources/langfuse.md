@@ -58,11 +58,13 @@ its single root is an agent, chain or span observation, it owns the trace's turn
 conversation has turns only when every one of its traces has such a root. A root
 observation whose parent was never exported, such as a caller's span in distributed
 tracing, is still the trace's root.
-`max_traces` (default 100) counts conversations. Live loads select the newest ones; when
-selection stops at the limit, each merged trace is marked incomplete (`merge_incomplete`)
-because more of its session may exist. Exports keep the newest `max_traces`
-conversations after merging every record, ranked as live loads rank them: by the
-newest trace timestamp (v3) or observation start (v4) in the conversation.
+`max_traces` (default 100) counts conversations. Live loads select the newest ones:
+selection stops at the first trace of conversation `max_traces + 1`, then lists each
+selected session again with the same filter and window (adding a `sessionId` condition),
+so its traces in the window load whole. A selected trace missing from that second listing
+is kept and its merged trace is marked incomplete (`merge_incomplete`). Exports keep the
+newest `max_traces` conversations after merging every record, ranked as live loads rank
+them: by the newest trace timestamp (v3) or observation start (v4) in the conversation.
 
 To filter by environment, add this under `trace.langfuse`:
 

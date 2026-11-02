@@ -383,12 +383,18 @@ def test_v4_missing_parent_and_conflicting_sessions_remain_visible():
 
 
 @pytest.mark.parametrize("max_traces", [1, 2])
-def test_v4_traces_sharing_a_session_merge_and_cap_marks_them_partial(max_traces):
+def test_v4_traces_sharing_a_session_merge_and_capped_sessions_are_reread(max_traces):
     selection = [
         observation("a-root", trace_id="a", sessionId="s"),
         observation("b-root", trace_id="b", start=START + timedelta(seconds=1), sessionId="s"),
         observation("c-root", trace_id="c", start=START + timedelta(seconds=2)),
     ]
+    # A trace of session s that selection returns only on its next page.
+    late = observation(
+        "z-root", trace_id="z", start=START + timedelta(milliseconds=500), sessionId="s"
+    )
+    session_requests = []
+    cursor_requests = []
 
     def handler(request):
         q = request.url.params
@@ -396,11 +402,21 @@ def test_v4_traces_sharing_a_session_merge_and_cap_marks_them_partial(max_traces
             return httpx.Response(200, json=page([]))
         if q.get("traceId"):
             return httpx.Response(
-                200, json=page([row for row in selection if row["traceId"] == q["traceId"]])
+                200,
+                json=page([row for row in [*selection, late] if row["traceId"] == q["traceId"]]),
             )
-        # A capped selection stops before requesting the next page.
-        assert max_traces == 2 or not q.get("cursor")
-        return httpx.Response(200, json=page([]) if q.get("cursor") else page(selection, "more"))
+        if q.get("sessionId"):
+            session_requests.append(q["sessionId"])
+            return httpx.Response(
+                200,
+                json=page(
+                    [row for row in [*selection, late] if row.get("sessionId") == q["sessionId"]]
+                ),
+            )
+        if q.get("cursor") == "more":
+            cursor_requests.append(q["cursor"])
+            return httpx.Response(200, json=page([late]))
+        return httpx.Response(200, json=page(selection, "more"))
 
     instance = loader(handler, max_traces=max_traces)
     traces = list(instance.load())
@@ -408,10 +424,18 @@ def test_v4_traces_sharing_a_session_merge_and_cap_marks_them_partial(max_traces
     assert [trace.id for trace in traces] == ["session:s", "c"][:max_traces]
     merged = traces[0]
     assert (merged.session_id, merged.session_basis) == ("s", "langfuse.sessionId")
-    assert [span.id for span in merged.root_spans[0].children] == ["a/a-root", "b/b-root"]
+    assert [span.id for span in merged.root_spans[0].children] == [
+        "a/a-root",
+        "z/z-root",
+        "b/b-root",
+    ]
     records = merged.attributes["records"]
     assert isinstance(records, list)
-    assert [record["trace_id"] for record in records if isinstance(record, dict)] == ["a", "b"]
+    assert [record["trace_id"] for record in records if isinstance(record, dict)] == [
+        "a",
+        "z",
+        "b",
+    ]
     assert all(
         isinstance(record, dict)
         and isinstance(record["attributes"], dict)
@@ -419,13 +443,14 @@ def test_v4_traces_sharing_a_session_merge_and_cap_marks_them_partial(max_traces
         for record in records
     )
     partial = [loss.detail for loss in merged.losses if loss.code == "merge_incomplete"]
-    assert partial == (
-        [{"reason": "max_traces", "loaded_record_count": 2}] if max_traces == 1 else []
-    )
+    assert partial == []
+    # A capped selection stops before the next page and lists the session again instead.
+    assert session_requests == (["s"] if max_traces == 1 else [])
+    assert cursor_requests == ([] if max_traces == 1 else ["more"])
     description = instance.describe()
     assert description["trace_count"] == max_traces
     assert description["distinct_sessions"] == 1
-    assert description["observation_count"] == max_traces + 1
+    assert description["observation_count"] == max_traces + 2
 
 
 def test_v4_trace_details_include_time_bounds_to_avoid_server_timeout():

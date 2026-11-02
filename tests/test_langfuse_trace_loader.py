@@ -260,7 +260,9 @@ def test_corpus_reports_count_only_selected_traces(tmp_path, offline):
             LangfuseTraceConfig(
                 START, END + timedelta(seconds=1), base_url="https://example.test", max_traces=2
             ),
-            client=FakeClient([([*selected, oldest], 1)], {t.id: t for t in selected}),
+            client=FakeClient(
+                [([*selected, oldest], 1), ([later, middle], 1)], {t.id: t for t in selected}
+            ),
         )
     traces = list(loader.load())
     assert [t.id for t in traces] == ["session:shared", "newest"]
@@ -270,9 +272,7 @@ def test_corpus_reports_count_only_selected_traces(tmp_path, offline):
         "middle",
         "later",
     ]
-    assert [loss.code for trace in traces for loss in trace.losses] == (
-        [] if offline else ["merge_incomplete"]
-    )
+    assert [loss.code for trace in traces for loss in trace.losses] == []
     description = loader.describe()
     expected = {
         "trace_count": 2,
@@ -287,6 +287,59 @@ def test_corpus_reports_count_only_selected_traces(tmp_path, offline):
         file_description = loader.describe()
         assert file_description["export_trace_count"] == 4
         assert file_description["truncated"] is True
+
+
+def test_v3_rereads_a_capped_session_with_its_filter():
+    def shared(trace_id, timestamp):
+        return provider_trace(
+            trace_id,
+            timestamp=timestamp,
+            session_id="shared",
+            observations=[observation("span", trace_id=trace_id, start_time=timestamp)],
+        )
+
+    later = shared("later", START + timedelta(seconds=1))
+    middle = shared("middle", START)
+    newest = provider_trace(
+        "newest", timestamp=END, observations=[observation("span", trace_id="newest")]
+    )
+    client = FakeClient(
+        [([later, newest], 1), ([later, middle], 1)], {t.id: t for t in (later, middle)}
+    )
+
+    (trace,) = LangfuseV3TraceLoader(
+        LangfuseTraceConfig(
+            START,
+            END + timedelta(seconds=1),
+            base_url="https://example.test",
+            max_traces=1,
+            filter_string='[{"type":"string","column":"userId","operator":"=","value":"u"}]',
+        ),
+        client=client,
+    ).load()
+
+    assert trace.id == "session:shared"
+    records = trace.attributes["records"]
+    assert isinstance(records, list)
+    assert [record["trace_id"] for record in records if isinstance(record, dict)] == [
+        "middle",
+        "later",
+    ]
+    assert trace.losses == []
+    selection, reread = client.trace.list_calls
+    assert reread["session_id"] == "shared"
+    assert reread["page"] == 1
+    assert (reread["from_timestamp"], reread["to_timestamp"]) == (
+        selection["from_timestamp"],
+        selection["to_timestamp"],
+    )
+    # A sent filter overrides Langfuse's sessionId parameter, so it carries the session too.
+    assert json.loads(str(reread["filter"]))[-1] == {
+        "type": "string",
+        "column": "sessionId",
+        "operator": "=",
+        "value": "shared",
+    }
 
 
 @pytest.mark.parametrize("offline", [False, True])
