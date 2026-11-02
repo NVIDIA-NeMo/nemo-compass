@@ -70,28 +70,10 @@ def test_inventory_preserves_platform_versions(tmp_path, monkeypatch):
             }
         )
     )
-    records = generator._license_records(scan)
-    assert [(r["name"], r["version"]) for r in records] == [
+    assert [(r["name"], r["version"]) for r in generator._license_records(scan)] == [
         ("torch", "2.13.0"),
         ("torch", "2.13.0+cpu"),
     ]
-    monkeypatch.setattr(generator, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(generator, "_supplements", lambda records: {})
-    (tmp_path / "uv.lock").write_text(
-        "\n".join(
-            f'[[package]]\nname="torch"\nversion="{r["version"]}"\nsource={{registry="https://pypi.org/simple"}}'
-            for r in records
-        )
-    )
-    documents = [
-        {"source": "archive", "sha256": "hash", "path": "LICENSE", "text": text}
-        for text in ["License\r\ntext\n", "License\ntext\n"]
-    ]
-    monkeypatch.setattr(generator, "collect", lambda *args: documents)
-    generator._collect_texts(records)
-    for record in records:
-        assert record["source"] == {"registry": "https://pypi.org/simple"}
-        assert record["document_hashes"] == [hashlib.sha256(b"License\ntext").hexdigest()]
 
 
 def wheel(files):
@@ -102,10 +84,58 @@ def wheel(files):
     return output.getvalue()
 
 
+@pytest.mark.parametrize(
+    "licenses, override, error",
+    [
+        (["mit"], None, None),
+        (["MIT OR Apache-2.0"], None, None),
+        (["MIT AND Apache-2.0"], None, "outside ALLOWED_LICENSES"),
+        (["MIT AND GPL-3.0-only"], None, "outside ALLOWED_LICENSES"),
+        (["MIT"], "MPL-2.0", "outside ALLOWED_LICENSES"),
+        (["UNKNOWN"], "MIT", None),
+        (["UNKNOWN"], None, "metadata corrections"),
+        (["MIT OR"], None, "metadata corrections"),
+    ],
+)
+def test_license_policy_checks_complete_expressions(
+    tmp_path, monkeypatch, licenses, override, error
+):
+    monkeypatch.setattr(
+        generator, "_load_overrides", lambda: {"example": override} if override else {}
+    )
+    monkeypatch.setattr(
+        generator, "ALLOWED_LICENSES", generator.ALLOWED_LICENSES | {"MIT OR APACHE-2.0"}
+    )
+    scan = tmp_path / "scan.json"
+    package = {"package": {"name": "example", "version": "1"}, "licenses": licenses}
+    scan.write_text(json.dumps({"results": [{"packages": [package]}]}))
+    if error:
+        with pytest.raises(RuntimeError, match=error):
+            generator._license_records(scan, check_policy=True)
+    else:
+        assert generator._license_records(scan, check_policy=True)[0]["name"] == "example"
+
+
 def cached_artifact(tmp_path, name, data):
     digest = hashlib.sha256(data).hexdigest()
     (tmp_path / digest).write_bytes(data)
     return {"url": f"https://example.org/{name}", "hash": "sha256:" + digest}
+
+
+def test_scan_rejects_missing_development_dependency(tmp_path, monkeypatch):
+    requirements = tmp_path / "requirements.txt"
+    requirements.write_text('runtime==1\ndev-tool==2; python_version >= "3.12"\n')
+    output = tmp_path / "scan.json"
+    monkeypatch.setattr(generator, "_scanner", lambda: "osv-scanner")
+
+    def scan(args, **kwargs):
+        package = {"package": {"name": "runtime", "version": "1"}, "licenses": ["MIT"]}
+        output.write_text(json.dumps({"results": [{"packages": [package]}]}))
+        return generator.subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(generator.subprocess, "run", scan)
+    with pytest.raises(RuntimeError, match="Incomplete license scan.*dev-tool"):
+        generator._scan_licenses(requirements, output)
 
 
 def test_collects_nested_notices_and_declared_nonstandard_names():

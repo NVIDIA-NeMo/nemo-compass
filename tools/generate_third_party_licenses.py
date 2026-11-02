@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import re
 import shutil
@@ -20,6 +19,7 @@ import tomllib
 import yaml
 from collect_license_texts import Artifact, Document, collect, render_texts
 from packaging.licenses import InvalidLicenseExpression, canonicalize_license_expression
+from packaging.requirements import Requirement
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SUMMARY_PATH = PROJECT_ROOT / "third_party" / "licenses.jsonl"
@@ -28,6 +28,15 @@ OVERRIDES_PATH = PROJECT_ROOT / "third_party" / "license_overrides.yaml"
 TEXTS_PATH = PROJECT_ROOT / "third_party" / "NOTICES.txt"
 EXCEPTIONS_PATH = PROJECT_ROOT / "third_party" / "license_exceptions.yaml"
 LICENSE_TEXTS_PATH = PROJECT_ROOT / "third_party" / "license_texts"
+# Match complete normalized expressions; compound expressions need explicit entries.
+ALLOWED_LICENSES = {
+    "APACHE-2.0",
+    "BSD-2-CLAUSE",
+    "BSD-3-CLAUSE",
+    "ISC",
+    "MIT",
+    "ZLIB",
+}
 
 
 class LicenseRecord(TypedDict):
@@ -38,8 +47,6 @@ class LicenseRecord(TypedDict):
     license: str
     package_url: str
     license_documents: list[str]
-    source: dict[str, str]
-    document_hashes: list[str]
 
 
 def _canonicalize(name: str) -> str:
@@ -53,15 +60,17 @@ def _scanner() -> str:
     return scanner
 
 
-def _export_requirements(output_path: Path) -> None:
+def _export_requirements(output_path: Path, *, include_dev: bool = False) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [
             "uv",
             "export",
             "--frozen",
-            "--no-dev",
+            "--all-groups" if include_dev else "--no-dev",
             "--all-extras",
+            "--no-hashes",
+            "--no-emit-project",
             "--quiet",
             "--output-file",
             str(output_path.relative_to(PROJECT_ROOT)),
@@ -71,7 +80,7 @@ def _export_requirements(output_path: Path) -> None:
     )
 
 
-def scan_licenses(requirements_path: Path, output_path: Path) -> None:
+def _scan_licenses(requirements_path: Path, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.unlink(missing_ok=True)
     result = subprocess.run(
@@ -95,6 +104,18 @@ def scan_licenses(requirements_path: Path, output_path: Path) -> None:
         raise RuntimeError(f"OSV-Scanner failed with exit code {result.returncode}")
 
     raw = json.loads(output_path.read_text(encoding="utf-8"))
+    expected = set()
+    for line in requirements_path.read_text().splitlines():
+        if line.strip() and not line.lstrip().startswith("#"):
+            requirement = Requirement(line)
+            expected.add((_canonicalize(requirement.name), str(requirement.specifier)))
+    found = {
+        (_canonicalize(p["package"]["name"]), "==" + p["package"]["version"])
+        for section in raw.get("results", [])
+        for p in section.get("packages", [])
+    }
+    if missing := expected - found:
+        raise RuntimeError(f"Incomplete license scan: {sorted(missing)}")
     for scan_result in raw.get("results", []):
         scan_result.get("source", {}).pop("path", None)
     output_path.write_text(json.dumps(raw, indent=2) + "\n", encoding="utf-8")
@@ -105,7 +126,7 @@ def _load_overrides() -> dict[str, str]:
     return {_canonicalize(name): license_name for name, license_name in raw["overrides"].items()}
 
 
-def resolve_license(licenses: list[str], override: str | None) -> str | None:
+def _resolve_license(licenses: list[str], override: str | None) -> str | None:
     if override is not None:
         licenses = [override]
     if not licenses:
@@ -119,11 +140,12 @@ def resolve_license(licenses: list[str], override: str | None) -> str | None:
     )
 
 
-def _license_records(osv_path: Path) -> list[LicenseRecord]:
+def _license_records(osv_path: Path, *, check_policy: bool = False) -> list[LicenseRecord]:
     raw = json.loads(osv_path.read_text(encoding="utf-8"))
     overrides = _load_overrides()
     records: dict[tuple[str, str], LicenseRecord] = {}
     unresolved = []
+    disallowed = []
     used_overrides = set()
     standard_texts = {path.stem.upper(): path for path in LICENSE_TEXTS_PATH.glob("*.txt")}
 
@@ -133,9 +155,12 @@ def _license_records(osv_path: Path) -> list[LicenseRecord]:
             name = package["name"]
             key = _canonicalize(name)
             override = overrides.get(key)
-            license_name = resolve_license(package_data.get("licenses", []), override)
+            license_name = _resolve_license(package_data.get("licenses", []), override)
             if license_name is None:
                 unresolved.append(f"{name}=={package.get('version', '')}")
+                continue
+            if check_policy and license_name not in ALLOWED_LICENSES:
+                disallowed.append(f"{name}=={package['version']}: {license_name}")
                 continue
             if override is not None:
                 used_overrides.add(key)
@@ -148,8 +173,6 @@ def _license_records(osv_path: Path) -> list[LicenseRecord]:
             if missing:
                 raise RuntimeError("Add shared license texts for: " + ", ".join(sorted(missing)))
             records[key, package["version"]] = {
-                "source": {},
-                "document_hashes": [],
                 "name": name,
                 "version": package["version"],
                 "license": license_name,
@@ -166,7 +189,11 @@ def _license_records(osv_path: Path) -> list[LicenseRecord]:
             "Packages need verified metadata corrections in third_party/license_overrides.yaml: "
             + ", ".join(sorted(unresolved, key=str.lower))
         )
-    # Dev-only corrections are consumed by the PR report, not shipped disclosures.
+    if disallowed:
+        raise RuntimeError(
+            "License expressions outside ALLOWED_LICENSES:\n" + "\n".join(disallowed)
+        )
+    # Dev-only corrections are checked by CI, not included in shipped disclosures.
     locked_names = {
         p["name"] for p in tomllib.loads((PROJECT_ROOT / "uv.lock").read_text())["package"]
     }
@@ -205,14 +232,6 @@ def _collect_texts(records: list[LicenseRecord]) -> str:
             executor.map(
                 lambda package: collect(package, cache, supplements.get(package["name"])), selected
             )
-        )
-    for record, package, documents in zip(records, selected, results, strict=True):
-        record["source"] = package["source"]
-        record["document_hashes"] = sorted(
-            {
-                hashlib.sha256(document["text"].replace("\r\n", "\n").strip().encode()).hexdigest()
-                for document in documents
-            }
         )
     texts: list[tuple[str, str, list[Document]]] = [
         (record["name"], record["version"], documents)
@@ -275,12 +294,18 @@ def main() -> int:
     requirements_path = output_dir / "requirements-main.txt"
     osv_path = output_dir / "osv-licenses.json"
 
+    if args.check:
+        all_requirements = output_dir / "requirements-all.txt"
+        _export_requirements(all_requirements, include_dev=True)
+        _scan_licenses(all_requirements, osv_path)
+        _license_records(osv_path, check_policy=True)
+
     _export_requirements(requirements_path)
-    scan_licenses(requirements_path, osv_path)
+    _scan_licenses(requirements_path, osv_path)
     records = _license_records(osv_path)
-    texts = _collect_texts(records)
     summary = _render_summary(records)
     notices = _render_notices(records)
+    texts = _collect_texts(records)
 
     if args.check:
         summary_valid = _check_file(SUMMARY_PATH, summary)

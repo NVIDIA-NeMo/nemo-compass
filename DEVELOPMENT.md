@@ -30,10 +30,9 @@ where necessary, a verified metadata correction in `third_party/license_override
 The standard texts were sourced from SPDX license-list-data commit
 `16f3aa6c3bdd62e50f8b1cf618f32d2a510250ee`; original package notices are retained separately.
 
-The **Dependency licensing** PR check reports dependency and license changes.
-If acknowledgment is required, a maintainer with merge access posts the comment
-supplied by the report.
-Expressions outside the checker's allowlist block merging even with acknowledgment.
+Review dependency and license changes in the generated diff as part of normal PR approval.
+CI checks license expressions against `ALLOWED_LICENSES` in
+`tools/generate_third_party_licenses.py`, including development dependencies.
 
 `make check-licenses` verifies the generated disclosures. Scanner intermediates and
 download caches live in ignored `tmp/`; a cold cache requires network access.
@@ -96,10 +95,3 @@ verifies the downloaded bytes, and prints
 the direct URL to register with nSpect. Matching existing artifacts are reused; different bytes
 require a version bump. It rejects environment files and non-NVIDIA upload endpoints and disables
 trusted/public publishing.
-
-## Dependency review setup (maintainers)
-
-Require **Dependency licensing** and up-to-date PR branches. Land the generator and
-regenerated inventory on each target branch before enabling the required check;
-missing baseline evidence is unresolved. The workflow/helper must land on the default
-branch before use. The privileged workflow reads PR data and never executes PR code.
