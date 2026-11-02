@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 from mlflow import MlflowClient
 from mlflow.entities import Feedback
+from mlflow.entities import Trace as MLflowTrace
 
 from compass.compass_signals.anomaly_and_patterns.signal import to_anomaly_and_patterns_trace
 from compass.compass_signals.tool_issues.signal import MISSING, to_tool_issue_trace
@@ -23,6 +24,7 @@ from compass.trace_loaders.mlflow import (
     MLflowTraceLoadError,
 )
 from compass.traces import UNSET, SpanKind
+from trace_ingest.models import Authorship, ImagePart, Loss, TextPart, TurnRole
 
 MLFLOW_TRACE_FIXTURE = Path(__file__).parent / "data" / "mlflow_trace_v3.json"
 
@@ -605,3 +607,224 @@ def test_tool_results_follow_mlflow_status():
                 assert result.content == span.output
                 assert result.is_error is (True if status == "ERROR" else None)
     assert tools
+
+
+# Conversation turns, ported from Eval Author's mlflow-to-atif converter.
+# fixtures/mlflow/trace_environment.json is Eval Author's
+# skills/eval-author-trace-environment/evals/files/traces/mlflow.json, verbatim;
+# missing_instruction.json is skills/mlflow-to-atif/evals/files/missing-instruction.json
+# with the TraceInfo fields and base64 IDs that MLflow's Trace.from_dict requires.
+MLFLOW_FIXTURES = Path(__file__).parent / "fixtures" / "mlflow"
+IMAGE = "data:image/png;base64,iVBORw0KGgo="
+
+
+def load_live(*spans):
+    client = FakeClient(pages=[FakePage([trace("tr-turns", spans)])])
+    loader = MLflowTraceLoader(MLflowTraceConfig(experiment_name="agent-traces"), client=client)
+    return next(iter(loader.load()))
+
+
+def turn_rows(turns):
+    return [
+        (
+            turn.id,
+            turn.role,
+            turn.authorship,
+            turn.content,
+            turn.llm_span_ids,
+            turn.tool_call_span_ids,
+        )
+        for turn in turns
+    ]
+
+
+def test_agent_root_conversation_becomes_linked_turns():
+    messages = [
+        {"role": "system", "content": "Answer from the index."},
+        {"role": "user", "content": "Earlier question"},
+        {"role": "assistant", "content": "Earlier answer"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What is in this image?"},
+                {"type": "image_url", "image_url": {"url": IMAGE}},
+            ],
+        },
+    ]
+    second = 1_000_000_000
+    normalized = load_live(
+        span(
+            "root",
+            span_type="AGENT",
+            start_time_ns=1 * second,
+            end_time_ns=10 * second,
+            inputs={"messages": messages},
+            outputs={"answer": "A bolt."},
+        ),
+        span(
+            "llm",
+            parent_id="root",
+            span_type="CHAT_MODEL",
+            start_time_ns=2 * second,
+            end_time_ns=3 * second,
+            outputs={"choices": [{"message": {"role": "assistant", "content": "Looking."}}]},
+        ),
+        span(
+            "tool",
+            parent_id="root",
+            name="lookup",
+            span_type="TOOL",
+            start_time_ns=4 * second,
+            end_time_ns=5 * second,
+            inputs={"q": "bolt"},
+            outputs={"sku": "BOLT-17"},
+        ),
+        span(
+            "docs",
+            parent_id="root",
+            span_type="RETRIEVER",
+            start_time_ns=5 * second,
+            end_time_ns=6 * second,
+        ),
+        span(
+            "sub",
+            parent_id="root",
+            span_type="AGENT",
+            start_time_ns=6 * second,
+            end_time_ns=8 * second,
+        ),
+        span(
+            "sub-llm",
+            parent_id="sub",
+            span_type="LLM",
+            start_time_ns=7 * second,
+            end_time_ns=8 * second,
+            outputs="Subagent answer.",
+        ),
+        span(
+            "final",
+            parent_id="root",
+            span_type="CHAT_MODEL",
+            start_time_ns=9 * second,
+            end_time_ns=10 * second,
+            outputs="A bolt.",
+        ),
+    )
+
+    (root,) = normalized.root_spans
+    assert root.kind is SpanKind.AGENT and root.attributes["subtype"] is None
+    assert {child.id: child.kind for child in root.children} == {
+        "llm": SpanKind.LLM,
+        "tool": SpanKind.TOOL,
+        "docs": SpanKind.RETRIEVER,
+        "sub": SpanKind.AGENT,
+        "final": SpanKind.LLM,
+    }
+    copied, unknown, model = Authorship.COPIED_CONTEXT, Authorship.UNKNOWN, Authorship.MODEL
+    assert turn_rows(root.turns) == [
+        ("root/turn/1", TurnRole.SYSTEM, copied, "Answer from the index.", [], []),
+        ("root/turn/2", TurnRole.USER, copied, "Earlier question", [], []),
+        ("root/turn/3", TurnRole.AGENT, copied, "Earlier answer", [], []),
+        (
+            "root/turn/4",
+            TurnRole.USER,
+            unknown,
+            [
+                TextPart(text="What is in this image?"),
+                ImagePart(media_type="image/png", path=IMAGE),
+            ],
+            [],
+            [],
+        ),
+        # The tool call joins the model turn that precedes it.
+        ("root/turn/5", TurnRole.AGENT, model, "Looking.", ["llm"], ["tool"]),
+        # The root output matches the last model message, so no closing turn.
+        ("root/turn/6", TurnRole.AGENT, model, "A bolt.", ["final"], []),
+    ]
+    # A nested agent's model call belongs to that agent, not the root's conversation.
+    assert normalized.losses == [
+        Loss(
+            code="steps_outside_agent_not_in_turns",
+            detail={"agent_span_id": "root", "span_ids": ["sub-llm"]},
+            span_id="sub",
+        )
+    ]
+    assert root.children[3].turns is UNSET
+
+
+def test_eval_author_chain_root_loads_as_agent_with_turns_in_both_loaders():
+    path = MLFLOW_FIXTURES / "trace_environment.json"
+    (file_trace,) = MLflowFileTraceLoader(MLflowFileTraceConfig(path=path)).load()
+    provider_trace = MLflowTrace.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    live_trace = load_live_trace(provider_trace)
+
+    for normalized in (file_trace, live_trace):
+        (root,) = normalized.root_spans
+        assert root.kind is SpanKind.AGENT
+        assert root.attributes["subtype"] == "CHAIN"
+        mlflow = root.attributes["mlflow"]
+        assert isinstance(mlflow, dict) and isinstance(mlflow["attributes"], dict)
+        assert mlflow["attributes"]["mlflow.spanType"] == "CHAIN"
+        assert [child.kind for child in root.children] == [SpanKind.TOOL]
+        assert turn_rows(root.turns) == [
+            (
+                "0000000000000001/turn/1",
+                TurnRole.USER,
+                Authorship.UNKNOWN,
+                '{"question": "Where is Paris?"}',
+                [],
+                [],
+            ),
+            (
+                "0000000000000001/turn/2",
+                TurnRole.AGENT,
+                Authorship.UNKNOWN,
+                UNSET,
+                [],
+                ["0000000000000002"],
+            ),
+            # The trace output differs from the last agent message (the tool step).
+            ("0000000000000001/turn/3", TurnRole.AGENT, Authorship.UNKNOWN, "France", [], []),
+        ]
+        assert normalized.losses == []
+
+
+def load_live_trace(provider_trace):
+    client = FakeClient(pages=[FakePage([provider_trace])])
+    loader = MLflowTraceLoader(MLflowTraceConfig(experiment_name="agent-traces"), client=client)
+    return next(iter(loader.load()))
+
+
+def test_missing_instruction_promotes_root_without_turns():
+    path = MLFLOW_FIXTURES / "missing_instruction.json"
+    (normalized,) = MLflowFileTraceLoader(MLflowFileTraceConfig(path=path)).load()
+    (root,) = normalized.root_spans
+    assert root.kind is SpanKind.AGENT and root.attributes["subtype"] == "CHAIN"
+    assert root.turns is UNSET
+
+
+@pytest.mark.parametrize(
+    "inputs",
+    [
+        {"messages": [{"role": "system", "content": "No user message."}]},
+        {"messages": []},
+        [{"role": "user", "content": "x"}, "not a message"],
+        UNSET,
+    ],
+    ids=["no-user", "empty", "malformed", "missing"],
+)
+def test_traces_without_a_recoverable_conversation_leave_turns_unset(inputs):
+    normalized = load_live(span("root", span_type="CHAIN", inputs=inputs, outputs="done"))
+    assert normalized.root_spans[0].kind is SpanKind.AGENT
+    assert normalized.root_spans[0].turns is UNSET
+    assert normalized.losses == []
+
+
+def test_unresolved_parent_or_non_orchestration_root_keeps_layout():
+    detached = load_live(
+        span("root", span_type="CHAIN", inputs="question"),
+        span("child", parent_id="outside", span_type="LLM", start_time_ns=1_500_000_000),
+    )
+    assert [root.kind for root in detached.root_spans] == [SpanKind.CHAIN, SpanKind.LLM]
+    tool_root = load_live(span("root", span_type="TOOL", inputs="question"))
+    assert tool_root.root_spans[0].kind is SpanKind.TOOL

@@ -392,7 +392,10 @@ class Loss(_TraceModel):
             "unresolved_subagent_ref has ref (the reference as written); "
             "continued_trajectory_not_followed has continued_trajectory_ref; "
             "llm_calls_aggregated has llm_call_count; "
-            "merge_incomplete has reason and loaded_record_count."
+            "merge_incomplete has reason and loaded_record_count; "
+            "steps_outside_agent_not_in_turns has agent_span_id (the agent whose turns "
+            "omit the steps) and span_ids (the LLM and TOOL steps under the nested agent "
+            "named by span_id)."
         ),
     )
     span_id: str | None = Field(default=None, description="Span the loss concerns.")
