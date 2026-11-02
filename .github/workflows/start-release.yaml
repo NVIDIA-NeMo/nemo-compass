@@ -17,6 +17,9 @@ on:
 permissions:
   contents: write
   actions: read
+concurrency:
+  group: compass-release
+  cancel-in-progress: false
 jobs:
   release:
     uses: ./.github/workflows/release.yaml
