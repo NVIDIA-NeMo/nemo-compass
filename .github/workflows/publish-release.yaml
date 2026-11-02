@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       candidate:
-        description: QA-accepted candidate tag, e.g. v0.3.0rc2
+        description: Accepted candidate tag, e.g. v0.3.0rc2
         type: string
         required: true
 permissions:
