@@ -70,6 +70,36 @@ def verify(directory: Path) -> dict:
     return manifest
 
 
+def set_version() -> None:
+    """Set build metadata without re-resolving locked dependencies."""
+    version = os.environ["PACKAGE_VERSION"]
+    run("uv", "version", "--frozen", version)
+    lock = Path("uv.lock")
+    updated, count = re.subn(
+        r'(name = "nemo-compass"\nversion = ")[^"]+("\n)',
+        lambda match: match[1] + version + match[2],
+        lock.read_text(),
+    )
+    assert count == 1, "Expected exactly one Compass lock entry"
+    lock.write_text(updated)
+
+
+def record() -> None:
+    """Keep source, checksums and the original CI attempt with the built artifacts."""
+    version = os.environ["PACKAGE_VERSION"]
+    manifest = {
+        "source": os.environ["SOURCE"],
+        "branch": "release/" + version.split("rc")[0],
+        "version": version,
+        "run_id": os.environ["GITHUB_RUN_ID"],
+        "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+        "sha256": dict(
+            line.split()[::-1] for line in Path("dist/SHA256SUMS").read_text().splitlines()
+        ),
+    }
+    Path("dist/candidate.json").write_text(json.dumps(manifest, indent=2) + "\n")
+
+
 def plan() -> None:
     action = os.environ.get("ACTION", "") or "candidate"
     if action == "start":
@@ -211,6 +241,8 @@ def finish() -> None:
 
 if __name__ == "__main__":
     try:
-        {"plan": plan, "finish": finish}[sys.argv[1]]()
+        {"set-version": set_version, "record": record, "plan": plan, "finish": finish}[
+            sys.argv[1]
+        ]()
     except (ValueError, KeyError, subprocess.CalledProcessError) as error:
         sys.exit(str(error))

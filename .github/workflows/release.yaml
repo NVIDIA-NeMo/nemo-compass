@@ -148,12 +148,6 @@ jobs:
           ngc registry resource upload-version "$resource_ref" --source "$WHEEL_FILE"
           destination=$(mktemp -d)
           ngc registry resource download-version "$resource_ref" --file "$WHEEL_FILE" --dest "$destination"
-          python3 - "$destination" "$WHEEL_FILE" <<'PYTHON'
-          import sys
-          from pathlib import Path
-          destination, wheel = map(Path, sys.argv[1:])
-          staged = list(destination.rglob(wheel.name))
-          assert len(staged) == 1, "Expected exactly one staged wheel"
-          assert staged[0].read_bytes() == wheel.read_bytes(), "NGC wheel differs from validated artifact"
-          PYTHON
+          staged=$(find "$destination" -type f -name "$WHEEL_FILE")
+          cmp -- "$WHEEL_FILE" "$staged"
           printf 'Staged SDK wheel: %s\n' "$resource_ref" >> "$GITHUB_STEP_SUMMARY"

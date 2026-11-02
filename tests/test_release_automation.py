@@ -59,7 +59,6 @@ def test_candidates_follow_history_and_reject_stale_acceptance(history, monkeypa
 @pytest.mark.parametrize("existing", [None, "matching", "different"])
 @pytest.mark.parametrize("action", ["candidate", "publish"])
 def test_release_upload_retry_preserves_bytes(tmp_path, monkeypatch, existing, action):
-    root = Path(__file__).resolve().parents[1]
     version = "1.2.3rc1" if action == "candidate" else "1.2.3"
     monkeypatch.chdir(tmp_path)
     for key, value in {
@@ -85,11 +84,7 @@ def test_release_upload_retry_preserves_bytes(tmp_path, monkeypatch, existing, a
     (dist / "SHA256SUMS").write_text(
         hashlib.sha256(wheel.read_bytes()).hexdigest() + "  example.whl\n"
     )
-    workflow = yaml.safe_load((root / ".github/workflows/ci.yaml").read_text())
-    step = next(
-        s for s in workflow["jobs"]["quality"]["steps"] if s.get("name") == "Record validated build"
-    )
-    subprocess.run(["bash", "-e", "-c", step["run"]], env=os.environ, check=True)
+    release.record()
     # A failed-job retry must use the original build attempt, not reconstruct provenance.
     monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
     monkeypatch.setattr(release, "current", lambda *args: None)
@@ -181,26 +176,19 @@ def test_publication_requires_complete_current_candidate(history, tmp_path, monk
         release.plan()
 
 
-def test_workflow_version_step_preserves_dependency_lock(tmp_path, monkeypatch):
-    import os
+def test_release_version_preserves_dependency_lock(tmp_path, monkeypatch):
     import shutil
 
     import tomllib
-    import yaml
 
     root = Path(__file__).resolve().parents[1]
     for name in ["pyproject.toml", "uv.lock", "README.md"]:
         shutil.copy(root / name, tmp_path / name)
     original = tomllib.loads((tmp_path / "uv.lock").read_text())
-    workflow = yaml.safe_load((root / ".github/workflows/ci.yaml").read_text())
-    step = next(
-        s
-        for s in workflow["jobs"]["quality"]["steps"]
-        if s.get("name") == "Set release package version"
-    )
+    monkeypatch.chdir(tmp_path)
     for version in ["0.3.0rc1", "0.3.0"]:
         monkeypatch.setenv("PACKAGE_VERSION", version)
-        subprocess.run(["bash", "-e", "-c", step["run"]], cwd=tmp_path, env=os.environ, check=True)
+        release.set_version()
         updated = tomllib.loads((tmp_path / "uv.lock").read_text())
         for package in updated["package"]:
             if package["name"] == "nemo-compass":

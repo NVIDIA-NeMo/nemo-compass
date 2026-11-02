@@ -60,22 +60,11 @@ jobs:
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
 
-      # Build RC/final metadata without version commits or dependency re-resolution.
       - name: Set release package version
         if: inputs.release-version != ''
         env:
           PACKAGE_VERSION: ${{ inputs.release-version }}
-        run: |
-          uv version --frozen "$PACKAGE_VERSION"
-          python - <<'PYTHON'
-          import os, re
-          from pathlib import Path
-          lock = Path("uv.lock")
-          updated, count = re.subn(r'(name = "nemo-compass"\nversion = ")[^"]+("\n)',
-                                  lambda m: m[1] + os.environ["PACKAGE_VERSION"] + m[2], lock.read_text())
-          assert count == 1, "Expected exactly one Compass lock entry"
-          lock.write_text(updated)
-          PYTHON
+        run: python tools/release.py set-version
 
       - name: Install dependencies
         run: uv sync --locked
@@ -133,27 +122,12 @@ jobs:
           cd dist
           sha256sum -- *.whl *.tar.gz > SHA256SUMS
 
-      # Keep source, checksums and the original CI attempt together across retries.
       - name: Record validated build
         if: inputs.release-ref != ''
         env:
           SOURCE: ${{ inputs.release-ref }}
           PACKAGE_VERSION: ${{ inputs.release-version }}
-        run: |
-          python - <<'PYTHON'
-          import json, os
-          from pathlib import Path
-          version = os.environ["PACKAGE_VERSION"]
-          manifest = {
-              "source": os.environ["SOURCE"],
-              "branch": "release/" + version.split("rc")[0],
-              "version": version,
-              "run_id": os.environ["GITHUB_RUN_ID"],
-              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
-              "sha256": dict(line.split()[::-1] for line in Path("dist/SHA256SUMS").read_text().splitlines()),
-          }
-          Path("dist/candidate.json").write_text(json.dumps(manifest, indent=2) + "\n")
-          PYTHON
+        run: python tools/release.py record
 
       - name: Preserve validated release artifacts
         if: inputs.release-ref != ''
