@@ -67,8 +67,11 @@ A tool span's `tool_call.call_id` and `result_id` come from the ATIF tool call, 
 the `tool_call_id` of a LangChain ToolMessage output (as OpenInference records it).
 
 `trace.max_traces` overrides `query.max_traces`, and both count merged traces, one per
-`session_id`; each selected `session_id` is loaded completely within the window. Without
-either limit, every matching trace in the window is loaded.
+`session_id`. Selection reads matching traces until one starts session `max_traces + 1`;
+each selected `session_id` is then queried again with the same filters and window, so it
+loads completely within the window. A selected trace that the second query does not
+return is kept, and its merged trace records a `merge_incomplete` loss. Without either
+limit, every matching trace in the window is loaded in one pass.
 
 Under `trace.intake`, `page_size` controls pagination (1–1,000; default 100), and
 `timeout_seconds` sets the HTTP timeout (default 30). Endpoint and workspace have no

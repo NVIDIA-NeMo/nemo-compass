@@ -26,6 +26,7 @@ from trace_ingest.loaders.helper.merge import (
     join_turns,
     merge_records,
     prepare_record,
+    select_sessions,
 )
 
 U = TurnRole.USER
@@ -316,7 +317,7 @@ def test_assemble_groups_by_session_id_and_keeps_records_without_one():
     )
     # Records arrive newest-first, as Intake returns them for a descending sort.
     traces = assemble(
-        [session_record("r2", 5, "q2"), loose, session_record("r1", 1, "q1")], capped=True
+        [session_record("r2", 5, "q2"), loose, session_record("r1", 1, "q1")], partial={"s"}
     )
 
     merged, single = traces
@@ -330,6 +331,63 @@ def test_assemble_groups_by_session_id_and_keeps_records_without_one():
     assert root.turns is not UNSET
     assert [turn.content for turn in root.turns] == ["hello", "hi"]
     assert single.losses == []
+
+
+def test_assemble_marks_only_partial_sessions():
+    complete, partial = assemble(
+        [session_record("r1", 1, "q1"), session_record("x1", 2, "q", session_id="t")],
+        partial={"t"},
+    )
+
+    assert (complete.id, partial.id) == ("session:s", "session:t")
+    assert complete.losses == []
+    assert [(loss.code, loss.detail) for loss in partial.losses] == [
+        ("merge_incomplete", {"reason": "max_traces", "loaded_record_count": 1})
+    ]
+
+
+def test_select_sessions_reads_past_the_last_key_only_when_needed():
+    def reread(session_id):
+        raise AssertionError(f"unexpected re-read of {session_id!r}")
+
+    items = [("s", "a"), ("s", "b")]
+    selected, partial = select_sessions(
+        items,
+        key=lambda item: ("session", item[0]),
+        item_id=lambda item: item[1],
+        limit=1,
+        reread=reread,
+    )
+
+    assert selected == items
+    assert partial == frozenset()
+
+
+def test_select_sessions_rereads_session_groups_after_the_limit():
+    rereads = []
+
+    def reread(session_id):
+        rereads.append(session_id)
+        return [("session", "s", "0"), ("session", "s", "3"), ("session", "v", "9")]
+
+    selected, partial = select_sessions(
+        [("session", "s", "1"), ("trace", "x", "2"), ("session", "s", "3"), ("session", "u", "4")],
+        key=lambda item: (item[0], item[1]),
+        item_id=lambda item: item[2],
+        limit=2,
+        reread=reread,
+    )
+
+    assert rereads == ["s"]
+    # The re-read replaces the session, drops the other session's row, and keeps "1",
+    # which it did not return, so the session is reported incomplete.
+    assert selected == [
+        ("session", "s", "0"),
+        ("session", "s", "3"),
+        ("session", "s", "1"),
+        ("trace", "x", "2"),
+    ]
+    assert partial == frozenset({"s"})
 
 
 def test_session_without_a_recorded_input_has_no_turns():

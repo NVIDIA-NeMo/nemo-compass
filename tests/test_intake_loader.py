@@ -425,7 +425,7 @@ def test_intake_loader_rejects_pagination_inconsistency():
         ).load()
 
 
-def test_intake_max_traces_stops_before_requesting_another_page():
+def test_intake_max_traces_rereads_selected_sessions_when_another_follows():
     selection_pages = []
     session_requests = []
 
@@ -458,7 +458,7 @@ def test_intake_max_traces_stops_before_requesting_another_page():
     loader.transport = _mock_transport(handler)
 
     assert [trace.id for trace in loader.load()] == ["session:session-1"]
-    assert selection_pages == [1]
+    assert selection_pages == [1, 2]
     (session_request,) = session_requests
     assert session_request["filter[session_id]"] == "session-1"
     assert session_request["filter[started_at][gte]"] == "2026-08-28T18:40:00+00:00"
@@ -996,7 +996,7 @@ def test_experiment_selection_pages_evaluations_and_merges_traces_before_limit(s
     assert [trace.id for trace in snapshot] == (
         ["session:b4", "session:a3"] if sort.startswith("-") else ["session:a1", "session:b2"]
     )
-    assert len(trace_pages) == 3
+    assert len(trace_pages) == 4
     assert len([r for r in requests if r.url.path.endswith("/spans")]) == 2
     assert loader.describe()["query"]["experiment_id"] == "experiment-1"
     assert loader.load() is snapshot

@@ -10,10 +10,10 @@ spans are demoted to CHAIN so the trace's root is their nearest agent.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, TypeVar
 
 from pydantic import JsonValue
 
@@ -32,6 +32,8 @@ from trace_ingest.models import (
     TraceAggregate,
     Turn,
 )
+
+T = TypeVar("T")
 
 _SUMMED_TOKEN_FIELDS = (
     "input_total",
@@ -341,7 +343,7 @@ class Record:
 
 
 def _merge_group(
-    group: Sequence[Record], *, orchestration_subtypes: frozenset[str], capped: bool
+    group: Sequence[Record], *, orchestration_subtypes: frozenset[str], partial: bool
 ) -> Trace:
     first = group[0].trace
     assert first.session_id is not None and first.session_basis is not None
@@ -372,7 +374,7 @@ def _merge_group(
         definitions=[definition for _, definitions in prepared for definition in definitions],
         record_turns=record_turns,
         turn_losses=turn_losses,
-        partial_reason="max_traces" if capped else None,
+        partial_reason="max_traces" if partial else None,
     )
 
 
@@ -380,7 +382,7 @@ def assemble(
     records: Sequence[Record],
     *,
     orchestration_subtypes: frozenset[str] = frozenset(),
-    capped: bool = False,
+    partial: Collection[str] = frozenset(),
 ) -> list[Trace]:
     """One trace per ``session_id``, in order of each key's first record.
 
@@ -388,9 +390,9 @@ def assemble(
     per record and joined; when any record has no single run root (see
     ``run_root``) or no recoverable conversation, the merged trace has no turns.
     A record without a ``session_id`` stays its own trace, with turns on its
-    promoted run root. ``capped`` marks every merged trace incomplete because
-    selection stopped at the loader's limit. Raises ``ValueError`` naming the
-    ``session_id`` when its records cannot be merged.
+    promoted run root. ``partial`` names the sessions whose merged trace is marked
+    incomplete, because the source could not confirm it loaded all of their records.
+    Raises ``ValueError`` naming the ``session_id`` when its records cannot be merged.
     """
     groups: dict[str | int, list[Record]] = {}
     for index, record in enumerate(records):
@@ -410,11 +412,54 @@ def assemble(
             continue
         try:
             traces.append(
-                _merge_group(group, orchestration_subtypes=orchestration_subtypes, capped=capped)
+                _merge_group(
+                    group, orchestration_subtypes=orchestration_subtypes, partial=key in partial
+                )
             )
         except ValueError as error:
             raise ValueError(f"session {key!r} could not be merged: {error}") from error
     return traces
+
+
+def select_sessions(
+    items: Iterable[T],
+    *,
+    key: Callable[[T], tuple[str, str]],
+    item_id: Callable[[T], str],
+    limit: int | None,
+    reread: Callable[[str], Iterable[T]],
+) -> tuple[list[T], frozenset[str]]:
+    """Items of the first ``limit`` keys in ``items``, and the sessions that may be incomplete.
+
+    ``key`` is ``("session", session_id)`` or ``("trace", trace_id)``. Reading stops at
+    the first item of key ``limit + 1``. Selection may then have missed later items of
+    a selected session, so each session group is replaced by ``reread(session_id)``:
+    items whose key differs are dropped, selected items the re-read did not return
+    (by ``item_id``) are kept after it, and that session is reported incomplete.
+    Trace groups are kept as read. Items are returned grouped by key, in order of each
+    key's first item. ``limit=None`` reads everything and never re-reads.
+    """
+    groups: dict[tuple[str, str], list[T]] = {}
+    more = False
+    for item in items:
+        group = key(item)
+        if group not in groups and len(groups) == limit:
+            more = True
+            break
+        groups.setdefault(group, []).append(item)
+    partial: set[str] = set()
+    if more:
+        for group, selected in groups.items():
+            kind, value = group
+            if kind != "session":
+                continue
+            fetched = [item for item in reread(value) if key(item) == group]
+            ids = {item_id(item) for item in fetched}
+            missing = [item for item in selected if item_id(item) not in ids]
+            if missing:
+                partial.add(value)
+            groups[group] = fetched + missing
+    return [item for group in groups.values() for item in group], frozenset(partial)
 
 
 __all__ = [
@@ -424,4 +469,5 @@ __all__ = [
     "merge_records",
     "merged_trace_id",
     "prepare_record",
+    "select_sessions",
 ]

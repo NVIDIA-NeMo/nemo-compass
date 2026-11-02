@@ -36,7 +36,7 @@ from trace_ingest.loaders.atif import (
     tool_definitions_from_atif,
     tool_result_from_atif,
 )
-from trace_ingest.loaders.helper.merge import Record, assemble
+from trace_ingest.loaders.helper.merge import Record, assemble, select_sessions
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
     UNSET,
@@ -442,22 +442,22 @@ class IntakeTraceLoader:
 
     def _traces(self, client: _IntakeClient) -> list[Trace]:
         query = self.config.query
-        # Select session_ids from trace records; stop as soon as the limit is reached.
+        selected, partial = select_sessions(
+            client.traces(query),
+            key=lambda trace: ("session", trace.session_id),
+            item_id=lambda trace: trace.id,
+            limit=query.max_traces,
+            reread=lambda session_id: client.traces(
+                query.model_copy(update={"session_id": session_id})
+            ),
+        )
         sessions: dict[str, list[_IntakeTrace]] = {}
-        capped = False
-        for intake_trace in client.traces(query):
+        for intake_trace in selected:
             sessions.setdefault(intake_trace.session_id, []).append(intake_trace)
-            if len(sessions) == query.max_traces:
-                capped = True
-                break
 
         records: list[Record] = []
         seen: set[str] = set()
         for session_id, session_traces in sessions.items():
-            if capped:
-                # Selection stopped early, so it may not have read every trace with this key.
-                selection = query.model_copy(update={"session_id": session_id, "max_traces": None})
-                session_traces = list(client.traces(selection))
             raw_results = [
                 result
                 for result_page in client.evaluator_result_pages(session_id)
@@ -493,8 +493,9 @@ class IntakeTraceLoader:
                         conversation_output=intake.get("output"),
                     )
                 )
-        # Each selected session_id is complete within the window; traces outside it are not loaded.
-        return assemble(records)
+        # A selected session_id is complete within the window unless its re-query missed a
+        # trace selection had read; `partial` names those.
+        return assemble(records, partial=partial)
 
     def describe(self) -> IntakeTraceDescription:
         """Describe the configured source and most recently loaded corpus."""

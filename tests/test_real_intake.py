@@ -121,6 +121,27 @@ def test_real_intake_selects_both_sessions_and_counts_raw_spans(loaded):
     assert description["distinct_sessions"] == 2
 
 
+def test_real_intake_rereads_the_selected_session_when_another_follows():
+    loader = IntakeTraceLoader(
+        config=IntakeTraceLoaderConfig(
+            base_url=BASE_URL,
+            workspace="default",
+            query=IntakeTraceQuery(
+                started_at_gte=datetime(2026, 8, 1, tzinfo=timezone.utc),
+                started_at_lte=datetime(2026, 10, 31, tzinfo=timezone.utc),
+                max_traces=1,
+            ),
+        ),
+        transport=_replay(RECORDING),
+    )
+
+    # Selection reads the LangChain session's first trace, so it stops and queries the
+    # ATIF session again by session_id, which returns its trace.
+    (trace,) = loader.load()
+    assert trace.id == f"session:{ATIF_SESSION}"
+    assert trace.losses == []
+
+
 def test_real_intake_langchain_session_merges_both_otlp_traces(loaded):
     _, snapshot = loaded
     trace = _trace(snapshot, LANGCHAIN_SESSION)
