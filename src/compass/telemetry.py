@@ -26,6 +26,7 @@ from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExport
 from opentelemetry.sdk.trace import TracerProvider
 
 from compass.config import RunConfig
+from compass.telemetry_buffer import BufferedSpanExporter
 from compass.telemetry_export import CompassSpanExporter, SpanInventory, span_id_digest
 from compass.version import __version__
 from trace_ingest.loaders.trace_loaders import TraceLoader
@@ -108,7 +109,7 @@ def telemetry_session(config: RunConfig) -> Iterator[OpenInferenceSpan]:
         headers = {"x-api-key": api_key, "Langsmith-Project": project}
         if workspace := os.getenv("COMPASS_TELEMETRY_LANGSMITH_WORKSPACE_ID"):
             headers["X-Tenant-Id"] = workspace
-        exporter = CompassSpanExporter(
+        transport = CompassSpanExporter(
             OTLPSpanExporter(
                 endpoint=f"{endpoint}/otel/v1/traces",
                 headers=headers,
@@ -119,6 +120,10 @@ def telemetry_session(config: RunConfig) -> Iterator[OpenInferenceSpan]:
                     or "60"
                 ),
             )
+        )
+        archive_dir = os.getenv("COMPASS_TELEMETRY_ARCHIVE_DIR")
+        exporter = BufferedSpanExporter(
+            transport, archive_dir=Path(archive_dir) if archive_dir else None
         )
         # Nooa prints initialization messages; stdout belongs to the CLI's YAML output.
         with redirect_stdout(sys.stderr):

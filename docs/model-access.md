@@ -114,6 +114,19 @@ does not publish findings back to the trace platform. [Output details](results.m
 
 ## Telemetry completeness
 
+Compass buffers completed spans in a private temporary directory and exports them
+at shutdown, with parents acknowledged before their children. This avoids leaving
+early children waiting in the receiving service for a long-running root. Spans
+become visible remotely during shutdown, rather than throughout the analysis.
+Failed exports are retried once after the initial delivery pass; any undelivered
+spans remain on disk and their location is reported on stderr.
+
+Set `COMPASS_TELEMETRY_ARCHIVE_DIR` to retain a complete local span archive even
+after acknowledged delivery. This is useful for backend reconciliation and recovery
+without repeating analysis. Archives contain execution content and can be large;
+remove them when no longer needed. The archive is an internal format, not an import
+format for files from other users or systems.
+
 When LangSmith telemetry is enabled, Compass splits OTLP batches into requests
 of at most 16 MiB before compression. If one span exceeds that budget, its largest
 attribute values are replaced with JSON summaries containing their original UTF-8
