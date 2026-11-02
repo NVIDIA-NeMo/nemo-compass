@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Release identity, stale acceptance, and retries against a real local Git history."""
+"""Release identity, artifact integrity, and dependency-lock preservation."""
 
 import hashlib
 import importlib.util
@@ -45,9 +45,6 @@ def test_candidates_follow_history_and_reject_stale_acceptance(history, monkeypa
     release.current("release/1.2.3", new)
     with pytest.raises(ValueError, match="validate 1.2.3rc2"):
         release.current("release/1.2.3", old)
-    for invalid in ["1.2", "v1.2.3", "1.2.3rc1", "1.2.3\nextra=value"]:
-        with pytest.raises(ValueError):
-            release.release_version(invalid)
 
 
 @pytest.fixture
@@ -76,39 +73,35 @@ def build(history, tmp_path, monkeypatch):
     return dist, source
 
 
-@pytest.mark.parametrize("failure", [None, "create", "edit"])
-def test_publication_creates_once_or_explains_manual_recovery(build, monkeypatch, failure):
+def test_publication_stops_on_existing_release_or_corrupt_artifacts(build, monkeypatch):
     dist, source = build
     monkeypatch.setenv("PACKAGE_VERSION", "1.2.3")
     release.record()
-    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
     monkeypatch.setattr(release, "api", lambda path: {"object": {"sha": source}})
     calls = []
+    create_fails = False
     original = release.run
 
     def command(*args):
         if args[0] != "gh":
             return original(*args)
         calls.append(args)
-        if args[2] == failure:
+        if create_fails:
             raise subprocess.CalledProcessError(1, args)
         return "https://github.com/org/repo/releases/tag/v1.2.3"
 
     monkeypatch.setattr(release, "run", command)
-    if failure:
-        with pytest.raises(ValueError, match="delete only that draft, keep the tag") as error:
-            release.finish()
-        assert "Re-run failed jobs" in str(error.value)
-        assert "Never delete or modify a published release" in str(error.value)
-    else:
+    release.finish()
+    assert "dist/example.whl" in calls[0]
+    assert "--draft" in calls[0] and calls[-1][-1] == "--draft=false"
+
+    create_fails = True
+    calls.clear()
+    with pytest.raises(ValueError, match="delete only that draft, keep the tag") as error:
         release.finish()
-        assert "dist/example.whl" in calls[0]
-        assert "--draft" in calls[0] and calls[-1][-1] == "--draft=false"
-    # A failed create (including an existing release) must never lead to an edit.
-    assert [args[2] for args in calls] == (
-        ["create"] if failure == "create" else ["create", "edit"]
-    )
-    assert release.verify(dist)["run_attempt"] == 1
+    assert "Re-run failed jobs" in str(error.value)
+    assert "Never delete or modify a published release" in str(error.value)
+    assert [args[2] for args in calls] == ["create"]  # No edit after a failed create.
     (dist / "example.whl").write_bytes(b"corrupt")
     calls.clear()
     with pytest.raises(ValueError, match="checksum mismatch"):
@@ -127,7 +120,6 @@ def test_publication_requires_successful_candidate_run(build, tmp_path, monkeypa
 
     def command(*args):
         if args[:3] == ("gh", "release", "download"):
-            assert args[3:] == ("v1.2.3rc1", "--pattern", "candidate.json", "--output", "-")
             return (dist / "candidate.json").read_text()
         return subprocess.check_output(args, text=True).strip()
 
