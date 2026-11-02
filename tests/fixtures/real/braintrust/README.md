@@ -47,7 +47,8 @@ already redacted credentials and encrypted web-search content.
   (`LICENSE-braintrust-sdk-python.txt`).
 
 Root spans have `input`/`output` `null` in all six traces, so no run-root turns are
-recorded. Braintrust has no session key; each trace stands alone.
+recorded. The loader reads no Braintrust session key (Braintrust has no fixed session
+column); each trace stands alone.
 
 `tests/test_real_braintrust.py` replays the rows through `httpx.MockTransport`: the
 root-selection query gets `{root_span_id, created}` of the `is_root` rows, the per-trace

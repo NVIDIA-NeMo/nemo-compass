@@ -77,7 +77,7 @@ def test_java_openai_responses_web_search_tool_call():
 
     [trace] = traces
     assert trace.id == "ff642aef149e2798f70003a539499a49"
-    # Braintrust has no session key: each trace stands alone.
+    # The loader reads no Braintrust session key: each trace stands alone.
     assert trace.session_id is None and trace.session_basis is None
     assert trace.evaluator_results == {}  # root scores: null
     assert trace.aggregate.latency_ms == pytest.approx(
