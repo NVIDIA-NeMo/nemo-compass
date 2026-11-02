@@ -26,6 +26,8 @@ from trace_ingest.models import (
 )
 
 LANGSMITH_DEFAULT_MAX_TRACES = 100
+# Root-run metadata keys read as the thread key, in precedence order.
+SESSION_METADATA_KEYS = ("thread_id", "session_id", "conversation_id")
 
 
 class _LangSmithRun(Protocol):
@@ -453,7 +455,7 @@ def session_key(root: _LangSmithRun) -> tuple[str, str] | None:
     metadata = extra.get("metadata")
     if not isinstance(metadata, Mapping):
         return None
-    for key in ("thread_id", "session_id", "conversation_id"):
+    for key in SESSION_METADATA_KEYS:
         value = metadata.get(key)
         if value not in (None, ""):
             return str(value), f"langsmith.metadata.{key}"

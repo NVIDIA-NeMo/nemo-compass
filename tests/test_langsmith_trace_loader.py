@@ -28,6 +28,7 @@ from compass.trace_loaders.langsmith import (
     LangSmithTraceLoadError,
 )
 from compass.traces import UNSET, SpanKind, Trace
+from trace_ingest.loaders.langsmith._normalization import SESSION_METADATA_KEYS
 from trace_ingest.models import TurnRole
 
 PROJECT_ID = UUID("10000000-0000-0000-0000-000000000000")
@@ -100,9 +101,20 @@ class FakeLangSmithClient(Client):
     def list_runs(self, **kwargs):
         self.list_calls.append(kwargs)
         if kwargs.get("is_root"):
-            return iter(self.roots[: kwargs.get("limit", len(self.roots))])
+            roots = self.roots
+            thread = re.search(r"eq\(metadata_value, (\".*?\")\)", kwargs.get("filter") or "")
+            if thread:
+                value = json.loads(thread.group(1))
+                roots = [root for root in roots if value in thread_values(root.extra)]
+            return iter(roots[: kwargs.get("limit", len(roots))])
         selected = set(re.findall(r'"([0-9a-f-]{36})"', kwargs["trace_filter"]))
         return iter(item for item in self._fake_runs if str(item.trace_id) in selected)
+
+
+def thread_values(extra) -> set[str]:
+    """The values a LangSmith thread-metadata filter can match on a run's ``extra``."""
+    metadata = (extra or {}).get("metadata") or {}
+    return {str(metadata[key]) for key in SESSION_METADATA_KEYS if key in metadata}
 
 
 def trace_runs() -> list[Run]:
@@ -502,8 +514,23 @@ def test_loader_merges_roots_that_share_a_thread_into_one_conversation():
     assert (description["trace_count"], description["distinct_sessions"]) == (2, 2)
 
 
-def test_loader_stops_selection_at_the_conversation_cap_and_marks_sessions_partial():
-    roots = thread_roots()
+def single_run_roots(*metadata: dict) -> list[Run]:
+    """Single-run traces ``UUID(int=1..)``, one second apart, with the given root metadata."""
+    return [
+        langsmith_run(
+            UUID(int=value + 1),
+            trace_id=UUID(int=value + 1),
+            offset=value,
+            extra={"metadata": entry},
+        )
+        for value, entry in enumerate(metadata)
+    ]
+
+
+def test_loader_rereads_selected_threads_past_the_cap():
+    roots = single_run_roots(
+        {"thread_id": "t1"}, {"thread_id": "t1"}, {"thread_id": "t2"}, {"thread_id": "t1"}
+    )
     client = FakeLangSmithClient(roots, roots)
     loader = LangSmithTraceLoader(
         LangSmithTraceConfig(project_name="threads", max_traces=1),
@@ -512,15 +539,36 @@ def test_loader_stops_selection_at_the_conversation_cap_and_marks_sessions_parti
 
     (trace,) = loader.load()
 
+    # Selection stops at t2's root, before the fourth root; the thread re-read finds it.
     assert trace.id == "session:t1"
-    assert [record["trace_id"] for record in _records(trace)] == [
-        str(UUID(int=1)),
-        str(UUID(int=2)),
-    ]
-    assert [(loss.code, loss.detail) for loss in trace.losses] == [
-        ("merge_incomplete", {"reason": "max_traces", "loaded_record_count": 2})
-    ]
-    assert client.list_calls[1]["trace_filter"] == (f'in(id, ["{UUID(int=1)}", "{UUID(int=2)}"])')
+    trace_ids = [str(UUID(int=value)) for value in (1, 2, 4)]
+    assert [record["trace_id"] for record in _records(trace)] == trace_ids
+    assert trace.losses == []
+    assert client.list_calls[1]["filter"] == (
+        'and(in(metadata_key, ["thread_id", "session_id", "conversation_id"]), '
+        'eq(metadata_value, "t1"))'
+    )
+    assert client.list_calls[1]["is_root"] is True
+    assert client.list_calls[2]["trace_filter"] == f"in(id, {json.dumps(trace_ids)})"
+
+
+def test_reread_ands_the_user_filter_and_drops_other_thread_keys():
+    roots = single_run_roots(
+        {"thread_id": "t1"}, {"thread_id": "t2"}, {"thread_id": "t9", "session_id": "t1"}
+    )
+    client = FakeLangSmithClient(roots, roots)
+
+    (trace,) = LangSmithTraceLoader(
+        LangSmithTraceConfig(project_name="threads", max_traces=1, filter='eq(name, "agent")'),
+        client=client,
+    ).load()
+
+    assert client.list_calls[1]["filter"] == (
+        'and(and(in(metadata_key, ["thread_id", "session_id", "conversation_id"]), '
+        'eq(metadata_value, "t1")), eq(name, "agent"))'
+    )
+    # The third root matches "t1" through session_id but belongs to thread t9.
+    assert [record["trace_id"] for record in _records(trace)] == [str(UUID(int=1))]
 
 
 def test_loader_rejects_missing_selected_root_in_hydration():

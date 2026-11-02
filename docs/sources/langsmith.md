@@ -65,8 +65,12 @@ order, with spans named `<trace id>/<run id>` and turns joined across the thread
 A root run without that metadata stays its own trace; a single `chain` root is its
 agent run, with turns read from its inputs, LLM outputs, and outputs. A thread has turns
 only when every one of its root runs is an `agent` or `chain`.
-The default limit is 100 conversations. When roots remain past the limit, each loaded
-thread is marked `merge_incomplete`, since unread roots may belong to it.
+The default limit is 100 conversations. When roots remain past the limit, each selected
+thread's roots are queried again with the same `filter`, `tree_filter` and `start_time`,
+restricted to
+`and(in(metadata_key, ["thread_id", "session_id", "conversation_id"]), eq(metadata_value, "<id>"))`,
+so the thread loads whole. A selected root missing from that query is kept and the thread
+is marked `merge_incomplete`.
 
 ## Use an export
 

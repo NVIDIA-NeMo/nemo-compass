@@ -11,6 +11,7 @@ that answers ``list_runs`` from the saved API responses, keeping only the select
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -24,7 +25,7 @@ from trace_ingest.loaders.langsmith import (
     LangSmithTraceExportFileLoader,
     LangSmithTraceLoader,
 )
-from trace_ingest.loaders.langsmith._normalization import walk_spans
+from trace_ingest.loaders.langsmith._normalization import SESSION_METADATA_KEYS, walk_spans
 from trace_ingest.models import UNSET, Span, SpanKind, Trace, TraceSnapshot, TurnRole
 
 FIXTURES = Path(__file__).parent / "fixtures" / "real" / "langsmith"
@@ -65,6 +66,10 @@ class ReplayClient(Client):
                 key=lambda raw: raw["start_time"],
                 reverse=True,
             )
+            thread = re.search(r"eq\(metadata_value, (\".*?\")\)", kwargs.get("filter") or "")
+            if thread:
+                value = json.loads(thread.group(1))
+                raws = [raw for raw in raws if value in _thread_values(raw)]
         else:
             trace_filter = kwargs["trace_filter"]
             if trace_filter.startswith("in(id, "):
@@ -79,6 +84,12 @@ class ReplayClient(Client):
             )
             for raw in raws
         )
+
+
+def _thread_values(raw: dict) -> set[str]:
+    """The values a thread-metadata filter can match on a saved root Run."""
+    metadata = (raw.get("extra") or {}).get("metadata") or {}
+    return {str(metadata[key]) for key in SESSION_METADATA_KEYS if key in metadata}
 
 
 def _export(max_traces: int = 100) -> LangSmithTraceExportFileLoader:
@@ -257,13 +268,11 @@ def test_bound_keeps_the_conversation_with_the_newest_root():
     (live,) = _api(max_traces=1).load()
     assert exported.id == live.id == "session:1"
     # The export holds the whole thread; the live selection stops at the third
-    # conversation's root and marks the thread partial.
+    # conversation's root and reads the thread again.
     assert [record["trace_id"] for record in _records(exported)] == THREAD_1
     assert exported.losses == []
-    assert [record["trace_id"] for record in _records(live)] == THREAD_1[2:]
-    assert [(loss.code, loss.detail) for loss in live.losses] == [
-        ("merge_incomplete", {"reason": "max_traces", "loaded_record_count": 2})
-    ]
+    assert [record["trace_id"] for record in _records(live)] == THREAD_1
+    assert live.losses == []
 
 
 def test_cost_counts_each_model_call_once(snapshot):

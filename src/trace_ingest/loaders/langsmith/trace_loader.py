@@ -7,14 +7,15 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from trace_ingest.loaders.helper.merge import Record, assemble
+from trace_ingest.loaders.helper.merge import Record, assemble, select_sessions
 from trace_ingest.loaders.langsmith._normalization import (
     LANGSMITH_DEFAULT_MAX_TRACES,
+    SESSION_METADATA_KEYS,
     LangSmithTraceLoadError,
     LangSmithTraceLoadReport,
     normalize_trace,
@@ -136,7 +137,15 @@ class LangSmithTraceLoader:
             "start_time": self.config.start_time,
             "select": list(_ROOT_SELECT_FIELDS),
         }
-        roots, capped = self._select_roots(client.list_runs(**root_query))
+        roots, partial = select_sessions(
+            client.list_runs(**root_query),
+            key=_root_group_key,
+            item_id=_root_trace_id,
+            limit=self.config.max_traces,
+            reread=lambda session_id: client.list_runs(
+                **{**root_query, "filter": _session_filter(session_id, self.config.filter)}
+            ),
+        )
         selected = _selected_roots(roots)
         unresolved_parent_count = 0
         run_count = 0
@@ -173,7 +182,7 @@ class LangSmithTraceLoader:
             )
         records.sort(key=lambda record: trace_sort_key(selected[record.trace.id], record.trace.id))
         try:
-            traces = assemble(records, capped=capped)
+            traces = assemble(records, partial=partial)
         except ValueError as error:
             raise LangSmithTraceLoadError(str(error)) from error
         snapshot = TraceSnapshot(traces)
@@ -191,21 +200,6 @@ class LangSmithTraceLoader:
             unresolved_parent_count=unresolved_parent_count,
         )
         return snapshot
-
-    def _select_roots(self, roots: Iterable[Run]) -> tuple[list[Run], bool]:
-        """Take roots until one would start conversation ``max_traces + 1``."""
-
-        selected: list[Run] = []
-        groups: set[tuple[str, str]] = set()
-        for root in roots:
-            session = session_key(root)
-            group = ("session", session[0]) if session else ("trace", _root_trace_id(root))
-            if group not in groups:
-                if len(groups) == self.config.max_traces:
-                    return selected, True
-                groups.add(group)
-            selected.append(root)
-        return selected, False
 
     def _hydrate_selected_runs(
         self,
@@ -287,6 +281,24 @@ def _source_label(api_url: str, project_id: str) -> str:
 def _root_trace_id(root: Run) -> str:
     root_id = required_id(root, "id", "LangSmith root Run")
     return str(getattr(root, "trace_id", None) or root_id)
+
+
+def _root_group_key(root: Run) -> tuple[str, str]:
+    session = session_key(root)
+    return ("session", session[0]) if session else ("trace", _root_trace_id(root))
+
+
+def _session_filter(session_id: str, user_filter: str | None) -> str:
+    """Roots whose thread metadata equals ``session_id``, within ``user_filter``.
+
+    A root can match through a lower-precedence key than the one it is grouped by,
+    so callers still check each returned root's thread key.
+    """
+    restriction = (
+        f"and(in(metadata_key, {json.dumps(list(SESSION_METADATA_KEYS))}), "
+        f"eq(metadata_value, {json.dumps(session_id)}))"
+    )
+    return restriction if user_filter is None else f"and({restriction}, {user_filter})"
 
 
 def _selected_roots(roots: Sequence[Run]) -> dict[str, Run]:
