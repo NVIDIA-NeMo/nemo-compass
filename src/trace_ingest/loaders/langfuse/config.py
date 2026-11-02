@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from trace_ingest.loaders.trace_loaders import TraceDescription
-from trace_ingest.models import SpanKind, TraceSnapshot
+from trace_ingest.models import SpanKind, TraceSnapshot, case_key
 
 LANGFUSE_DEFAULT_MAX_TRACES = 100
 
@@ -100,9 +100,8 @@ def _describe_corpus(source: str, snapshot: TraceSnapshot) -> _LangfuseCorpusDes
         "source": source,
         "trace_count": snapshot.trace_count,
         "call_count": call_count,
-        "distinct_logical_cases": len(
-            {str(trace.attributes.get("logical_case_id") or trace.id) for trace in snapshot}
-        ),
+        "distinct_cases": len({case_key(trace) for trace in snapshot}),
+        "distinct_sessions": len({trace.session_id for trace in snapshot if trace.session_id}),
         "observation_count": observation_count,
         "unresolved_parent_count": unresolved_parent_count,
     }

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -83,6 +84,40 @@ def test_links_are_resolved_from_sources_and_existing_artifacts_only(tmp_path):
     path = tmp_path / "insights.yml"
     path.write_text(yaml.safe_dump([resolved.model_dump()]))
     assert load_insights(path) == [resolved]
+
+
+def test_session_trace_links_to_its_first_record():
+    from compass.traces import Span, SpanKind
+    from trace_ingest.loaders.helper.merge import merge_records, prepare_record
+
+    def record(record_id, minute):
+        root = Span(
+            id="root",
+            kind=SpanKind.AGENT,
+            start_time=datetime(2026, 1, 1, 0, minute, tzinfo=UTC),
+            end_time=datetime(2026, 1, 1, 0, minute, tzinfo=UTC),
+        )
+        return prepare_record(
+            Trace(
+                id=record_id,
+                root_spans=[root],
+                aggregate={},
+                source_url=f"https://provider.test/traces/{record_id}",
+            )
+        )[0]
+
+    session = merge_records(
+        [record("second", 1), record("first", 0)], session_id="s", session_basis="test.session"
+    )
+    insight = Insight.model_validate(
+        {
+            "name": "Issue",
+            "description": "Details",
+            "evidence": [{"trace_id": session.id}, {"trace_id": "absent"}],
+        }
+    )
+    [resolved] = resolve_trace_links([insight], TraceSnapshot([session]))
+    assert resolved.evidence[0].url == "https://provider.test/traces/first"
 
 
 def test_cli_saves_and_prints_loader_links_after_compilation(

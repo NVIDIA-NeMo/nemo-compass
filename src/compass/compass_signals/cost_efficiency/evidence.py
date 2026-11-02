@@ -74,8 +74,9 @@ Extract facts, not diagnoses.
 def enrich_trace(trace: Trace, evidence: list[tuple[Span, CacheEvidence]]) -> None:
     """Fill missing cost fields on a private trace; recorded facts take precedence."""
     sessions = {value.session_id for _, value in evidence if value.session_id}
-    if trace.attributes.get("logical_case_id") is None and len(sessions) == 1:
-        trace.attributes["logical_case_id"] = next(iter(sessions))
+    if trace.session_id is None and len(sessions) == 1:
+        trace.session_id = next(iter(sessions))
+        trace.session_basis = "cost_extraction.session_id"
     for span, value in evidence:
         if span.kind is SpanKind.UNKNOWN and value.kind in (SpanKind.LLM, SpanKind.AGENT):
             span.kind = value.kind

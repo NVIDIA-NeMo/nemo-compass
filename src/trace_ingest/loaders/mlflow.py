@@ -17,6 +17,7 @@ from urllib.parse import quote, urlencode
 
 from pydantic import JsonValue
 
+from trace_ingest.loaders.helper.turns import has_input, parse_json, with_run_root_turns
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
     UNSET,
@@ -27,6 +28,7 @@ from trace_ingest.models import (
     Trace,
     TraceAggregate,
     TraceSnapshot,
+    case_key,
 )
 from trace_ingest.source_links import file_source_url, http_source_url
 
@@ -71,7 +73,8 @@ class MLflowLoadReport:
     span_count: int = 0
     unresolved_parent_count: int = 0
     call_count: int = 0
-    distinct_logical_cases: int = 0
+    distinct_cases: int = 0
+    distinct_sessions: int = 0
 
 
 class MLflowTraceDescription(TraceDescription):
@@ -144,7 +147,8 @@ class MLflowTraceLoader:
                 )
             experiment_id = str(experiment.experiment_id)
             sort_keys: dict[str, tuple[int, str]] = {}
-            logical_cases: set[str] = set()
+            cases: set[str] = set()
+            sessions: set[str] = set()
             unresolved_parent_count = 0
             span_count = 0
             call_count = 0
@@ -153,18 +157,28 @@ class MLflowTraceLoader:
                 nonlocal unresolved_parent_count, span_count, call_count
                 for page in self._search_trace_pages(client, experiment_id):
                     for provider_trace in page:
-                        trace, detached, trace_span_count, trace_call_count = _normalize_trace(
-                            provider_trace,
-                            source_pointer={
-                                "provider": "mlflow",
-                                "tracking_uri": tracking_uri,
-                                "experiment_name": self.config.experiment_name,
-                                "experiment_id": experiment_id,
-                            },
+                        trace, conversation, detached, trace_span_count, trace_call_count = (
+                            _normalize_trace(
+                                provider_trace,
+                                source_pointer={
+                                    "provider": "mlflow",
+                                    "tracking_uri": tracking_uri,
+                                    "experiment_name": self.config.experiment_name,
+                                    "experiment_id": experiment_id,
+                                },
+                            )
+                        )
+                        with_run_root_turns(
+                            trace,
+                            conversation_input=conversation[0],
+                            conversation_output=conversation[1],
+                            orchestration_subtypes=_ORCHESTRATION_SUBTYPES,
                         )
                         trace.source_url = _trace_url(tracking_uri, experiment_id, trace.id)
                         sort_keys[trace.id] = _trace_sort_key(provider_trace)
-                        logical_cases.add(_logical_case(trace))
+                        cases.add(case_key(trace))
+                        if trace.session_id:
+                            sessions.add(trace.session_id)
                         unresolved_parent_count += detached
                         span_count += trace_span_count
                         call_count += trace_call_count
@@ -186,7 +200,8 @@ class MLflowTraceLoader:
             span_count=span_count,
             unresolved_parent_count=unresolved_parent_count,
             call_count=call_count,
-            distinct_logical_cases=len(logical_cases),
+            distinct_cases=len(cases),
+            distinct_sessions=len(sessions),
         )
         return snapshot
 
@@ -251,7 +266,8 @@ class MLflowTraceLoader:
             "source": _source_label(tracking_uri, experiment_id),
             "trace_count": self.report.trace_count,
             "call_count": self.report.call_count,
-            "distinct_logical_cases": self.report.distinct_logical_cases,
+            "distinct_cases": self.report.distinct_cases,
+            "distinct_sessions": self.report.distinct_sessions,
             "span_count": self.report.span_count,
             "unresolved_parent_count": self.report.unresolved_parent_count,
             "experiment_name": self.config.experiment_name,
@@ -294,7 +310,8 @@ class MLflowFileTraceLoader:
                 self.config.path, self.config.max_traces
             )
             sort_keys: dict[str, tuple[int, str]] = {}
-            logical_cases: set[str] = set()
+            cases: set[str] = set()
+            sessions: set[str] = set()
             unresolved_parent_count = 0
             span_count = 0
             call_count = 0
@@ -315,16 +332,26 @@ class MLflowFileTraceLoader:
                             f"MLflow export trace {trace_id!r} has no spans; export complete traces "
                             "without --no-include-spans"
                         )
-                    trace, detached, trace_span_count, trace_call_count = _normalize_trace(
-                        provider_trace,
-                        source_pointer={
-                            "provider": "mlflow",
-                            "export_path": str(resolved_path),
-                        },
+                    trace, conversation, detached, trace_span_count, trace_call_count = (
+                        _normalize_trace(
+                            provider_trace,
+                            source_pointer={
+                                "provider": "mlflow",
+                                "export_path": str(resolved_path),
+                            },
+                        )
+                    )
+                    with_run_root_turns(
+                        trace,
+                        conversation_input=conversation[0],
+                        conversation_output=conversation[1],
+                        orchestration_subtypes=_ORCHESTRATION_SUBTYPES,
                     )
                     trace.source_url = file_source_url(resolved_path)
                     sort_keys[trace.id] = _trace_sort_key(provider_trace)
-                    logical_cases.add(_logical_case(trace))
+                    cases.add(case_key(trace))
+                    if trace.session_id:
+                        sessions.add(trace.session_id)
                     unresolved_parent_count += detached
                     span_count += trace_span_count
                     call_count += trace_call_count
@@ -347,7 +374,8 @@ class MLflowFileTraceLoader:
             span_count=span_count,
             unresolved_parent_count=unresolved_parent_count,
             call_count=call_count,
-            distinct_logical_cases=len(logical_cases),
+            distinct_cases=len(cases),
+            distinct_sessions=len(sessions),
         )
         return snapshot
 
@@ -359,7 +387,8 @@ class MLflowFileTraceLoader:
             "source": f"mlflow-export:{resolved_path}",
             "trace_count": self.report.trace_count,
             "call_count": self.report.call_count,
-            "distinct_logical_cases": self.report.distinct_logical_cases,
+            "distinct_cases": self.report.distinct_cases,
+            "distinct_sessions": self.report.distinct_sessions,
             "span_count": self.report.span_count,
             "unresolved_parent_count": self.report.unresolved_parent_count,
             "export_path": str(resolved_path),
@@ -480,7 +509,7 @@ def _normalize_trace(
     provider_trace: MLflowTrace,
     *,
     source_pointer: dict[str, JsonValue],
-) -> tuple[Trace, int, int, int]:
+) -> tuple[Trace, tuple[object | None, object | None], int, int, int]:
     trace_id = _trace_id(provider_trace)
     provider_spans = provider_trace.data.spans
     by_id: dict[str, MLflowSpan] = {}
@@ -541,7 +570,7 @@ def _normalize_trace(
             normalized_by_id[parent_id].children.append(normalized)
 
     metadata = dict(provider_trace.info.trace_metadata or {})
-    logical_case_id = _logical_case_id(metadata, ordered, effective_parents)
+    session = _session_key(metadata, ordered, effective_parents)
     assessments = [assessment.to_dictionary() for assessment in provider_trace.info.assessments]
     evaluator_results: dict[str, JsonValue] = {}
     for row in assessments:
@@ -559,21 +588,65 @@ def _normalize_trace(
             "assessments": _json_value(assessments),
         },
     }
-    if logical_case_id is not None:
-        attributes["logical_case_id"] = logical_case_id
 
     trace = Trace(
         id=trace_id,
+        session_id=session[0] if session is not None else None,
+        session_basis=session[1] if session is not None else None,
         root_spans=root_spans,
         aggregate=TraceAggregate(latency_ms=_trace_latency_ms(ordered)),
         evaluator_results=evaluator_results,
         attributes=attributes,
     )
+    root_span_id = root_spans[0].id if len(root_spans) == 1 else None
     return (
         trace,
+        _conversation_io(provider_trace, by_id, root_span_id),
         len(unresolved),
         len(normalized_by_id),
         tool_call_index,
+    )
+
+
+_INPUT_KEYS = (_INPUTS_ATTRIBUTE, "input.value", "gen_ai.input.messages")
+_OUTPUT_KEYS = (_OUTPUTS_ATTRIBUTE, "output.value", "gen_ai.output.messages")
+_ORCHESTRATION_SUBTYPES = frozenset({"TASK", "WORKFLOW"})
+
+
+def _conversation_io(
+    provider_trace: MLflowTrace, by_id: dict[str, MLflowSpan], root_span_id: str | None
+) -> tuple[object | None, object | None]:
+    """The trace's recorded conversation input and output.
+
+    Each comes from the root span's attributes, then the trace metadata, then
+    the request or response preview; the first non-empty value wins.
+    """
+
+    metadata = dict(provider_trace.info.trace_metadata or {})
+    root_attributes = by_id[root_span_id].attributes if root_span_id is not None else {}
+
+    def first(
+        span_keys: tuple[str, ...], metadata_keys: tuple[str, str], preview: object
+    ) -> object:
+        candidates = [
+            parse_json(root_attributes[key]) for key in span_keys if key in root_attributes
+        ]
+        candidates += [parse_json(metadata[key]) for key in metadata_keys if key in metadata]
+        candidates.append(parse_json(preview))
+        return next((value for value in candidates if has_input(value)), None)
+
+    info = provider_trace.info
+    return (
+        first(
+            _INPUT_KEYS,
+            ("mlflow.traceInputs", "inputs"),
+            getattr(info, "request_preview", None),
+        ),
+        first(
+            _OUTPUT_KEYS,
+            ("mlflow.traceOutputs", "outputs"),
+            getattr(info, "response_preview", None),
+        ),
     )
 
 
@@ -694,11 +767,6 @@ def _trace_latency_ms(provider_spans: list[MLflowSpan]) -> float | None:
     return (max(ends) - min(starts)).total_seconds() * 1_000
 
 
-def _logical_case(trace: Trace) -> str:
-    logical_case_id = trace.attributes.get("logical_case_id")
-    return str(logical_case_id) if logical_case_id is not None else trace.id
-
-
 def _span_field(provider_span: MLflowSpan, attribute_key: str, value: object) -> JsonValue | UNSET:
     attributes = provider_span.attributes
     if attribute_key not in attributes:
@@ -724,21 +792,21 @@ def _datetime_from_ns(value: int | None) -> datetime | None:
     return datetime.fromtimestamp(int(value) / 1_000_000_000, tz=timezone.utc)
 
 
-def _logical_case_id(
+def _session_key(
     metadata: dict[str, str],
     ordered_spans: list[MLflowSpan],
     effective_parents: dict[str, str | None],
-) -> str | None:
+) -> tuple[str, str] | None:
     session = metadata.get(_SESSION_METADATA)
-    if session in (None, ""):
-        for provider_span in ordered_spans:
-            if effective_parents[str(provider_span.span_id)] is not None:
-                continue
-            attributes = provider_span.attributes
-            session = attributes.get(_SESSION_ATTRIBUTE)
-            if session not in (None, ""):
-                break
-    return str(session) if session not in (None, "") else None
+    if session not in (None, ""):
+        return str(session), "mlflow.trace.session"
+    for provider_span in ordered_spans:
+        if effective_parents[str(provider_span.span_id)] is not None:
+            continue
+        session = provider_span.attributes.get(_SESSION_ATTRIBUTE)
+        if session not in (None, ""):
+            return str(session), "mlflow.span.session.id"
+    return None
 
 
 def _trace_url(tracking_uri: str, experiment_id: str, trace_id: str) -> str | None:

@@ -242,7 +242,8 @@ class BraintrustTraceLoader:
             "span_count": span_count,
             "trace_count": self._snapshot.trace_count,
             "call_count": call_count,
-            "distinct_logical_cases": self._snapshot.trace_count,
+            "distinct_cases": self._snapshot.trace_count,
+            "distinct_sessions": 0,
         }
 
 

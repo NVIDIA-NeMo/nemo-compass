@@ -141,7 +141,7 @@ def test_v4_pagination_full_tree_scores_and_context(direct):
     assert tool.tool_call.result_count == 1
     assert trace.aggregate.cost_usd == 0.12
     assert trace.aggregate.latency_ms == 11000
-    assert trace.attributes["logical_case_id"] == "s"
+    assert (trace.session_id, trace.session_basis) == ("s", "langfuse.sessionId")
     context = trace.attributes["langfuse"]
     assert isinstance(context, dict)
     assert context["input"] == {"question": "where?"}
@@ -377,7 +377,7 @@ def test_v4_missing_parent_and_conflicting_sessions_remain_visible():
     instance = loader(handler)
     trace = list(instance.load())[0]
     assert instance.describe()["unresolved_parent_count"] == 1
-    assert "logical_case_id" not in trace.attributes
+    assert trace.session_id is None and trace.session_basis is None
     assert len(trace.root_spans) == 2
     assert trace.root_spans[0].attributes["langfuse"]["session_id"] in {"s", "another-session"}
 
