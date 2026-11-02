@@ -173,6 +173,45 @@ def response(name, arguments, call_id):
     )
 
 
+def test_agent_and_application_scans_are_traced(completion_case, monkeypatch):
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(
+        telemetry, "tracer", OITracer(provider.get_tracer(__name__), config=TraceConfig())
+    )
+    insight, checks, snapshot = completion_case
+    completion = EvidenceCompletion(insight=insight, predicate=truncated_enrich, checks=checks)
+
+    matches, unknown = completion.scan(snapshot)
+    with pytest.warns(UserWarning, match="1 of 6 traces"):
+        completion.apply(snapshot, RUN_TIMESTAMP)
+
+    scans = exporter.get_finished_spans()
+    assert len(scans) == 2
+    for scan in scans:
+        assert scan.name == "evidence_scan"
+        assert scan.attributes is not None
+        output = scan.attributes["output.value"]
+        assert isinstance(output, str)
+        assert json.loads(output) == {
+            "status": "incomplete",
+            "match_count": len(matches),
+            "unknown_count": unknown,
+        }
+    completion.predicate = None
+    completion.checks = []
+    completion.unresolved_reason = "Required evidence is absent"
+    with pytest.raises(ValueError, match="Required evidence is absent"):
+        completion.scan(snapshot)
+    skipped = exporter.get_finished_spans()[-1]
+    assert skipped.status.status_code != StatusCode.ERROR
+    assert skipped.attributes is not None
+    output = skipped.attributes["output.value"]
+    assert isinstance(output, str)
+    assert json.loads(output)["status"] == "skipped"
+
+
 @pytest.mark.parametrize(
     "invalid_return, diagnostic",
     [

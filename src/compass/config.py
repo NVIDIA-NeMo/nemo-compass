@@ -336,6 +336,10 @@ class RunConfig(BaseSettings):
     )
 
     model: str | None = Field(default=None, description="Inference model")
+    compilation_reasoning_effort: Literal["low", "medium", "high"] = Field(
+        default="high",
+        description="Reasoning effort for insight compilation only, when supported by the model",
+    )
     max_tokens: int | None = Field(
         default=None,
         ge=1,

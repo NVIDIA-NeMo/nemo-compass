@@ -9,6 +9,31 @@ import pytest
 from compass.config import CompassSignalsConfig, RunConfig
 
 
+def test_compilation_effort_yaml_and_cli_override(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "trace:\n  filesystem:\n    path: traces.jsonl\ncompilation_reasoning_effort: medium\n"
+    )
+    assert (
+        RunConfig(trace={"filesystem": {"path": "traces.jsonl"}}).compilation_reasoning_effort
+        == "high"
+    )
+    assert (
+        RunConfig(_cli_parse_args=["--config", str(path)]).compilation_reasoning_effort == "medium"
+    )
+    config = RunConfig(
+        _cli_parse_args=["--config", str(path), "--compilation-reasoning-effort", "low"]
+    )
+    assert config.compilation_reasoning_effort == "low"
+    with pytest.raises(ValueError):
+        RunConfig.model_validate(
+            {
+                "trace": {"filesystem": {"path": "traces.jsonl"}},
+                "compilation_reasoning_effort": "typo",
+            }
+        )
+
+
 def test_cli_nested_override_preserves_yaml_siblings(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

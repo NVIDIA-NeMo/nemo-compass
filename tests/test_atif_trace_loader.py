@@ -822,7 +822,7 @@ def test_yaml_cli_and_exclusive_source_selection(tmp_path):
 def test_complete_cli_runs_real_compass_signal(tmp_path, monkeypatch, capsys, select_signals):
     compilation = SimpleNamespace(compile_insights=AsyncMock(return_value=[]))
     monkeypatch.setenv("COMPASS_API_KEY", "not-real")
-    monkeypatch.setattr(cli, "_build_llm", lambda config, api_key: FakeLLMClient())
+    monkeypatch.setattr(cli, "_build_llm", lambda *args: FakeLLMClient())
     monkeypatch.setattr(cli, "InsightCompilation", lambda llm: compilation)
     output = tmp_path / "insights.yml"
     assert (

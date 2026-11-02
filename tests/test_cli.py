@@ -115,14 +115,16 @@ def test_model_endpoint_does_not_inherit_another_provider_gateway(
     cli._build_llm(config, "test-key")
     expected = "https://gateway.example/v1" if model.startswith("openai/") else None
     assert client.call_args.kwargs["api_base"] == expected
+    assert client.call_args.kwargs["reasoning_effort"] == "high"
 
     monkeypatch.setenv("COMPASS_API_BASE", "https://explicit.example/v1")
     cli._build_llm(config, "test-key")
     assert client.call_args.kwargs["api_base"] == "https://explicit.example/v1"
 
     config.api_base = "https://configured.example/v1"
-    cli._build_llm(config, "test-key")
+    cli._build_llm(config, "test-key", reasoning_effort="medium")
     assert client.call_args.kwargs["api_base"] == "https://configured.example/v1"
+    assert client.call_args.kwargs["reasoning_effort"] == "medium"
 
 
 def test_anthropic_parameters_are_translated_to_native_fields(clean_environment, monkeypatch):
@@ -520,7 +522,8 @@ def test_configuration_errors_are_reported_together(tmp_path, monkeypatch, capsy
 
 
 @pytest.mark.parametrize("ethos", [None, "Prioritize successful delivery."])
-def test_compilation_receives_ethos_with_divergence_disabled(tmp_path, monkeypatch, ethos):
+@pytest.mark.parametrize("effort", ["high", "medium"])
+def test_compilation_receives_ethos_and_its_own_effort(tmp_path, monkeypatch, ethos, effort):
     from datetime import datetime, timezone
 
     from rich.console import Console
@@ -538,6 +541,7 @@ def test_compilation_receives_ethos_with_divergence_disabled(tmp_path, monkeypat
         trace={"filesystem": {"path": "unused.jsonl"}},
         ethos_path=ethos_path,
         compass_signals={"ethos_divergence": None},
+        compilation_reasoning_effort=effort,
     )
     problem = Problem(description="Delivery failed", supporting_trace_ids=("t",))
     signals = [CompassSignalResult(signal_name="test", problems=(problem,))]
@@ -550,7 +554,14 @@ def test_compilation_receives_ethos_with_divergence_disabled(tmp_path, monkeypat
     compilation = SimpleNamespace(compile_insights=AsyncMock(return_value=[]))
     phase = Mock(wraps=cli.telemetry.compilation)
     monkeypatch.setattr(cli, "_validate_candidate_problems", validation)
-    monkeypatch.setattr(cli, "_build_llm", lambda *args: FakeLLMClient())
+    clients = []
+
+    def build_llm(config, api_key, reasoning_effort=cli.DEFAULT_REASONING_EFFORT):
+        client = FakeLLMClient()
+        clients.append((client, reasoning_effort))
+        return client
+
+    monkeypatch.setattr(cli, "_build_llm", build_llm)
     monkeypatch.setattr(cli, "InsightCompilation", lambda **kwargs: compilation)
     monkeypatch.setattr(cli.telemetry, "compilation", phase)
     asyncio.run(
@@ -566,6 +577,11 @@ def test_compilation_receives_ethos_with_divergence_disabled(tmp_path, monkeypat
     assert compilation.compile_insights.await_args.kwargs == {"ethos": ethos}
     assert phase.call_args.kwargs == {"ethos": ethos}
     assert validation.await_count == (1 if ethos is not None else 0)
+    assert clients[-1][1] == effort
+    if ethos is not None:
+        assert clients[0][1] == "high"
+        assert validation.await_args is not None
+        assert validation.await_args.args[3] is clients[0][0]
 
 
 @pytest.mark.parametrize(

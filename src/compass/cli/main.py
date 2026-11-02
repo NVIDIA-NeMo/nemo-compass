@@ -356,7 +356,9 @@ def _configured_model(config: RunConfig) -> str:
     return config.model or resolve(ENV_MODEL) or DEFAULT_MODEL
 
 
-def _build_llm(config: RunConfig, api_key: str) -> CompletionClient:
+def _build_llm(
+    config: RunConfig, api_key: str, reasoning_effort: str = DEFAULT_REASONING_EFFORT
+) -> CompletionClient:
     """Construct an LLM client with the run's shared model settings."""
 
     model = _configured_model(config)
@@ -370,7 +372,7 @@ def _build_llm(config: RunConfig, api_key: str) -> CompletionClient:
         api_base=api_base or None,
         api_key=api_key,
         max_tokens=config.max_tokens or DEFAULT_MAX_TOKENS,
-        reasoning_effort=DEFAULT_REASONING_EFFORT,
+        reasoning_effort=reasoning_effort,
         # Anthropic needs LiteLLM's native translation, not raw OpenAI fields.
         allowed_openai_params=[]
         if model.startswith("anthropic/")
@@ -439,11 +441,11 @@ async def _compile_evidence(
     run_timestamp: datetime,
 ) -> list[Insight]:
     signal_results = result.evidence
-    async with _build_llm(config, api_key) as llm:
-        ethos_path = config.ethos_path
-        ethos = ethos_path.read_text(encoding="utf-8") if ethos_path is not None else None
-        if config.code_base is not None or ethos is not None:
-            output.activity = "Validating candidate problems"
+    ethos_path = config.ethos_path
+    ethos = ethos_path.read_text(encoding="utf-8") if ethos_path is not None else None
+    if config.code_base is not None or ethos is not None:
+        output.activity = "Validating candidate problems"
+        async with _build_llm(config, api_key) as llm:
             with telemetry.candidate_problem_validation(
                 signal_results, config.code_base, ethos
             ) as record:
@@ -451,15 +453,16 @@ async def _compile_evidence(
                     signal_results, snapshot, config.code_base, llm, ethos
                 )
                 telemetry.record_candidate_problem_validation(record, validation)
-            signal_results = validation.retained_signal_results()
-            result.validation_rejections = validation.rejections
-            if validation.unresolved_count:
-                result.limitations.append(
-                    f"Candidate problem validation was inconclusive for {validation.unresolved_count} problem(s); these were retained for compilation."
-                )
-        if not any(item.problems for item in signal_results):
-            return result.existing_insights
-        output.activity = "Compiling candidate problems into insights"
+        signal_results = validation.retained_signal_results()
+        result.validation_rejections = validation.rejections
+        if validation.unresolved_count:
+            result.limitations.append(
+                f"Candidate problem validation was inconclusive for {validation.unresolved_count} problem(s); these were retained for compilation."
+            )
+    if not any(item.problems for item in signal_results):
+        return result.existing_insights
+    output.activity = "Compiling candidate problems into insights"
+    async with _build_llm(config, api_key, config.compilation_reasoning_effort) as llm:
         with telemetry.compilation(signal_results, result.existing_insights, ethos=ethos) as record:
             insights = await InsightCompilation(llm=llm).compile_insights(
                 signal_results,

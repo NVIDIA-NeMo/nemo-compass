@@ -82,6 +82,24 @@ class EvidenceCompletion(BaseModel):
 
         Return matching traces with their supporting spans and the count of unknown traces.
         """
+        with telemetry.evidence_scan(self.insight, len(snapshot)) as record:
+            try:
+                matches, unknown = self._scan(snapshot)
+            except Exception as error:
+                skipped = (
+                    self.predicate is None
+                    and bool(self.unresolved_reason and self.unresolved_reason.strip())
+                    and not self.checks
+                )
+                telemetry.record_scan_failure(record, error, skipped=skipped)
+                failure = error
+            else:
+                telemetry.record_scan_result(record, len(matches), unknown)
+                return matches, unknown
+        # Close intentional skips normally so OTel does not mark them as errors.
+        raise failure
+
+    def _scan(self, snapshot: TraceSnapshot) -> tuple[list[TraceEvidence], int]:
         self.validate_result()
         if self.predicate is None:
             raise ValueError(self.unresolved_reason)
@@ -113,25 +131,17 @@ class EvidenceCompletion(BaseModel):
         run_timestamp: datetime,
     ) -> Insight:
         """Add matching evidence, or keep the insight unchanged if the scan fails."""
-        with telemetry.evidence_scan(self.insight, len(snapshot)) as record:
-            try:
-                matches, unknown = self.scan(snapshot)
-            except Exception as error:
-                skipped = (
-                    self.predicate is None
-                    and bool(self.unresolved_reason and self.unresolved_reason.strip())
-                    and not self.checks
-                )
-                reason = str(error)[:300]
-                telemetry.record_scan_failure(record, error, skipped=skipped)
-                warnings.warn(
-                    f"The evidence scan did not complete for {self.insight.name!r}: "
-                    f"{type(error).__name__}: {reason}. "
-                    "The insight keeps its existing references. The scan added no new references.",
-                    stacklevel=2,
-                )
-                return self.insight
-            telemetry.record_scan_result(record, len(matches), unknown)
+        try:
+            matches, unknown = self.scan(snapshot)
+        except Exception as error:
+            reason = str(error)[:300]
+            warnings.warn(
+                f"The evidence scan did not complete for {self.insight.name!r}: "
+                f"{type(error).__name__}: {reason}. "
+                "The insight keeps its existing references. The scan added no new references.",
+                stacklevel=2,
+            )
+            return self.insight
         if unknown:
             warnings.warn(
                 f"Evidence scan incomplete for {self.insight.name!r}: "
