@@ -18,7 +18,10 @@ def _bounded_filter(
     from_timestamp: datetime,
     to_timestamp: datetime,
     time_column: str = "timestamp",
+    session_id: str | None = None,
 ) -> str | None:
+    # Langfuse lets `filter` override query-parameter filters such as sessionId, so a
+    # session restriction must also sit inside the filter whenever one is sent.
     if filter_string is None:
         return None
     try:
@@ -45,4 +48,9 @@ def _bounded_filter(
             "value": to_timestamp.isoformat(),
         },
     ]
-    return json.dumps([*conditions, *time_conditions], separators=(",", ":"))
+    session_conditions = (
+        []
+        if session_id is None
+        else [{"type": "string", "column": "sessionId", "operator": "=", "value": session_id}]
+    )
+    return json.dumps([*conditions, *time_conditions, *session_conditions], separators=(",", ":"))
