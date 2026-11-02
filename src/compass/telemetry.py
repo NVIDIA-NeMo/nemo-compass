@@ -23,9 +23,10 @@ from openinference.instrumentation._spans import OpenInferenceSpan
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http import Compression
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace import TracerProvider
 
 from compass.config import RunConfig
-from compass.telemetry_export import CompassSpanExporter
+from compass.telemetry_export import CompassSpanExporter, SpanInventory, span_id_digest
 from compass.version import __version__
 from trace_ingest.loaders.trace_loaders import TraceLoader
 
@@ -107,24 +108,25 @@ def telemetry_session(config: RunConfig) -> Iterator[OpenInferenceSpan]:
         headers = {"x-api-key": api_key, "Langsmith-Project": project}
         if workspace := os.getenv("COMPASS_TELEMETRY_LANGSMITH_WORKSPACE_ID"):
             headers["X-Tenant-Id"] = workspace
+        exporter = CompassSpanExporter(
+            OTLPSpanExporter(
+                endpoint=f"{endpoint}/otel/v1/traces",
+                headers=headers,
+                compression=Compression.Gzip,
+                timeout=float(
+                    os.getenv("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT")
+                    or os.getenv("OTEL_EXPORTER_OTLP_TIMEOUT")
+                    or "60"
+                ),
+            )
+        )
         # Nooa prints initialization messages; stdout belongs to the CLI's YAML output.
         with redirect_stdout(sys.stderr):
-            enable_tracing(
-                exporters=[
-                    CompassSpanExporter(
-                        OTLPSpanExporter(
-                            endpoint=f"{endpoint}/otel/v1/traces",
-                            headers=headers,
-                            compression=Compression.Gzip,
-                            timeout=float(
-                                os.getenv("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT")
-                                or os.getenv("OTEL_EXPORTER_OTLP_TIMEOUT")
-                                or "60"
-                            ),
-                        )
-                    )
-                ],
-            )
+            enable_tracing(exporters=[exporter])
+        inventory = SpanInventory()
+        provider = trace.get_tracer_provider()
+        if isinstance(provider, TracerProvider):
+            provider.add_span_processor(inventory)
     try:
         with record_span("compass") as root:
             root.set_input(config.model_dump(mode="json", exclude={"api_base"}))
@@ -142,7 +144,41 @@ def telemetry_session(config: RunConfig) -> Iterator[OpenInferenceSpan]:
                     f"Compass telemetry: execution content and source provenance to {project}; OTLP trace ID {root.get_span_context().trace_id:032x}",
                     file=sys.stderr,
                 )
-            yield root
+            try:
+                yield root
+            finally:
+                if api_key:
+                    # The root is still open and already in the inventory. Consumers
+                    # must reconcile this manifest with stored IDs, not wait for a
+                    # stable (but potentially incomplete) snapshot.
+                    root.set_attribute(
+                        "metadata",
+                        json.dumps(
+                            {
+                                **_execution_metadata(),
+                                "compass.telemetry": inventory.metadata(),
+                            }
+                        ),
+                    )
     finally:
         if api_key:
             shutdown_traces()
+            expected = inventory.started
+            exported = exporter.exported_span_ids
+            print(
+                "Compass telemetry summary: "
+                + json.dumps(
+                    {
+                        **inventory.metadata(),
+                        "ended_span_count": len(inventory.ended),
+                        "exported_span_count": len(exported),
+                        "exported_span_id_sha256": span_id_digest(exported),
+                        "failed_span_count": exporter.failed_span_count,
+                        "status": "exported"
+                        if expected == inventory.ended == exported
+                        else "incomplete",
+                    },
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+            )

@@ -231,6 +231,12 @@ def _run_cli(source, enabled):
         assert metadata["python.version"]
         assert all(r.context.trace_id == root.context.trace_id for r in records)
         ids = {r.context.span_id for r in records}
+        from compass.telemetry_export import span_id_digest
+
+        assert metadata["compass.telemetry"] == {
+            "expected_span_count": len(ids),
+            "expected_span_id_sha256": span_id_digest(ids),
+        }
         assert all(r.parent.span_id in ids for r in records if r.parent)
         assert json.loads(str((root.attributes or {})["output.value"]))["insights"] == []
 

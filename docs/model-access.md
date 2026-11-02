@@ -111,3 +111,24 @@ of trace content before analysis; choose inputs and endpoints appropriate for yo
 
 The CLI writes insights to a local YAML file or stdout. With telemetry disabled it
 does not publish findings back to the trace platform. [Output details](results.md#saved-output).
+
+## Telemetry completeness
+
+When LangSmith telemetry is enabled, Compass splits OTLP batches into requests
+of at most 16 MiB before compression. If one span exceeds that budget, its largest
+attribute values are replaced with JSON summaries containing their original UTF-8
+byte counts and SHA-256 hashes. `compass.telemetry.summarized_attributes` names the
+affected fields. Span identity, relationships, timing, and token counts remain intact;
+ordinary spans retain their full payloads.
+
+The root's `compass.telemetry` metadata includes `expected_span_count` and
+`expected_span_id_sha256`. Collectors should fetch every span in the trace and
+compare this inventory before reporting complete token usage. The digest is SHA-256
+of the sorted original span IDs, each encoded as 16 lowercase hexadecimal characters,
+concatenated without separators. LangSmith represents these OTLP span IDs in the
+low 64 bits of its run UUIDs. A stable snapshot alone does not prove completeness.
+
+The CLI also writes a `Compass telemetry summary:` JSON record to stderr after
+shutdown, with started, ended, exported, and failed span accounting. `exported`
+means the exporter acknowledged all expected spans; backend persistence still needs
+the inventory comparison. An `incomplete` summary means usage totals may be partial.
