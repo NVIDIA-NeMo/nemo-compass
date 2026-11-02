@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -97,10 +98,14 @@ def with_agent_step(step):
     return source
 
 
+def content_id(record):
+    return "atif-" + hashlib.sha256(json.dumps(record).encode()).hexdigest()[:16]
+
+
 def test_exact_normalization_and_description(tmp_path):
     loader = loader_for(tmp_path, minimal())
     expected = Trace(
-        id="run",
+        id=content_id(minimal()),
         source_url=loader.config.path.resolve().as_uri() + "#L2",
         root_spans=[
             Span(
@@ -658,7 +663,6 @@ def test_realistic_nested_trajectory_and_signal_readers():
     "mutation, match",
     [
         (lambda t: t.update(schema_version="ATIF-v1.9"), "schema_version"),
-        (lambda t: t.pop("session_id"), "stable trace identity"),
         (lambda t: t.pop("agent"), "agent"),
         (lambda t: t["agent"].pop("version"), "version"),
         (lambda t: t["agent"].update(name=123), "name"),
@@ -774,13 +778,28 @@ def test_naive_timestamps_stay_on_the_turn(tmp_path):
 
 def test_loads_all_records_and_rejects_duplicates(tmp_path):
     source = minimal()
+    # A byte-identical line is the same document twice.
     with pytest.raises(ATIFTraceLoadError, match="duplicate trace id"):
         loader_for(tmp_path, source, source).load()
+    # session_id is run-scoped: a continuation may share it and set no trajectory_id.
+    continuation = {**source, "continued_trajectory_ref": "next.json"}
+    # trajectory_id identifies one document.
+    with pytest.raises(ATIFTraceLoadError, match="duplicate trace id 't'"):
+        loader_for(
+            tmp_path, {**source, "trajectory_id": "t"}, {**continuation, "trajectory_id": "t"}
+        ).load()
     second = {**source, "trajectory_id": "another"}
-    loader = loader_for(tmp_path, source, second)
-    assert [trace.id for trace in loader.load()] == ["run", "another"]
+    anonymous = {key: value for key, value in source.items() if key != "session_id"}
+    loader = loader_for(tmp_path, source, continuation, second, anonymous)
+    assert [trace.id for trace in loader.load()] == [
+        content_id(source),
+        content_id(continuation),
+        "another",
+        content_id(anonymous),
+    ]
+    assert [trace.session_id for trace in loader.load()] == ["run", "run", "run", None]
     # Trajectories sharing a session_id are still independent cases.
-    assert loader.describe()["distinct_cases"] == 2
+    assert loader.describe()["distinct_cases"] == 4
     assert {to_tool_issue_trace(trace).case_id for trace in loader.load()} == {None}
 
 
