@@ -16,7 +16,7 @@ on:
         description: 'Start: final version, e.g. 0.3.0'
         type: string
       commit:
-        description: 'Start: full main SHA (blank means latest main)'
+        description: 'Start: full main SHA (blank means main at dispatch)'
         type: string
       candidate:
         description: 'Publish: accepted candidate tag, e.g. v0.3.0rc2'
@@ -46,9 +46,9 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: main
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
-          persist-credentials: false
+          persist-credentials: true
       - id: plan
         env:
           GH_TOKEN: ${{ github.token }}
@@ -75,7 +75,7 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: main
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -145,5 +145,19 @@ jobs:
         run: |
           : "${NGC_CLI_API_KEY:?AIRE_NGC_SERVICE_KEY repository secret is required}"
           resource_ref="${NGC_CLI_ORG}/${NGC_CLI_TEAM}/nemo-compass:${RELEASE_TAG#v}"
-          ngc registry resource upload-version "$resource_ref" --source "$WHEEL_FILE"
+          destination=$(mktemp -d)
+          if ! ngc registry resource download-version "$resource_ref" --file "$WHEEL_FILE" --dest "$destination"; then
+            # A retry may find that a previous upload finished despite a client error.
+            ngc registry resource upload-version "$resource_ref" --source "$WHEEL_FILE" || true
+            destination=$(mktemp -d)
+            ngc registry resource download-version "$resource_ref" --file "$WHEEL_FILE" --dest "$destination"
+          fi
+          python3 - "$destination" "$WHEEL_FILE" <<'PYTHON'
+          import sys
+          from pathlib import Path
+          destination, wheel = map(Path, sys.argv[1:])
+          staged = list(destination.rglob(wheel.name))
+          assert len(staged) == 1, "Expected exactly one staged wheel"
+          assert staged[0].read_bytes() == wheel.read_bytes(), "NGC wheel differs from validated artifact"
+          PYTHON
           printf 'Staged SDK wheel: %s\n' "$resource_ref" >> "$GITHUB_STEP_SUMMARY"

@@ -75,8 +75,8 @@ def plan() -> None:
     if action == "start":
         version = release_version(os.environ["VERSION"])
         branch = f"release/{version}"
-        selected = os.environ.get("COMMIT", "") or "origin/main"
-        if selected != "origin/main" and not re.fullmatch(r"[0-9a-f]{40}", selected):
+        selected = os.environ.get("COMMIT", "") or os.environ["GITHUB_SHA"]
+        if not re.fullmatch(r"[0-9a-f]{40}", selected):
             raise ValueError("Commit must be a full main commit SHA")
         commit = sha(selected)
         run("git", "merge-base", "--is-ancestor", commit, "origin/main")
@@ -106,10 +106,15 @@ def plan() -> None:
         commit, branch = accepted["source"], accepted["branch"]
         if accepted["version"] != tag[1:] or tag_source(tag) != commit:
             raise ValueError("Candidate identity differs from its tag")
-        completed = api(f"actions/runs/{accepted['run_id']}")
-        if (
-            completed["conclusion"] != "success"
-            or completed["path"] != ".github/workflows/prepare-release.yaml"
+        # A failed rerun cannot revoke an earlier successful preparation. Failed-job
+        # retries reuse the build artifact, so staging may succeed in a later attempt.
+        run_path = f"actions/runs/{accepted['run_id']}"
+        latest = api(run_path)
+        attempts = range(int(latest["run_attempt"]), int(accepted["run_attempt"]) - 1, -1)
+        if not any(
+            (completed := api(f"{run_path}/attempts/{attempt}"))["conclusion"] == "success"
+            and completed["path"] == ".github/workflows/prepare-release.yaml"
+            for attempt in attempts
         ):
             raise ValueError("Candidate preparation/staging has not succeeded")
         current(branch, commit)
@@ -138,25 +143,14 @@ def finish() -> None:
         )
     current(branch, source)
     directory = Path("dist")
-    manifest = {
-        "source": source,
-        "branch": branch,
-        "version": version,
-        "run_id": os.environ["GITHUB_RUN_ID"],
-        "sha256": {
-            p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in sorted(directory.iterdir())
-            if p.suffix in {".whl", ".gz"}
-        },
-    }
-    if action == "publish":
-        manifest["acceptance"] = {
-            "candidate": os.environ["CANDIDATE"],
-            "evidence": os.environ["QA_EVIDENCE"],
-            "maintainer": os.environ["GITHUB_ACTOR"],
-        }
-    (directory / "candidate.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    verify(directory)
+    manifest = verify(directory)
+    if (manifest["source"], manifest["branch"], manifest["version"], manifest["run_id"]) != (
+        source,
+        branch,
+        version,
+        os.environ["GITHUB_RUN_ID"],
+    ):
+        raise ValueError("Build record differs from the planned release")
     existing = run("gh", "release", "list", "--limit", "1000", "--json", "tagName")
     if tag not in {r["tagName"] for r in json.loads(existing)}:
         run("git", "push", "origin", f"{source}:refs/tags/{tag}")
@@ -195,7 +189,7 @@ def finish() -> None:
     marker = "<!-- compass-candidate -->"
     notes = release["body"].split(marker)[0].rstrip()
     notes += f"\n\n{marker}\nSource: `{source}`\n\nVersion: `{version}`\n\n"
-    notes += f"[Validated build](https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{manifest['run_id']})\n"
+    notes += f"[Validated build](https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{manifest['run_id']}/attempts/{manifest['run_attempt']})\n"
     if action == "publish":
         notes += f"\nAccepted {os.environ['CANDIDATE']} by @{os.environ['GITHUB_ACTOR']}: {os.environ['QA_EVIDENCE']}\n"
     Path("release-notes.md").write_text(notes)

@@ -5,10 +5,12 @@
 
 import importlib.util
 import json
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 spec = importlib.util.spec_from_file_location(
     "release", Path(__file__).resolve().parents[1] / "tools/release.py"
@@ -55,14 +57,21 @@ def test_candidates_follow_history_and_reject_stale_acceptance(history, monkeypa
 
 
 @pytest.mark.parametrize("existing", [None, "matching", "different"])
-def test_release_upload_retry_preserves_bytes(tmp_path, monkeypatch, existing):
+@pytest.mark.parametrize("action", ["candidate", "publish"])
+def test_release_upload_retry_preserves_bytes(tmp_path, monkeypatch, existing, action):
+    root = Path(__file__).resolve().parents[1]
+    version = "1.2.3rc1" if action == "candidate" else "1.2.3"
     monkeypatch.chdir(tmp_path)
     for key, value in {
         "SOURCE": "a" * 40,
         "BRANCH": "release/1.2.3",
-        "PACKAGE_VERSION": "1.2.3rc1",
-        "ACTION": "candidate",
+        "PACKAGE_VERSION": version,
+        "ACTION": action,
+        "CANDIDATE": "v1.2.3rc1",
+        "QA_EVIDENCE": "https://example.com/qa",
+        "GITHUB_ACTOR": "captain",
         "GITHUB_RUN_ID": "123",
+        "GITHUB_RUN_ATTEMPT": "1",
         "GITHUB_REPOSITORY": "org/repo",
         "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
     }.items():
@@ -71,6 +80,18 @@ def test_release_upload_retry_preserves_bytes(tmp_path, monkeypatch, existing):
     dist.mkdir()
     wheel = dist / "example.whl"
     wheel.write_bytes(b"validated wheel")
+    import hashlib
+
+    (dist / "SHA256SUMS").write_text(
+        hashlib.sha256(wheel.read_bytes()).hexdigest() + "  example.whl\n"
+    )
+    workflow = yaml.safe_load((root / ".github/workflows/ci.yaml").read_text())
+    step = next(
+        s for s in workflow["jobs"]["quality"]["steps"] if s.get("name") == "Record validated build"
+    )
+    subprocess.run(["bash", "-e", "-c", step["run"]], env=os.environ, check=True)
+    # A failed-job retry must use the original build attempt, not reconstruct provenance.
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
     monkeypatch.setattr(release, "current", lambda *args: None)
     monkeypatch.setattr(release, "tag_source", lambda tag: "a" * 40)
     calls = []
@@ -78,7 +99,7 @@ def test_release_upload_retry_preserves_bytes(tmp_path, monkeypatch, existing):
     def command(*args):
         calls.append(args)
         if args[:3] == ("gh", "release", "list"):
-            return json.dumps([{"tagName": "v1.2.3rc1"}])
+            return json.dumps([{"tagName": "v" + version}])
         if args[:3] == ("gh", "release", "view"):
             return json.dumps(
                 {
@@ -105,7 +126,11 @@ def test_release_upload_retry_preserves_bytes(tmp_path, monkeypatch, existing):
         release.finish()
         uploaded = [args[-1] for args in calls if args[:3] == ("gh", "release", "upload")]
         assert ("dist/example.whl" in uploaded) == (existing is None)
-        release.verify(dist)
+        assert release.verify(dist)["run_attempt"] == 1
+        edits = [args for args in calls if args[:3] == ("gh", "release", "edit")]
+        assert edits[-1][-1] == "--draft=" + str(action != "publish").lower()
+        if action == "publish":
+            assert "Accepted v1.2.3rc1 by @captain" in Path("release-notes.md").read_text()
         wheel.write_bytes(b"corrupt")
         with pytest.raises(ValueError, match="checksum mismatch"):
             release.verify(dist)
@@ -122,10 +147,20 @@ def test_publication_requires_complete_current_candidate(history, tmp_path, monk
     }.items():
         monkeypatch.setenv(key, value)
     completed = {"conclusion": "success", "path": ".github/workflows/prepare-release.yaml"}
+    attempts = []
+
+    def api(path):
+        if "/attempts/" in path:
+            attempts.append(path)
+            return completed if path.endswith("/1") else {"conclusion": "failure"}
+        if path.startswith("actions/"):
+            return {"run_attempt": 2, "conclusion": "failure"}
+        return {"object": {"sha": source}}
+
     monkeypatch.setattr(
         release,
         "api",
-        lambda path: completed if path.startswith("actions/") else {"object": {"sha": source}},
+        api,
     )
     monkeypatch.setattr(release, "tag_source", lambda tag: source)
     import hashlib
@@ -139,6 +174,7 @@ def test_publication_requires_complete_current_candidate(history, tmp_path, monk
                     "branch": "release/1.2.3",
                     "version": "1.2.3rc1",
                     "run_id": "123",
+                    "run_attempt": 1,
                     "sha256": {"example.whl": hashlib.sha256(b"wheel").hexdigest()},
                 }
             )
@@ -147,6 +183,7 @@ def test_publication_requires_complete_current_candidate(history, tmp_path, monk
     monkeypatch.setattr(release, "download", download)
     release.plan()
     assert "version=1.2.3\n" in (tmp_path / "outputs").read_text()
+    assert attempts == ["actions/runs/123/attempts/2", "actions/runs/123/attempts/1"]
     completed["conclusion"] = "failure"
     with pytest.raises(ValueError, match="has not succeeded"):
         release.plan()
@@ -183,3 +220,45 @@ def test_workflow_version_step_preserves_dependency_lock(tmp_path, monkeypatch):
                     "project"
                 ]["version"]
         assert updated == original
+
+
+@pytest.mark.parametrize("remote", ["missing", "matching", "different"])
+def test_ngc_staging_downloads_and_compares_before_reusing(tmp_path, monkeypatch, remote):
+    root = Path(__file__).resolve().parents[1]
+    workflow = yaml.safe_load((root / ".github/workflows/prepare-release.yaml").read_text())
+    step = next(
+        s
+        for s in workflow["jobs"]["stage-ngc"]["steps"]
+        if s.get("name") == "Upload SDK wheel to NGC"
+    )
+    wheel = tmp_path / "package.whl"
+    wheel.write_text("validated")
+    registry = tmp_path / "remote"
+    if remote != "missing":
+        registry.write_text("validated" if remote == "matching" else "different")
+    cli = tmp_path / "ngc"
+    cli.write_text("""#!/usr/bin/env python3
+import os, pathlib, shutil, sys
+remote = pathlib.Path(os.environ["REGISTRY"])
+if sys.argv[3] == "upload-version":
+    shutil.copyfile("package.whl", remote)
+    sys.exit(1)  # Simulate upload complete, response lost.
+if not remote.exists():
+    sys.exit(1)
+shutil.copyfile(remote, pathlib.Path(sys.argv[sys.argv.index("--dest") + 1]) / "package.whl")
+""")
+    cli.chmod(0o755)
+    for key, value in {
+        "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
+        "REGISTRY": str(registry),
+        "NGC_CLI_API_KEY": "test",
+        "NGC_CLI_ORG": "org",
+        "NGC_CLI_TEAM": "team",
+        "RELEASE_TAG": "v1.2.3rc1",
+        "WHEEL_FILE": wheel.name,
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
+    }.items():
+        monkeypatch.setenv(key, value)
+    result = subprocess.run(["bash", "-e", "-c", step["run"]], cwd=tmp_path, env=os.environ)
+    assert (result.returncode == 0) == (remote != "different")
+    assert registry.read_text() == ("different" if remote == "different" else "validated")

@@ -8,7 +8,7 @@
    Select a commit containing these release workflows. CI validates the source before creating `release/0.3.0` and its first RC.
 2. QA downloads the candidate from its **draft GitHub release** or NGC. The release
    links the checks and source SHA; `candidate.json` records the version, source,
-   build run, and artifact checksums. Wait for the complete workflow, including staging.
+   build run/attempt, and artifact checksums. Wait for the complete workflow, including staging.
    Record smoke/regression results and blockers in your existing QA tracker.
 3. Submit ordinary fix PRs against the release branch. Merging prepares another RC
    and opens an author-assigned forward-port PR to main. Clean PRs auto-merge when
@@ -28,11 +28,19 @@ Final artifacts are rebuilt, run through CI/distribution checks and an isolated
 wheel installation smoke test, then uploaded. An RC wheel is never renamed.
 
 Retry with **Re-run failed jobs** on the original run: validated artifacts are reused,
-matching uploads are skipped, and differing bytes stop the release. Never delete or
+matching uploads are skipped, and differing bytes stop the release. NGC staging
+downloads the wheel to verify its bytes, including after an interrupted upload. Never delete or
 move release tags or overwrite assets to repair a retry. If source changes, use its
-new RC. The release branch must remain current through publication; avoid merging
-fixes during the final publishing step. Already-published PyPI retry behavior belongs
-to the independent Slack publisher.
+new RC. Use failed-job retries, not **Re-run all jobs**: a rebuilt package may differ
+and cannot replace existing artifacts. A later failed run attempt does not invalidate
+an earlier successful candidate preparation and NGC staging.
+
+Publication uses the accepted candidate's exact SHA, never a moving branch checkout.
+The branch is checked when publication starts and again immediately before publishing.
+A detected change stops publication and identifies the newer candidate. A merge after
+the last check cannot change the artifacts; that fix is excluded and needs a subsequent
+release. This is snapshot publication, not an atomic lock on branch changes.
+Already-published PyPI retry behavior belongs to the independent Slack publisher.
 
 Aim to cut Friday and publish the following Wednesday every two weeks. The rotating
 captain confirms holidays and QA availability, and defers features or skips a release
