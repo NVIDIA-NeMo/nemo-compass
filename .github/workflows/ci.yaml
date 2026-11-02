@@ -21,10 +21,6 @@ on:
     outputs:
       commit:
         value: ${{ jobs.quality.outputs.commit }}
-      tag:
-        value: ${{ jobs.quality.outputs.tag }}
-      prerelease:
-        value: ${{ jobs.quality.outputs.prerelease }}
 
 permissions:
   contents: read
@@ -40,8 +36,6 @@ jobs:
     timeout-minutes: 10
     outputs:
       commit: ${{ steps.release.outputs.commit }}
-      tag: ${{ steps.release.outputs.tag }}
-      prerelease: ${{ steps.release.outputs.prerelease }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -113,11 +107,10 @@ jobs:
           smoke/bin/python -c 'import compass, trace_ingest'
           smoke/bin/compass --help
 
-      - name: Validate release identity and checksum artifacts
+      - name: Checksum release artifacts
         id: release
         if: inputs.release-ref != ''
         run: |
-          uv run --locked python tools/check_release.py >> "$GITHUB_OUTPUT"
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           cd dist
           sha256sum -- *.whl *.tar.gz > SHA256SUMS

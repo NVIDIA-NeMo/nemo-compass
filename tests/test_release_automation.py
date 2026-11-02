@@ -5,7 +5,6 @@
 
 import hashlib
 import importlib.util
-import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -77,49 +76,44 @@ def build(history, tmp_path, monkeypatch):
     return dist, source
 
 
-@pytest.mark.parametrize("existing", [None, "matching", "different"])
-def test_publication_preserves_validated_bytes(build, monkeypatch, existing):
+@pytest.mark.parametrize("failure", [None, "create", "edit"])
+def test_publication_creates_once_or_explains_manual_recovery(build, monkeypatch, failure):
     dist, source = build
     monkeypatch.setenv("PACKAGE_VERSION", "1.2.3")
     release.record()
     monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
     monkeypatch.setattr(release, "api", lambda path: {"object": {"sha": source}})
     calls = []
+    original = release.run
 
     def command(*args):
+        if args[0] != "gh":
+            return original(*args)
         calls.append(args)
-        if args[:3] == ("gh", "release", "list"):
-            return json.dumps([{"tagName": "v1.2.3"}])
-        if args[:3] == ("gh", "release", "view"):
-            return json.dumps(
-                {
-                    "assets": [1] if existing else [],
-                    "body": "notes",
-                    "isDraft": True,
-                    "url": "https://example.com",
-                }
-            )
-        return ""
+        if args[2] == failure:
+            raise subprocess.CalledProcessError(1, args)
+        return "https://github.com/org/repo/releases/tag/v1.2.3"
 
     monkeypatch.setattr(release, "run", command)
-
-    def download(tag, directory):
-        (directory / "example.whl").write_bytes(b"wheel" if existing == "matching" else b"other")
-
-    monkeypatch.setattr(release, "download", download)
-    if existing == "different":
-        with pytest.raises(ValueError, match="differs"):
+    if failure:
+        with pytest.raises(ValueError, match="delete only that draft, keep the tag") as error:
             release.finish()
+        assert "Re-run failed jobs" in str(error.value)
+        assert "Never delete or modify a published release" in str(error.value)
     else:
         release.finish()
-        uploaded = [args[-1] for args in calls if args[:3] == ("gh", "release", "upload")]
-        assert ("dist/example.whl" in uploaded) == (existing is None)
-        assert release.verify(dist)["run_attempt"] == 1
-        edits = [args for args in calls if args[:3] == ("gh", "release", "edit")]
-        assert edits[-1][-1] == "--draft=false"
-        (dist / "example.whl").write_bytes(b"corrupt")
-        with pytest.raises(ValueError, match="checksum mismatch"):
-            release.verify(dist)
+        assert "dist/example.whl" in calls[0]
+        assert "--draft" in calls[0] and calls[-1][-1] == "--draft=false"
+    # A failed create (including an existing release) must never lead to an edit.
+    assert [args[2] for args in calls] == (
+        ["create"] if failure == "create" else ["create", "edit"]
+    )
+    assert release.verify(dist)["run_attempt"] == 1
+    (dist / "example.whl").write_bytes(b"corrupt")
+    calls.clear()
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        release.finish()
+    assert not calls
 
 
 def test_publication_requires_successful_candidate_run(build, tmp_path, monkeypatch):
@@ -131,11 +125,13 @@ def test_publication_requires_successful_candidate_run(build, tmp_path, monkeypa
         lambda path: completed if path.startswith("actions/") else {"object": {"sha": source}},
     )
 
-    def download(tag, directory):
-        for path in dist.iterdir():
-            shutil.copy(path, directory)
+    def command(*args):
+        if args[:3] == ("gh", "release", "download"):
+            assert args[3:] == ("v1.2.3rc1", "--pattern", "candidate.json", "--output", "-")
+            return (dist / "candidate.json").read_text()
+        return subprocess.check_output(args, text=True).strip()
 
-    monkeypatch.setattr(release, "download", download)
+    monkeypatch.setattr(release, "run", command)
     release.plan()
     assert "version=1.2.3\n" in (tmp_path / "outputs").read_text()
     completed["conclusion"] = "failure"

@@ -15,5 +15,6 @@
    on `main` with its RC tag. This rebuilds and validates the final package, stages its
    wheel in NGC, and publishes the GitHub release.
 
-For failures, use **Re-run failed jobs** on the original run. Keep existing tags and
-assets. Do not rerun successful workflows.
+For failures, use **Re-run failed jobs** on the original run. If a partial draft was
+left behind, delete only that unpublished draft and keep its tag before retrying.
+Never delete or modify a published release. Do not rerun successful workflows.

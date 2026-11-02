@@ -11,7 +11,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 
@@ -53,10 +52,6 @@ def current(branch: str, commit: str) -> None:
         run("git", "fetch", "origin", head)
         newer = candidate(branch, head)
         raise ValueError(f"Branch changed: validate {newer} at {head} before publishing.")
-
-
-def download(tag: str, directory: Path) -> None:
-    run("gh", "release", "download", tag, "--dir", str(directory))
 
 
 def verify(directory: Path) -> dict:
@@ -110,12 +105,6 @@ def plan() -> None:
             raise ValueError("Commit must be a full main commit SHA")
         commit = sha(selected)
         run("git", "merge-base", "--is-ancestor", commit, "origin/main")
-        try:
-            run("git", "cat-file", "-e", f"{commit}:tools/release.py")
-        except subprocess.CalledProcessError as error:
-            raise ValueError(
-                "Selected commit predates release automation; choose a newer main commit"
-            ) from error
         # A retry may reuse the branch only while it is still at the original cut.
         existing = run("git", "ls-remote", "origin", f"refs/heads/{branch}")
         if existing and existing.split()[0] != commit:
@@ -125,10 +114,9 @@ def plan() -> None:
         tag = os.environ["CANDIDATE"]
         if not re.fullmatch(r"v\d+\.\d+\.\d+rc[1-9]\d*", tag):
             raise ValueError("Select an exact candidate tag, e.g. v0.3.0rc2")
-        with tempfile.TemporaryDirectory() as temporary:
-            directory = Path(temporary)
-            download(tag, directory)
-            accepted = verify(directory)
+        accepted = json.loads(
+            run("gh", "release", "download", tag, "--pattern", "candidate.json", "--output", "-")
+        )
         commit, branch = accepted["source"], accepted["branch"]
         if accepted["version"] != tag[1:] or tag_source(tag) != commit:
             raise ValueError("Candidate identity differs from its tag")
@@ -172,67 +160,36 @@ def finish() -> None:
         os.environ["GITHUB_RUN_ID"],
     ):
         raise ValueError("Build record differs from the planned release")
-    existing = run("gh", "release", "list", "--limit", "1000", "--json", "tagName")
-    if tag not in {r["tagName"] for r in json.loads(existing)}:
-        run("git", "push", "origin", f"{source}:refs/tags/{tag}")
-        run(
+    run("git", "push", "origin", f"{source}:refs/tags/{tag}")
+    build_url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{manifest['run_id']}/attempts/{manifest['run_attempt']}"
+    notes = f"Source: `{source}`\nVersion: `{version}`\n[Validated build]({build_url})\n"
+    if action == "publish":
+        notes += f"Accepted {os.environ['CANDIDATE']} by @{os.environ['GITHUB_ACTOR']}\n"
+    try:
+        url = run(
             "gh",
             "release",
             "create",
             tag,
+            *map(str, sorted(directory.iterdir())),
             "--verify-tag",
             "--draft",
             "--generate-notes",
-            "--title",
-            f"nemo-compass {tag}",
+            "--notes",
+            notes,
             "--prerelease=" + str(action != "publish").lower(),
         )
-    if tag_source(tag) != source:
-        raise ValueError("Existing tag points to another source commit")
-    release = json.loads(run("gh", "release", "view", tag, "--json", "assets,body,isDraft,url"))
-    # Resume only missing uploads. Existing bytes must match, including the manifest.
-    with tempfile.TemporaryDirectory() as temporary:
-        if release["assets"]:
-            download(tag, Path(temporary))
-        for path in sorted(directory.iterdir()):
-            remote = Path(temporary) / path.name
-            if remote.exists():
-                if remote.read_bytes() != path.read_bytes():
-                    raise ValueError(
-                        f"Existing {path.name} differs; rerun failed jobs from the original run"
-                    )
-            else:
-                if not release["isDraft"]:
-                    raise ValueError(
-                        "Published release is incomplete; never mutate published artifacts"
-                    )
-                run("gh", "release", "upload", tag, str(path))
-    marker = "<!-- compass-candidate -->"
-    notes = release["body"].split(marker)[0].rstrip()
-    notes += f"\n\n{marker}\nSource: `{source}`\n\nVersion: `{version}`\n\n"
-    notes += f"[Validated build](https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{manifest['run_id']}/attempts/{manifest['run_attempt']})\n"
-    if action == "publish":
-        notes += f"\nAccepted {os.environ['CANDIDATE']} by @{os.environ['GITHUB_ACTOR']}\n"
-    Path("release-notes.md").write_text(notes)
-    if release["isDraft"]:
-        current(branch, source)
-        run(
-            "gh",
-            "release",
-            "edit",
-            tag,
-            "--notes-file",
-            "release-notes.md",
-            "--draft=" + str(action != "publish").lower(),
-        )
-    with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
-        print(f"[{tag}]({release['url']}) — source `{source}`\n", file=summary)
         if action == "publish":
-            for name in manifest["sha256"]:
-                print(
-                    f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/releases/download/{tag}/{name}",
-                    file=summary,
-                )
+            current(branch, source)
+            run("gh", "release", "edit", tag, "--draft=false")
+    except (subprocess.CalledProcessError, ValueError) as error:
+        raise ValueError(
+            f"{error}\nIf {tag} has an unpublished draft, delete only that draft, keep the tag, "
+            "then choose Re-run failed jobs on this run. "
+            "Never delete or modify a published release."
+        ) from error
+    with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
+        print(f"[{tag}]({url}) — source `{source}`", file=summary)
 
 
 if __name__ == "__main__":
