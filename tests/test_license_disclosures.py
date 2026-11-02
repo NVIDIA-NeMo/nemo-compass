@@ -70,10 +70,28 @@ def test_inventory_preserves_platform_versions(tmp_path, monkeypatch):
             }
         )
     )
-    assert [(r["name"], r["version"]) for r in generator._license_records(scan)] == [
+    records = generator._license_records(scan)
+    assert [(r["name"], r["version"]) for r in records] == [
         ("torch", "2.13.0"),
         ("torch", "2.13.0+cpu"),
     ]
+    monkeypatch.setattr(generator, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(generator, "_supplements", lambda records: {})
+    (tmp_path / "uv.lock").write_text(
+        "\n".join(
+            f'[[package]]\nname="torch"\nversion="{r["version"]}"\nsource={{registry="https://pypi.org/simple"}}'
+            for r in records
+        )
+    )
+    documents = [
+        {"source": "archive", "sha256": "hash", "path": "LICENSE", "text": text}
+        for text in ["License\r\ntext\n", "License\ntext\n"]
+    ]
+    monkeypatch.setattr(generator, "collect", lambda *args: documents)
+    generator._collect_texts(records)
+    for record in records:
+        assert record["source"] == {"registry": "https://pypi.org/simple"}
+        assert record["document_hashes"] == [hashlib.sha256(b"License\ntext").hexdigest()]
 
 
 def wheel(files):

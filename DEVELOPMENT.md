@@ -36,11 +36,9 @@ introducers. Missing metadata or failed analysis leaves the check unresolved.
 For new dependencies or changed license evidence, a maintainer with merge access
 posts the acknowledgment line supplied by the report as a separate PR comment.
 The check records the author and evidence fingerprint; unrelated code edits preserve
-acknowledgment. Unchanged-license version updates and removals do not require it.
-
-Repository setup: require **Dependency licensing** on PRs and require branches to be
-up to date before merging. The workflow and helper must land on the default branch
-before use; the privileged workflow reads PR content as data and never executes it.
+acknowledgment. Changed license/attribution documents also require review when the
+expression is unchanged: the report identifies this reason, rather than assuming
+that unchanged SPDX metadata proves unchanged terms. Unchanged-license version updates and removals do not require it.
 
 Acknowledgment is not legal approval. Maintainers decide whether to escalate to legal
 or OSRB; use a linked ticket/comment recording the owner, affected changes, submission
@@ -109,3 +107,10 @@ verifies the downloaded bytes, and prints
 the direct URL to register with nSpect. Matching existing artifacts are reused; different bytes
 require a version bump. It rejects environment files and non-NVIDIA upload endpoints and disables
 trusted/public publishing.
+
+## Dependency review setup (maintainers)
+
+Require **Dependency licensing** and up-to-date PR branches. Land the generator and
+regenerated inventory on each target branch before enabling the required check;
+missing baseline evidence is unresolved. The workflow/helper must land on the default
+branch before use. The privileged workflow reads PR data and never executes PR code.

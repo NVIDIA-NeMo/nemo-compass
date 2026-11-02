@@ -19,7 +19,7 @@ from pathlib import Path
 
 import tomllib
 import yaml
-from generate_third_party_licenses import scan_licenses
+from generate_third_party_licenses import resolve_license, scan_licenses
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import Version
@@ -47,6 +47,9 @@ def read(ref: str, path: str) -> str:
 def graph(lock: dict) -> dict:
     """Union platform resolutions; retain scopes, immediate introducers and directness."""
     packages = lock["package"]
+    identities = [(p["name"], p["version"]) for p in packages]
+    if len(identities) != len(set(identities)):
+        raise ValueError("Ambiguous locked package sources; license analysis is unresolved")
     (root,) = [p for p in packages if p["name"] == "nemo-compass"]
     groups = {"core": root.get("dependencies", [])}
     groups.update({f"extra:{k}": v for k, v in root.get("optional-dependencies", {}).items()})
@@ -113,13 +116,13 @@ def scan(keys: set[tuple[str, str]]) -> dict:
 def snapshot(ref: str, scopes: dict, scanned: dict) -> dict:
     overrides = yaml.safe_load(read(ref, "third_party/license_overrides.yaml"))["overrides"]
     exceptions = yaml.safe_load(read(ref, "third_party/license_exceptions.yaml")) or {}
-    notices = read(ref, "third_party/NOTICES.txt")
-    # Ignore archive URLs/version headers for license comparisons; retain actual upstream text.
-    blocks = re.split(r"={80}\n([^\n]+)\n={80}\n", notices)
-    documents = {
-        blocks[i]: re.sub(r"^(Source|SHA256|File):.*\n", "", blocks[i + 1], flags=re.M).strip()
-        for i in range(1, len(blocks), 2)
-    }
+    inventory = {}
+    for line in read(ref, "third_party/licenses.jsonl").splitlines():
+        record = json.loads(line)
+        identity = record["name"], record["version"]
+        if identity in inventory:
+            raise ValueError(f"Duplicate inventory evidence: {identity}")
+        inventory[identity] = record
     lock = tomllib.loads(read(ref, "uv.lock"))
     packages = {(p["name"], p["version"]): p for p in lock["package"]}
     project = tomllib.loads(read(ref, "pyproject.toml"))
@@ -128,31 +131,40 @@ def snapshot(ref: str, scopes: dict, scanned: dict) -> dict:
         requirements.extend(entries)
     for entries in project.get("dependency-groups", {}).values():
         requirements.extend(e for e in entries if isinstance(e, str))
+    shared_paths = run(
+        "git", "ls-tree", "-r", "--name-only", ref, "third_party/license_texts"
+    ).splitlines()
+    shared_texts = {path: read(ref, path) for path in shared_paths}
     result = {}
     for key, scope in scopes.items():
         name, version = key
         licenses = scanned[key]
-        expression = overrides.get(name) or " AND ".join(sorted(licenses))
-        if not expression or re.search(r"\b(UNKNOWN|NOASSERTION|NONE|OTHER)\b", expression, re.I):
+        expression = resolve_license(licenses, overrides.get(name))
+        if not expression:
             raise ValueError(f"Unresolved license: {name}=={version}")
-        text = documents.get(f"{name}=={version}", "")
-        if any(not scope_name.startswith("dev:") for scope_name in scope["scopes"]) and not text:
-            raise ValueError(f"Missing collected license documents: {name}=={version}")
+        record = inventory.get(key, {})
+        runtime = any(not scope_name.startswith("dev:") for scope_name in scope["scopes"])
+        if runtime and (
+            not record.get("document_hashes")
+            or record.get("source") != packages[key]["source"]
+            or record.get("license") != expression
+        ):
+            raise ValueError(
+                f"Missing or stale inventory evidence: {name}=={version}; run make update-licenses on both comparison branches"
+            )
         identifiers = set(re.findall(r"[A-Za-z0-9][A-Za-z0-9.-]*", expression)) - {
             "AND",
             "OR",
             "WITH",
         }
         shared = {}
-        for path in run(
-            "git", "ls-tree", "-r", "--name-only", ref, "third_party/license_texts"
-        ).splitlines():
+        for path, text in shared_texts.items():
             if Path(path).stem.upper() in {i.upper() for i in identifiers}:
-                shared[path] = read(ref, path)
+                shared[path] = hashlib.sha256(text.encode()).hexdigest()
         result[key] = {
             **scope,
             "license": expression.upper(),
-            "terms": text,
+            "terms": record.get("document_hashes", []),
             "shared": shared,
             "override": overrides.get(name),
             "exception": exceptions.get(name),
@@ -175,6 +187,7 @@ def compare(before: dict, after: dict) -> tuple[str, str | None]:
         "| --- | --- | --- | --- |",
     ]
     acknowledgment = []
+    reasons = []
     for name, (old, new) in sorted(grouped.items()):
         if old == new:
             continue
@@ -209,6 +222,16 @@ def compare(before: dict, after: dict) -> tuple[str, str | None]:
 
         if new and (not old or terms(old) != terms(new)):
             acknowledgment.append([name, old, new])
+            reason = (
+                "new dependency"
+                if not old
+                else "license expression changed"
+                if expressions(old) != expressions(new)
+                else "license/attribution documents changed (expression unchanged)"
+            )
+            reasons.append(
+                f"- **{name}**: {reason}. See `third_party/licenses.jsonl` and `third_party/NOTICES.txt` in Files changed."
+            )
     if len(lines) == 2:
         return "No dependency or licensing changes.", None
     report = (
@@ -222,7 +245,7 @@ def compare(before: dict, after: dict) -> tuple[str, str | None]:
             None,
         )
     fingerprint = hashlib.sha256(json.dumps(acknowledgment, sort_keys=True).encode()).hexdigest()
-    return report, fingerprint
+    return report + "\n\nAcknowledgment required:\n" + "\n".join(reasons), fingerprint
 
 
 def comments(number: int) -> list:
@@ -291,7 +314,8 @@ def main() -> None:
             conclusion = "success" if author else "failure"
         else:
             conclusion = "success"
-        if api(f"pulls/{number}")["head"]["sha"] != head:
+        latest = api(f"pulls/{number}")
+        if (latest["head"]["sha"], latest["base"]["sha"]) != (head, base):
             raise ValueError("PR changed during analysis; awaiting a fresh check")
     except Exception as error:
         report = f"Unresolved dependency/license analysis: {error}"

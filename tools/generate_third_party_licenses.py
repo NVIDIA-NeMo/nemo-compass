@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import shutil
@@ -36,6 +37,8 @@ class LicenseRecord(TypedDict):
     license: str
     package_url: str
     license_documents: list[str]
+    source: dict[str, str]
+    document_hashes: list[str]
 
 
 def _canonicalize(name: str) -> str:
@@ -101,14 +104,17 @@ def _load_overrides() -> dict[str, str]:
     return {_canonicalize(name): license_name for name, license_name in raw["overrides"].items()}
 
 
-def _resolve_license(licenses: list[str], override: str | None) -> str | None:
+def resolve_license(licenses: list[str], override: str | None) -> str | None:
     if override is not None:
-        return override.upper()
+        licenses = [override]
     if not licenses or any(
         re.search(r"\b(UNKNOWN|NOASSERTION|NONE|OTHER)\b", name, re.I) for name in licenses
     ):
         return None
-    return " AND ".join(sorted(licenses)).upper()
+    expressions = sorted(set(name.upper() for name in licenses))
+    return " AND ".join(
+        f"({name})" if " " in name and len(expressions) > 1 else name for name in expressions
+    )
 
 
 def _license_records(osv_path: Path) -> list[LicenseRecord]:
@@ -125,7 +131,7 @@ def _license_records(osv_path: Path) -> list[LicenseRecord]:
             name = package["name"]
             key = _canonicalize(name)
             override = overrides.get(key)
-            license_name = _resolve_license(package_data.get("licenses", []), override)
+            license_name = resolve_license(package_data.get("licenses", []), override)
             if license_name is None:
                 unresolved.append(f"{name}=={package.get('version', '')}")
                 continue
@@ -140,6 +146,8 @@ def _license_records(osv_path: Path) -> list[LicenseRecord]:
             if missing:
                 raise RuntimeError("Add shared license texts for: " + ", ".join(sorted(missing)))
             records[key, package["version"]] = {
+                "source": {},
+                "document_hashes": [],
                 "name": name,
                 "version": package["version"],
                 "license": license_name,
@@ -181,7 +189,12 @@ def _supplements(records: list[LicenseRecord]) -> dict[str, list[Artifact]]:
 
 def _collect_texts(records: list[LicenseRecord]) -> str:
     lock = tomllib.loads((PROJECT_ROOT / "uv.lock").read_text(encoding="utf-8"))
-    packages = {(_canonicalize(p["name"]), p["version"]): p for p in lock["package"]}
+    packages = {}
+    for package in lock["package"]:
+        key = _canonicalize(package["name"]), package["version"]
+        if key in packages:
+            raise ValueError(f"Ambiguous locked package source: {key}")
+        packages[key] = package
     selected = [packages[(_canonicalize(r["name"]), r["version"])] for r in records]
     supplements = _supplements(records)
     cache = PROJECT_ROOT / "tmp" / "license-archives"
@@ -190,6 +203,14 @@ def _collect_texts(records: list[LicenseRecord]) -> str:
             executor.map(
                 lambda package: collect(package, cache, supplements.get(package["name"])), selected
             )
+        )
+    for record, package, documents in zip(records, selected, results, strict=True):
+        record["source"] = package["source"]
+        record["document_hashes"] = sorted(
+            {
+                hashlib.sha256(document["text"].replace("\r\n", "\n").strip().encode()).hexdigest()
+                for document in documents
+            }
         )
     texts: list[tuple[str, str, list[Document]]] = [
         (record["name"], record["version"], documents)
@@ -255,9 +276,9 @@ def main() -> int:
     _export_requirements(requirements_path)
     scan_licenses(requirements_path, osv_path)
     records = _license_records(osv_path)
+    texts = _collect_texts(records)
     summary = _render_summary(records)
     notices = _render_notices(records)
-    texts = _collect_texts(records)
 
     if args.check:
         summary_valid = _check_file(SUMMARY_PATH, summary)

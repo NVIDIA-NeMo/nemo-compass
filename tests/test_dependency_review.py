@@ -5,6 +5,7 @@
 
 import copy
 import importlib.util
+import json
 import sys
 from pathlib import Path
 from typing import cast
@@ -49,6 +50,12 @@ def test_graph_tracks_extras_dev_cycles_and_platform_versions():
         "via": ["a", "nemo-compass"],
         "direct": True,
     }
+    ambiguous = copy.deepcopy(lock)
+    ambiguous["package"].append(
+        {**ambiguous["package"][1], "source": {"registry": "https://other.example"}}
+    )
+    with pytest.raises(ValueError, match="Ambiguous"):
+        review.graph(ambiguous)
     cast(dict, lock["package"][0])["dependencies"].append({"name": "missing"})
     with pytest.raises(ValueError, match="Unresolved dependency edge"):
         review.graph(lock)
@@ -81,20 +88,10 @@ def test_acknowledgment_covers_only_relevant_license_evidence():
         revised["b", "1"][field] = value
         assert review.compare(base, revised)[1] != fingerprint
     assert review.compare(base, {("a", "1"): {**evidence, "license": "BSD-3-CLAUSE"}})[1]
-
-
-def test_ack_requires_exact_comment_and_current_merge_permission(monkeypatch):
-    comment = {
-        "body": "Licensing acknowledged: abc",
-        "user": {"login": "maintainer", "type": "User"},
-        "html_url": "https://example.com/comment",
-    }
-    monkeypatch.setattr(review, "comments", lambda number: [comment])
-    monkeypatch.setattr(review, "api", lambda path: {"user": {"permissions": {"push": True}}})
-    assert "@maintainer" in review.acknowledged(1, "abc")
-    assert review.acknowledged(1, "abcd") is None
-    monkeypatch.setattr(review, "api", lambda path: {"user": {"permissions": {"push": False}}})
-    assert review.acknowledged(1, "abc") is None
+    report, fingerprint = review.compare(
+        base, {("a", "1"): {**evidence, "terms": "changed notice"}}
+    )
+    assert fingerprint and "documents changed (expression unchanged)" in report
 
 
 def test_incomplete_scanner_output_is_unresolved(monkeypatch):
@@ -109,3 +106,88 @@ def test_incomplete_scanner_output_is_unresolved(monkeypatch):
     monkeypatch.setattr(review.subprocess, "run", scan)
     with pytest.raises(ValueError, match="incomplete"):
         review.scan({("a", "1")})
+
+
+def test_inventory_snapshot_requires_complete_unambiguous_evidence(monkeypatch):
+    expression = review.resolve_license(["MIT OR BSD-3-Clause", "Apache-2.0"], None)
+    assert expression == "APACHE-2.0 AND (MIT OR BSD-3-CLAUSE)"
+    source = {"registry": "https://pypi.org/simple"}
+    record = {
+        "name": "a",
+        "version": "1",
+        "license": expression,
+        "source": source,
+        "document_hashes": ["abc"],
+    }
+    files = {
+        "third_party/license_overrides.yaml": "overrides: {}",
+        "third_party/license_exceptions.yaml": "{}",
+        "uv.lock": "[[package]]"
+        + '\nname="a"\nversion="1"\nsource={registry="https://pypi.org/simple"}',
+        "pyproject.toml": '[project]\ndependencies=["a>=1"]',
+    }
+    monkeypatch.setattr(
+        review,
+        "read",
+        lambda ref, path: json.dumps(record) if path.endswith("licenses.jsonl") else files[path],
+    )
+    monkeypatch.setattr(review, "run", lambda *args: "")
+    scopes = {("a", "1"): {"scopes": ["core"], "via": ["nemo-compass"], "direct": True}}
+    scan = {("a", "1"): ["MIT OR BSD-3-Clause", "Apache-2.0"]}
+    assert review.snapshot("head", scopes, scan)["a", "1"]["terms"] == ["abc"]
+    for key, invalid in [("source", {}), ("document_hashes", []), ("license", "MIT")]:
+        previous = record[key]
+        record[key] = invalid
+        with pytest.raises(ValueError, match="Missing or stale inventory"):
+            review.snapshot("head", scopes, scan)
+        record[key] = previous
+
+
+def test_check_lifecycle_rechecks_acknowledgment_and_pr_identity(tmp_path, monkeypatch):
+    event = tmp_path / "event.json"
+    event.write_text('{"number": 1}')
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+    pr = {"state": "open", "head": {"sha": "head"}, "base": {"sha": "base"}}
+    comment = {
+        "body": "Licensing acknowledged: fingerprint",
+        "user": {"type": "User", "login": "maintainer"},
+        "html_url": "https://example.com/ack",
+    }
+    permission = True
+    stale = False
+    reads = 0
+    writes = []
+
+    def api(path, method="GET", **fields):
+        nonlocal reads
+        if path == "pulls/1":
+            reads += 1
+            return {**pr, "base": {"sha": "new"}} if stale and reads % 2 == 0 else pr
+        if path.startswith("collaborators/"):
+            return {"user": {"permissions": {"push": permission}}}
+        writes.append((path, fields))
+        return {"id": 42}
+
+    monkeypatch.setattr(review, "api", api)
+    monkeypatch.setattr(review, "run", lambda *args: "uv.lock")
+    monkeypatch.setattr(review, "read", lambda *args: "")
+    monkeypatch.setattr(review, "graph", lambda lock: {})
+    monkeypatch.setattr(review, "scan", lambda keys: {})
+    monkeypatch.setattr(review, "snapshot", lambda *args: {})
+    monkeypatch.setattr(review, "compare", lambda *args: ("license changed", "fingerprint"))
+    monkeypatch.setattr(review, "comments", lambda number: [comment] if comment else [])
+    for body, allowed, changed, expected in [
+        ("Licensing acknowledged: fingerprint", True, False, "success"),
+        ("edited away", True, False, "failure"),
+        ("Licensing acknowledged: wrong fingerprint", True, False, "failure"),
+        ("Licensing acknowledged: fingerprint", False, False, "failure"),
+        ("Licensing acknowledged: fingerprint", True, True, "failure"),
+    ]:
+        permission, stale = allowed, changed
+        comment["body"] = body
+        review.main()
+        assert writes[-1][1]["conclusion"] == expected
+    comment = None
+    stale = False
+    review.main()
+    assert writes[-1][1]["conclusion"] == "failure"
