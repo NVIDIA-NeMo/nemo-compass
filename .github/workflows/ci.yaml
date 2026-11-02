@@ -7,11 +7,15 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, "release/**"]
   workflow_call:
     inputs:
       release-ref:
         description: Commit to validate and prepare for release
+        type: string
+        default: ""
+      release-version:
+        description: Package version applied only in the build checkout
         type: string
         default: ""
     outputs:
@@ -56,6 +60,22 @@ jobs:
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
 
+      - name: Set release package version
+        if: inputs.release-version != ''
+        env:
+          PACKAGE_VERSION: ${{ inputs.release-version }}
+        run: |
+          uv version --frozen "$PACKAGE_VERSION"
+          python - <<'PYTHON'
+          import os, re
+          from pathlib import Path
+          lock = Path("uv.lock")
+          updated, count = re.subn(r'(name = "nemo-compass"\nversion = ")[^"]+("\n)',
+                                  lambda m: m[1] + os.environ["PACKAGE_VERSION"] + m[2], lock.read_text())
+          assert count == 1, "Expected exactly one Compass lock entry"
+          lock.write_text(updated)
+          PYTHON
+
       - name: Install dependencies
         run: uv sync --locked
 
@@ -92,6 +112,15 @@ jobs:
 
       - name: Check distributions
         run: uv run --locked python tools/check_distribution_licenses.py
+
+      - name: Smoke test installed wheel
+        if: inputs.release-ref != ''
+        run: |
+          uv venv "$RUNNER_TEMP/smoke"
+          uv pip install --python "$RUNNER_TEMP/smoke/bin/python" dist/*.whl
+          cd "$RUNNER_TEMP"
+          smoke/bin/python -c 'import compass, trace_ingest'
+          smoke/bin/compass --help
 
       - name: Validate release identity and checksum artifacts
         id: release
