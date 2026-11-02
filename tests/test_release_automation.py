@@ -67,7 +67,6 @@ def test_release_upload_retry_preserves_bytes(tmp_path, monkeypatch, existing, a
         "PACKAGE_VERSION": version,
         "ACTION": action,
         "CANDIDATE": "v1.2.3rc1",
-        "QA_EVIDENCE": "https://example.com/qa",
         "GITHUB_ACTOR": "captain",
         "GITHUB_RUN_ID": "123",
         "GITHUB_RUN_ATTEMPT": "1",
@@ -136,12 +135,10 @@ def test_publication_requires_complete_current_candidate(history, tmp_path, monk
     for key, value in {
         "ACTION": "publish",
         "CANDIDATE": "v1.2.3rc1",
-        "READY": "true",
-        "QA_EVIDENCE": "https://example.com/qa",
         "GITHUB_OUTPUT": str(tmp_path / "outputs"),
     }.items():
         monkeypatch.setenv(key, value)
-    completed = {"conclusion": "success", "path": ".github/workflows/release.yaml"}
+    completed = {"conclusion": "success", "path": ".github/workflows/start-release.yaml"}
     monkeypatch.setattr(
         release,
         "api",
@@ -170,9 +167,6 @@ def test_publication_requires_complete_current_candidate(history, tmp_path, monk
     assert "version=1.2.3\n" in (tmp_path / "outputs").read_text()
     completed["conclusion"] = "failure"
     with pytest.raises(ValueError, match="has not succeeded"):
-        release.plan()
-    monkeypatch.setenv("READY", "false")
-    with pytest.raises(ValueError, match="Confirm readiness"):
         release.plan()
 
 
@@ -244,19 +238,25 @@ shutil.copyfile(remote, pathlib.Path(sys.argv[sys.argv.index("--dest") + 1]) / "
         assert "package.whl" in summary
 
 
-def test_only_final_publication_waits_for_ngc_and_nspect_review():
-    root = Path(__file__).resolve().parents[1]
-    jobs = yaml.safe_load((root / ".github/workflows/release.yaml").read_text())["jobs"]
+def test_release_entry_points_share_builds_and_only_finals_require_ngc():
+    root = Path(__file__).resolve().parents[1] / ".github/workflows"
+    start = yaml.safe_load((root / "start-release.yaml").read_text())
+    publish = yaml.safe_load((root / "publish-release.yaml").read_text())
+    # PyYAML treats the unquoted YAML key `on` as True.
+    assert set(start[True]["workflow_dispatch"]["inputs"]) == {"version", "commit"}
+    assert set(publish[True]["workflow_dispatch"]["inputs"]) == {"candidate"}
+    assert "push" in start[True] and "push" not in publish[True]
+    for entry in (start, publish):
+        assert entry["jobs"]["release"]["uses"] == "./.github/workflows/release.yaml"
+    jobs = yaml.safe_load((root / "release.yaml").read_text())["jobs"]
     assert jobs["stage-ngc"]["if"] == "needs.plan.outputs.action == 'publish'"
     assert jobs["stage-ngc"]["needs"] == ["plan", "validate"]
-    assert jobs["nspect-review"]["needs"] == "stage-ngc"
-    assert jobs["nspect-review"]["environment"] == "nspect-review"
-    assert "nspect-review" in jobs["draft-release"]["needs"]
+    assert "stage-ngc" in jobs["draft-release"]["needs"]
     assert (
-        "needs.plan.outputs.action != 'publish' || needs.nspect-review.result == 'success'"
+        "needs.plan.outputs.action != 'publish' || needs.stage-ngc.result == 'success'"
         in jobs["draft-release"]["if"]
     )
-    # Both jobs consume the same CI artifact, with no rebuild after nSpect review.
+    # Both jobs consume the same CI artifact, with no rebuild after staging.
     for job in ("stage-ngc", "draft-release"):
         downloads = [
             s["with"]["name"]

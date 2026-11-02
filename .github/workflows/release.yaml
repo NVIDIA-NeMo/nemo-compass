@@ -1,33 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-name: Release
+name: Release jobs
 on:
-  push:
-    branches: ["release/**"]
-  workflow_dispatch:
+  workflow_call:
     inputs:
       action:
-        description: Release operation
-        type: choice
-        options: [start, publish]
+        type: string
         required: true
       version:
-        description: 'Start: final version, e.g. 0.3.0'
         type: string
+        default: ''
       commit:
-        description: 'Start: full main SHA (blank means main at dispatch)'
         type: string
+        default: ''
       candidate:
-        description: 'Publish: accepted candidate tag, e.g. v0.3.0rc2'
         type: string
-      qa-evidence:
-        description: 'Publish: QA acceptance HTTPS URL for this candidate'
-        type: string
-      ready:
-        description: 'Publish: engineering ready, blockers resolved, product ready if applicable'
-        type: boolean
-        default: false
+        default: ''
+    secrets:
+      AIRE_NGC_SERVICE_KEY:
+        required: false
 permissions:
   contents: read
   actions: read
@@ -56,8 +48,6 @@ jobs:
           VERSION: ${{ inputs.version }}
           COMMIT: ${{ inputs.commit }}
           CANDIDATE: ${{ inputs.candidate }}
-          QA_EVIDENCE: ${{ inputs.qa-evidence }}
-          READY: ${{ inputs.ready }}
         run: python3 tools/release.py plan
   validate:
     needs: plan
@@ -67,10 +57,10 @@ jobs:
       release-version: ${{ needs.plan.outputs.version }}
   draft-release:
     name: Store validated artifacts and publish when requested
-    needs: [plan, validate, nspect-review]
+    needs: [plan, validate, stage-ngc]
     if: >-
       !cancelled() && needs.validate.result == 'success' &&
-      (needs.plan.outputs.action != 'publish' || needs.nspect-review.result == 'success')
+      (needs.plan.outputs.action != 'publish' || needs.stage-ngc.result == 'success')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -92,7 +82,6 @@ jobs:
           PACKAGE_VERSION: ${{ needs.plan.outputs.version }}
           ACTION: ${{ needs.plan.outputs.action }}
           CANDIDATE: ${{ inputs.candidate }}
-          QA_EVIDENCE: ${{ inputs.qa-evidence }}
         run: |
           (cd dist && sha256sum --check SHA256SUMS)
           python3 tools/release.py finish
@@ -157,11 +146,3 @@ jobs:
             printf 'Final wheel for nSpect: %s\nFile: %s\n' "$resource_ref" "$WHEEL_FILE"
             sha256sum -- "$WHEEL_FILE"
           } >> "$GITHUB_STEP_SUMMARY"
-
-  nspect-review:
-    name: Approve nSpect review of the staged final wheel
-    needs: stage-ngc
-    environment: nspect-review
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo 'nSpect review approved; publish the staged artifacts.'

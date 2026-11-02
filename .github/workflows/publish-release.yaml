@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Publish release
+on:
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: QA-accepted candidate tag, e.g. v0.3.0rc2
+        type: string
+        required: true
+permissions:
+  contents: write
+  actions: read
+jobs:
+  release:
+    uses: ./.github/workflows/release.yaml
+    with:
+      action: publish
+      candidate: ${{ inputs.candidate }}
+    secrets:
+      AIRE_NGC_SERVICE_KEY: ${{ secrets.AIRE_NGC_SERVICE_KEY }}

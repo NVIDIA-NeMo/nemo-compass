@@ -1,0 +1,26 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Start release
+on:
+  push:
+    branches: ['release/**']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Final version, e.g. 0.3.0
+        type: string
+        required: true
+      commit:
+        description: Full main SHA (blank means main at dispatch)
+        type: string
+permissions:
+  contents: write
+  actions: read
+jobs:
+  release:
+    uses: ./.github/workflows/release.yaml
+    with:
+      action: ${{ github.event_name == 'push' && 'candidate' || 'start' }}
+      version: ${{ inputs.version }}
+      commit: ${{ inputs.commit }}

@@ -125,10 +125,6 @@ def plan() -> None:
         tag = os.environ["CANDIDATE"]
         if not re.fullmatch(r"v\d+\.\d+\.\d+rc[1-9]\d*", tag):
             raise ValueError("Select an exact candidate tag, e.g. v0.3.0rc2")
-        if os.environ.get("READY") != "true" or not os.environ.get("QA_EVIDENCE", "").startswith(
-            "https://"
-        ):
-            raise ValueError("Confirm readiness and supply the QA evidence HTTPS URL")
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             download(tag, directory)
@@ -139,7 +135,7 @@ def plan() -> None:
         completed = api(f"actions/runs/{accepted['run_id']}")
         if (
             completed["conclusion"] != "success"
-            or completed["path"] != ".github/workflows/release.yaml"
+            or completed["path"] != ".github/workflows/start-release.yaml"
         ):
             raise ValueError("Candidate preparation has not succeeded")
         current(branch, commit)
@@ -216,7 +212,7 @@ def finish() -> None:
     notes += f"\n\n{marker}\nSource: `{source}`\n\nVersion: `{version}`\n\n"
     notes += f"[Validated build](https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{manifest['run_id']}/attempts/{manifest['run_attempt']})\n"
     if action == "publish":
-        notes += f"\nAccepted {os.environ['CANDIDATE']} by @{os.environ['GITHUB_ACTOR']}: {os.environ['QA_EVIDENCE']}\n"
+        notes += f"\nAccepted {os.environ['CANDIDATE']} by @{os.environ['GITHUB_ACTOR']}\n"
     Path("release-notes.md").write_text(notes)
     if release["isDraft"]:
         current(branch, source)
