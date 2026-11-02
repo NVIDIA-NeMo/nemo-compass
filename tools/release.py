@@ -106,15 +106,10 @@ def plan() -> None:
         commit, branch = accepted["source"], accepted["branch"]
         if accepted["version"] != tag[1:] or tag_source(tag) != commit:
             raise ValueError("Candidate identity differs from its tag")
-        # A failed rerun cannot revoke an earlier successful preparation. Failed-job
-        # retries reuse the build artifact, so staging may succeed in a later attempt.
-        run_path = f"actions/runs/{accepted['run_id']}"
-        latest = api(run_path)
-        attempts = range(int(latest["run_attempt"]), int(accepted["run_attempt"]) - 1, -1)
-        if not any(
-            (completed := api(f"{run_path}/attempts/{attempt}"))["conclusion"] == "success"
-            and completed["path"] == ".github/workflows/release.yaml"
-            for attempt in attempts
+        completed = api(f"actions/runs/{accepted['run_id']}")
+        if (
+            completed["conclusion"] != "success"
+            or completed["path"] != ".github/workflows/release.yaml"
         ):
             raise ValueError("Candidate preparation/staging has not succeeded")
         current(branch, commit)

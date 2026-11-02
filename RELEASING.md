@@ -29,8 +29,10 @@ accepted SHA's artifacts and needs a subsequent release.
 ## If a run fails
 
 Choose **Re-run failed jobs** on the original run to reuse validated artifacts.
-Matching uploads are reused; different bytes stop the release. Keep existing tags
-and assets. If the source changed, validate its new RC instead.
+Matching GitHub uploads are reused; different bytes stop the release. An ambiguous
+NGC upload failure needs maintainer investigation. Keep existing tags and assets.
+Do not rerun successful workflows: publication requires the candidate run's latest
+attempt to succeed. If the source changed, validate its new RC instead.
 The draft release links the source and checks; `candidate.json` records build identity
 and checksums. PyPI retries belong to the Slack publisher.
 

@@ -147,20 +147,10 @@ def test_publication_requires_complete_current_candidate(history, tmp_path, monk
     }.items():
         monkeypatch.setenv(key, value)
     completed = {"conclusion": "success", "path": ".github/workflows/release.yaml"}
-    attempts = []
-
-    def api(path):
-        if "/attempts/" in path:
-            attempts.append(path)
-            return completed if path.endswith("/1") else {"conclusion": "failure"}
-        if path.startswith("actions/"):
-            return {"run_attempt": 2, "conclusion": "failure"}
-        return {"object": {"sha": source}}
-
     monkeypatch.setattr(
         release,
         "api",
-        api,
+        lambda path: completed if path.startswith("actions/") else {"object": {"sha": source}},
     )
     monkeypatch.setattr(release, "tag_source", lambda tag: source)
     import hashlib
@@ -183,7 +173,6 @@ def test_publication_requires_complete_current_candidate(history, tmp_path, monk
     monkeypatch.setattr(release, "download", download)
     release.plan()
     assert "version=1.2.3\n" in (tmp_path / "outputs").read_text()
-    assert attempts == ["actions/runs/123/attempts/2", "actions/runs/123/attempts/1"]
     completed["conclusion"] = "failure"
     with pytest.raises(ValueError, match="has not succeeded"):
         release.plan()
@@ -222,8 +211,8 @@ def test_workflow_version_step_preserves_dependency_lock(tmp_path, monkeypatch):
         assert updated == original
 
 
-@pytest.mark.parametrize("remote", ["missing", "matching", "different"])
-def test_ngc_staging_downloads_and_compares_before_reusing(tmp_path, monkeypatch, remote):
+@pytest.mark.parametrize("outcome", ["success", "upload-error", "different-bytes"])
+def test_ngc_staging_requires_successful_upload_and_matching_bytes(tmp_path, monkeypatch, outcome):
     root = Path(__file__).resolve().parents[1]
     workflow = yaml.safe_load((root / ".github/workflows/release.yaml").read_text())
     step = next(
@@ -234,15 +223,13 @@ def test_ngc_staging_downloads_and_compares_before_reusing(tmp_path, monkeypatch
     wheel = tmp_path / "package.whl"
     wheel.write_text("validated")
     registry = tmp_path / "remote"
-    if remote != "missing":
-        registry.write_text("validated" if remote == "matching" else "different")
     cli = tmp_path / "ngc"
     cli.write_text("""#!/usr/bin/env python3
 import os, pathlib, shutil, sys
 remote = pathlib.Path(os.environ["REGISTRY"])
 if sys.argv[3] == "upload-version":
-    shutil.copyfile("package.whl", remote)
-    sys.exit(1)  # Simulate upload complete, response lost.
+    remote.write_text("different" if os.environ["OUTCOME"] == "different-bytes" else "validated")
+    sys.exit(1 if os.environ["OUTCOME"] == "upload-error" else 0)
 if not remote.exists():
     sys.exit(1)
 shutil.copyfile(remote, pathlib.Path(sys.argv[sys.argv.index("--dest") + 1]) / "package.whl")
@@ -251,6 +238,7 @@ shutil.copyfile(remote, pathlib.Path(sys.argv[sys.argv.index("--dest") + 1]) / "
     for key, value in {
         "PATH": str(tmp_path) + os.pathsep + os.environ["PATH"],
         "REGISTRY": str(registry),
+        "OUTCOME": outcome,
         "NGC_CLI_API_KEY": "test",
         "NGC_CLI_ORG": "org",
         "NGC_CLI_TEAM": "team",
@@ -260,5 +248,5 @@ shutil.copyfile(remote, pathlib.Path(sys.argv[sys.argv.index("--dest") + 1]) / "
     }.items():
         monkeypatch.setenv(key, value)
     result = subprocess.run(["bash", "-e", "-c", step["run"]], cwd=tmp_path, env=os.environ)
-    assert (result.returncode == 0) == (remote != "different")
-    assert registry.read_text() == ("different" if remote == "different" else "validated")
+    assert (result.returncode == 0) == (outcome == "success")
+    assert (tmp_path / "summary").exists() == (outcome == "success")

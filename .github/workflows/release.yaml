@@ -145,13 +145,9 @@ jobs:
         run: |
           : "${NGC_CLI_API_KEY:?AIRE_NGC_SERVICE_KEY repository secret is required}"
           resource_ref="${NGC_CLI_ORG}/${NGC_CLI_TEAM}/nemo-compass:${RELEASE_TAG#v}"
+          ngc registry resource upload-version "$resource_ref" --source "$WHEEL_FILE"
           destination=$(mktemp -d)
-          if ! ngc registry resource download-version "$resource_ref" --file "$WHEEL_FILE" --dest "$destination"; then
-            # A retry may find that a previous upload finished despite a client error.
-            ngc registry resource upload-version "$resource_ref" --source "$WHEEL_FILE" || true
-            destination=$(mktemp -d)
-            ngc registry resource download-version "$resource_ref" --file "$WHEEL_FILE" --dest "$destination"
-          fi
+          ngc registry resource download-version "$resource_ref" --file "$WHEEL_FILE" --dest "$destination"
           python3 - "$destination" "$WHEEL_FILE" <<'PYTHON'
           import sys
           from pathlib import Path
