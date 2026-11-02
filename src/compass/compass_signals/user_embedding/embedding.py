@@ -8,12 +8,13 @@ import json
 import os
 from collections.abc import Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextvars import copy_context
 from dataclasses import dataclass
 from functools import cached_property
 from importlib.resources import files
 from importlib.util import find_spec
 from itertools import islice
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 from litellm import EmbeddingResponse
@@ -265,7 +266,13 @@ class UserEmbeddingGenerator:
             while True:
                 # Keep only one batch per worker in flight; refill as each finishes.
                 for batch in islice(batches, config.max_concurrency - len(active)):
-                    future = executor.submit(self._remote_batch, batch, config, api_key)
+                    # Each worker needs its own copy of the calling trace context.
+                    future = cast(
+                        Future[list[UserEmbedding]],
+                        executor.submit(
+                            copy_context().run, self._remote_batch, batch, config, api_key
+                        ),
+                    )
                     active[future] = batch.index
                 if not active:
                     break
