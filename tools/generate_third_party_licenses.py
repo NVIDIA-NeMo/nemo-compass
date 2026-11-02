@@ -19,6 +19,7 @@ from typing import TypedDict
 import tomllib
 import yaml
 from collect_license_texts import Artifact, Document, collect, render_texts
+from packaging.licenses import InvalidLicenseExpression, canonicalize_license_expression
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SUMMARY_PATH = PROJECT_ROOT / "third_party" / "licenses.jsonl"
@@ -107,11 +108,12 @@ def _load_overrides() -> dict[str, str]:
 def resolve_license(licenses: list[str], override: str | None) -> str | None:
     if override is not None:
         licenses = [override]
-    if not licenses or any(
-        re.search(r"\b(UNKNOWN|NOASSERTION|NONE|OTHER)\b", name, re.I) for name in licenses
-    ):
+    if not licenses:
         return None
-    expressions = sorted(set(name.upper() for name in licenses))
+    try:
+        expressions = sorted({canonicalize_license_expression(name).upper() for name in licenses})
+    except InvalidLicenseExpression:
+        return None
     return " AND ".join(
         f"({name})" if " " in name and len(expressions) > 1 else name for name in expressions
     )

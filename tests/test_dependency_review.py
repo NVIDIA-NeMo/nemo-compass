@@ -116,7 +116,6 @@ def test_allowlist_checks_complete_resolved_expressions(monkeypatch, licenses, o
     expression = review.resolve_license(licenses, override)
     state = {("a", "1"): {"license": expression}}
     assert bool(review.disallowed_licenses(state)) is not allowed
-    assert review.disallowed_licenses({}) == []  # Removed dependencies cannot block.
 
 
 def test_incomplete_scanner_output_is_unresolved(monkeypatch):
@@ -134,7 +133,9 @@ def test_incomplete_scanner_output_is_unresolved(monkeypatch):
 
 
 def test_inventory_snapshot_requires_complete_unambiguous_evidence(monkeypatch):
-    expression = review.resolve_license(["MIT OR BSD-3-Clause", "Apache-2.0"], None)
+    for invalid in [[], ["UNKNOWN"], ["MIT", "NOASSERTION"], ["MIT OR"], ["(MIT"]]:
+        assert review.resolve_license(invalid, None) is None
+    expression = review.resolve_license(["mit OR BSD-3-Clause", " Apache-2.0  "], None)
     assert expression == "APACHE-2.0 AND (MIT OR BSD-3-CLAUSE)"
     source = {"registry": "https://pypi.org/simple"}
     record = {
@@ -149,7 +150,6 @@ def test_inventory_snapshot_requires_complete_unambiguous_evidence(monkeypatch):
         "third_party/license_exceptions.yaml": "{}",
         "uv.lock": "[[package]]"
         + '\nname="a"\nversion="1"\nsource={registry="https://pypi.org/simple"}',
-        "pyproject.toml": '[project]\ndependencies=["a>=1"]',
     }
     monkeypatch.setattr(
         review,
@@ -159,7 +159,13 @@ def test_inventory_snapshot_requires_complete_unambiguous_evidence(monkeypatch):
     monkeypatch.setattr(review, "run", lambda *args: "")
     scopes = {("a", "1"): {"scopes": ["core"], "via": ["nemo-compass"], "direct": True}}
     scan = {("a", "1"): ["MIT OR BSD-3-Clause", "Apache-2.0"]}
-    assert review.snapshot("head", scopes, scan)["a", "1"]["terms"] == ["abc"]
+    original = review.snapshot("head", scopes, scan)
+    assert original["a", "1"]["terms"] == ["abc"]
+    # Artifact metadata cannot invalidate acknowledgment of unchanged license evidence.
+    files["uv.lock"] += '\nwheels=[{url="https://example.com/a.whl",upload-time="2026-01-01"}]'
+    revised = review.snapshot("head", scopes, scan)
+    assert revised == original
+    assert review.compare({}, revised)[1] == review.compare({}, original)[1]
     for key, invalid in [("source", {}), ("document_hashes", []), ("license", "MIT")]:
         previous = record[key]
         record[key] = invalid

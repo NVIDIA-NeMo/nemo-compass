@@ -20,8 +20,6 @@ from pathlib import Path
 import tomllib
 import yaml
 from generate_third_party_licenses import resolve_license, scan_licenses
-from packaging.requirements import Requirement
-from packaging.utils import canonicalize_name
 from packaging.version import Version
 
 MARKER = "<!-- compass-dependency-review -->"
@@ -143,12 +141,6 @@ def snapshot(ref: str, scopes: dict, scanned: dict) -> dict:
         inventory[identity] = record
     lock = tomllib.loads(read(ref, "uv.lock"))
     packages = {(p["name"], p["version"]): p for p in lock["package"]}
-    project = tomllib.loads(read(ref, "pyproject.toml"))
-    requirements = list(project["project"].get("dependencies", []))
-    for entries in project["project"].get("optional-dependencies", {}).values():
-        requirements.extend(entries)
-    for entries in project.get("dependency-groups", {}).values():
-        requirements.extend(e for e in entries if isinstance(e, str))
     shared_paths = run(
         "git", "ls-tree", "-r", "--name-only", ref, "third_party/license_texts"
     ).splitlines()
@@ -187,10 +179,7 @@ def snapshot(ref: str, scopes: dict, scanned: dict) -> dict:
             "override": overrides.get(name),
             "exception": exceptions.get(name),
             "reported": sorted(licenses),
-            "locked": packages[key],
-            "requirements": sorted(
-                r for r in requirements if canonicalize_name(Requirement(r).name) == name
-            ),
+            "source": packages[key]["source"],
         }
     return result
 
@@ -330,7 +319,6 @@ def main() -> None:
                     f"```text\nLicensing acknowledged: {fingerprint}\n```"
                 )
             )
-            report += "\n\nThis is maintainer acknowledgment, not legal approval. Escalation is a maintainer decision."
             conclusion = "success" if author else "failure"
         else:
             conclusion = "success"
