@@ -146,7 +146,7 @@ def test_publication_requires_complete_current_candidate(history, tmp_path, monk
         "GITHUB_OUTPUT": str(tmp_path / "outputs"),
     }.items():
         monkeypatch.setenv(key, value)
-    completed = {"conclusion": "success", "path": ".github/workflows/prepare-release.yaml"}
+    completed = {"conclusion": "success", "path": ".github/workflows/release.yaml"}
     attempts = []
 
     def api(path):
@@ -225,11 +225,11 @@ def test_workflow_version_step_preserves_dependency_lock(tmp_path, monkeypatch):
 @pytest.mark.parametrize("remote", ["missing", "matching", "different"])
 def test_ngc_staging_downloads_and_compares_before_reusing(tmp_path, monkeypatch, remote):
     root = Path(__file__).resolve().parents[1]
-    workflow = yaml.safe_load((root / ".github/workflows/prepare-release.yaml").read_text())
+    workflow = yaml.safe_load((root / ".github/workflows/release.yaml").read_text())
     step = next(
         s
         for s in workflow["jobs"]["stage-ngc"]["steps"]
-        if s.get("name") == "Upload SDK wheel to NGC"
+        if s.get("name") == "Stage and verify SDK wheel in NGC"
     )
     wheel = tmp_path / "package.whl"
     wheel.write_text("validated")

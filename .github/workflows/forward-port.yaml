@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 name: Forward-port release fixes
+# Every merged release-branch PR is propagated; no label or manual dispatch needed.
 on:
   pull_request_target:
     branches: ['release/**']

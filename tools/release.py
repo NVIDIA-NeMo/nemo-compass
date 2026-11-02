@@ -113,7 +113,7 @@ def plan() -> None:
         attempts = range(int(latest["run_attempt"]), int(accepted["run_attempt"]) - 1, -1)
         if not any(
             (completed := api(f"{run_path}/attempts/{attempt}"))["conclusion"] == "success"
-            and completed["path"] == ".github/workflows/prepare-release.yaml"
+            and completed["path"] == ".github/workflows/release.yaml"
             for attempt in attempts
         ):
             raise ValueError("Candidate preparation/staging has not succeeded")

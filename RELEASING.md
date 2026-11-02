@@ -3,64 +3,52 @@
 
 # Release Compass
 
-1. In **Actions → Release**, select `main`, choose **start**, and enter the final
-   version (for example `0.3.0`). Optionally select a full commit SHA from main.
-   Select a commit containing these release workflows. CI validates the source before creating `release/0.3.0` and its first RC.
-2. QA downloads the candidate from its **draft GitHub release** or NGC. The release
-   links the checks and source SHA; `candidate.json` records the version, source,
-   build run/attempt, and artifact checksums. Wait for the complete workflow, including staging.
-   Record smoke/regression results and blockers in your existing QA tracker.
-3. Submit ordinary fix PRs against the release branch. Merging prepares another RC
-   and opens an author-assigned forward-port PR to main. Clean PRs auto-merge when
-   repository rules permit; the author resolves conflicts/check failures/approval needs.
-   Do not routinely merge main into the release branch or edit release versions.
-4. In **Actions → Release** on `main`, choose **publish**, enter the accepted RC tag
-   and its QA evidence URL, and confirm readiness. This records your attestation that
-   engineering is ready, blockers are resolved, and product has approved major
-   customer-facing changes. A changed branch requires QA to accept its newer candidate.
-5. Use the final wheel URL in the workflow summary with the existing Slack publisher
-   to publish to PyPI. Candidate preparation never invokes that publisher.
+Normal development continues on `main` while QA tests a release branch.
+Compass and Eval Author release independently.
 
-RC numbers derive from first-parent commits since the release cut; retries keep the
-same number; busy merges may coalesce into the newest candidate. Versions are applied only in the build checkout (including `uv.lock`),
-so the tag identifies source and the manifest identifies the package version.
-Final artifacts are rebuilt, run through CI/distribution checks and an isolated
-wheel installation smoke test, then uploaded. An RC wheel is never renamed.
+1. **Start:** Open [Actions → Release](https://github.com/NVIDIA-NeMo/labs-trace-intel/actions/workflows/release.yaml), select
+   `main`, choose **start**, and enter a final version such as `0.3.0`.
+   Optionally supply a main commit SHA. Automation validates it, creates
+   `release/0.3.0`, and stages the first RC in a draft GitHub release and NGC.
+2. **Validate:** Wait for the workflow, including NGC staging, to succeed. QA records
+   acceptance of the exact RC tag and source SHA in the existing QA tracker.
+   Fixes go through ordinary PRs to the release branch. Each merge prepares a new
+   RC and automatically opens a forward-port PR to main; it auto-merges when checks
+   and approvals permit. The fix author handles blocked forward-ports.
+   Do not manually bump RC versions or merge main into the release branch.
+3. **Publish:** Run **publish** on `main` with the accepted RC tag and QA evidence URL.
+   Confirm engineering readiness, resolved blockers, and product readiness for major
+   customer-facing changes. Automation rebuilds and validates the final version,
+   then publishes the GitHub release and notes. Give the final wheel URL from the
+   summary to the independent Slack publisher for PyPI. RC preparation never invokes it.
 
-Retry with **Re-run failed jobs** on the original run: validated artifacts are reused,
-matching uploads are skipped, and differing bytes stop the release. NGC staging
-downloads the wheel to verify its bytes, including after an interrupted upload. Never delete or
-move release tags or overwrite assets to repair a retry. If source changes, use its
-new RC. Use failed-job retries, not **Re-run all jobs**: a rebuilt package may differ
-and cannot replace existing artifacts. A later failed run attempt does not invalidate
-an earlier successful candidate preparation and NGC staging.
+A newer candidate needs new QA acceptance. Publication stops if a branch change is
+detected before publishing; a merge after the final check is excluded from the
+accepted SHA's artifacts and needs a subsequent release.
 
-Publication uses the accepted candidate's exact SHA, never a moving branch checkout.
-The branch is checked when publication starts and again immediately before publishing.
-A detected change stops publication and identifies the newer candidate. A merge after
-the last check cannot change the artifacts; that fix is excluded and needs a subsequent
-release. This is snapshot publication, not an atomic lock on branch changes.
-Already-published PyPI retry behavior belongs to the independent Slack publisher.
+## If a run fails
 
-Aim to cut Friday and publish the following Wednesday every two weeks. The rotating
-captain confirms holidays and QA availability, and defers features or skips a release
-when needed. Initially QA should exercise CLI startup, one representative trace from
-supported sources, and analysis/export against a fixed regression corpus; QA and
-engineering agree on the corpus before the first release. Daily main regression is
-follow-up work. Compass releases are independent of Eval Author.
+Choose **Re-run failed jobs** on the original run to reuse validated artifacts.
+Matching uploads are reused; different bytes stop the release. Keep existing tags
+and assets. If the source changed, validate its new RC instead.
+The draft release links the source and checks; `candidate.json` records build identity
+and checksums. PyPI retries belong to the Slack publisher.
 
-For critical fixes, the captain and engineering owner agree on reduced validation;
-product joins for customer-facing risk. Record the decision, exact candidate, smoke
-results, and follow-up regression owner in the QA evidence. Use the same workflow:
-exceptions do not bypass CI, identity checks, or existing licensing checks.
+## Release planning
+
+The rotating captain aims to cut Friday and publish Wednesday every two weeks,
+confirming holidays and QA availability. Defer incomplete features or skip a release.
+QA and engineering agree on CLI startup, representative trace ingestion, and
+analysis/export regression coverage; daily regression against main is follow-up work.
+For urgent fixes, the captain and engineering owner record reduced QA coverage and
+follow-up ownership in the QA evidence, involving product for customer-facing risk.
+CI and artifact validation still apply.
 
 ## Repository setup (once)
 
-Require **Quality** on main and release-branch PRs;
-require PR branches to be up to date, restrict direct/force pushes, and protect release
-tags. Enable auto-merge.
-Install a repository-scoped GitHub App with contents and pull-request write access;
-set `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY` for forward-port PRs to trigger
-normal CI. No branch-protection bypass is needed. Keep `AIRE_NGC_SERVICE_KEY` for
-staging. The new trusted workflows/helpers must land on main before use. Review
+Require **Quality** and up-to-date PRs on main and release branches; restrict direct
+and force pushes, protect release tags, and enable auto-merge. Configure a GitHub App
+with contents and pull-request write access using `RELEASE_APP_ID` and
+`RELEASE_APP_PRIVATE_KEY`, so forward-port PRs receive normal CI. Keep
+`AIRE_NGC_SERVICE_KEY` for staging. Land the workflows on main before use and review
 workflow changes as privileged code.

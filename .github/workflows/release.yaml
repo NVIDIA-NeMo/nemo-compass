@@ -134,7 +134,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/ngc/ngc-cli/ngc"
           echo "$RUNNER_TEMP/ngc/ngc-cli" >> "$GITHUB_PATH"
 
-      - name: Upload SDK wheel to NGC
+      - name: Stage and verify SDK wheel in NGC
         env:
           NGC_CLI_API_KEY: ${{ secrets.AIRE_NGC_SERVICE_KEY }}
           NGC_CLI_ORG: "0921617854601259"

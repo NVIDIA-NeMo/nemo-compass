@@ -60,6 +60,7 @@ jobs:
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
 
+      # Build RC/final metadata without version commits or dependency re-resolution.
       - name: Set release package version
         if: inputs.release-version != ''
         env:
@@ -113,7 +114,8 @@ jobs:
       - name: Check distributions
         run: uv run --locked python tools/check_distribution_licenses.py
 
-      - name: Smoke test installed wheel
+      # Source tests and archive checks do not exercise an installed wheel.
+      - name: Check wheel installation and CLI
         if: inputs.release-ref != ''
         run: |
           uv venv "$RUNNER_TEMP/smoke"
@@ -131,6 +133,7 @@ jobs:
           cd dist
           sha256sum -- *.whl *.tar.gz > SHA256SUMS
 
+      # Keep source, checksums and the original CI attempt together across retries.
       - name: Record validated build
         if: inputs.release-ref != ''
         env:
