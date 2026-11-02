@@ -38,3 +38,24 @@ Each fixture directory's README.md records the exact source revision and files.
           (529d160b243aee561329e0d40754fdc10905c57a, src/code-samples/trace-links.json;
           runs from the public LangSmith project docs-code-samples)
   License text: tests/fixtures/real/langsmith/LICENSE-langchain-docs.txt
+
+  Braintrust Java SDK (tests/fixtures/real/braintrust/btql-*.json)
+  Copyright (c) 2025 Braintrust Data, Inc.
+  License: MIT
+  Source: https://github.com/braintrustdata/braintrust-sdk-java
+          (ae1e2c6142592d6888b28a2e0f7162d16b893203)
+  License text: tests/fixtures/real/braintrust/LICENSE-braintrust-sdk-java.txt
+
+  Braintrust Ruby SDK (tests/fixtures/real/braintrust/trace_spans.btql-response.jsonl)
+  Copyright 2025 Braintrust
+  License: Apache-2.0
+  Source: https://github.com/braintrustdata/braintrust-sdk-ruby
+          (42c2e9db2b5ee0e6476c55842f27ac98ef973fa0)
+  License text: tests/fixtures/real/braintrust/LICENSE-braintrust-sdk-ruby.txt
+
+  Braintrust Python SDK (tests/fixtures/real/braintrust/*.fetch-response.json)
+  Copyright 2023 Braintrust Data LLC
+  License: Apache-2.0
+  Source: https://github.com/braintrustdata/braintrust-sdk-python
+          (7a3a6c4f2d9b51c34119b2c7e8468153d621fb25)
+  License text: tests/fixtures/real/braintrust/LICENSE-braintrust-sdk-python.txt
