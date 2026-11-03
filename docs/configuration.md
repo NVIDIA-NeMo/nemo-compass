@@ -20,6 +20,7 @@ in the environment or `.env`.
 | `model`, `api_base`, `max_tokens` | [Inference settings](model-access.md#choose-a-model). |
 | `compass_signals` | [Compass Signals and their prerequisites](compass-signals.md). All five are enabled by default. |
 | `code_base` | [Local agent source](#candidate-problem-validation) to consult during candidate problem validation and confidence review. |
+| `repository_history` | Optional [Git commit evidence](#repository-history); requires `code_base`. |
 | `existing_insights` | Previous JSON or YAML insight collection to reconcile with this run. |
 
 Relative paths resolve from the directory where you run the command.
@@ -88,6 +89,18 @@ compass --config config.yaml --code-base ../my-agent
 Validation and confidence both add source investigation calls and run by default whenever
 `code_base` is set; there is no separate flag. Severity is assigned during final compilation
 with or without `code_base`.
+
+## Repository history
+
+Set `repository_history: true` with `code_base` to add related commits to each insight.
+
+```yaml
+code_base: ../my-agent
+repository_history: true
+```
+
+Compass uses existing Git credentials, falls back to local history when fetch fails, and never
+changes checked-out files.
 
 Use `compass --help-all` for every option and its default.
 Explicit CLI and YAML model settings take priority over [environment defaults](model-access.md#credentials).

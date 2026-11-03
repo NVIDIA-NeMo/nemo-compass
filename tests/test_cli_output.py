@@ -9,7 +9,7 @@ from rich.console import Console
 
 from compass.cli.output import RunOutput, RunResult
 from compass.compass_signals.compass_signals import CompassSignalResult, Problem
-from compass.insight import Insight
+from compass.insight import CommitEvidence, Insight
 
 
 def make_insight(name="Agent calls tools absent from the active catalog"):
@@ -116,3 +116,30 @@ def test_report_shows_optional_severity_and_reason():
     RunOutput(Console(file=stream, width=120)).report(RunResult(3, [], [insight]), Path("-"))
 
     assert "Severity: HIGH — The agent is blocked from completing the task." in stream.getvalue()
+
+
+def test_report_summarizes_repository_evidence():
+    sha = "a" * 40
+    insight = make_insight().model_copy(
+        update={
+            "repository_evidence": [
+                CommitEvidence(
+                    commit=sha,
+                    evidence_reason="This commit introduces the short timeout.",
+                    resolution="unresolved",
+                ),
+                CommitEvidence(
+                    commit="b" * 40,
+                    evidence_reason="This commit increases the timeout.",
+                    resolution="resolved",
+                ),
+            ]
+        }
+    )
+    stream = StringIO()
+
+    RunOutput(Console(file=stream, width=120)).report(RunResult(3, [], [insight]), Path("-"))
+
+    rendered = " ".join(stream.getvalue().split())
+    assert "Commit aaaaaaaaaaaa (unresolved): This commit introduces the short timeout." in rendered
+    assert "Commit bbbbbbbbbbbb (resolved): This commit increases the timeout." in rendered

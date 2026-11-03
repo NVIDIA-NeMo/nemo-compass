@@ -149,6 +149,13 @@ class RunOutput:
             self.console.print(
                 Text(f"   Evidence: {count(trace_count, 'supporting trace')}", style="dim")
             )
+            for item in insight.repository_evidence:
+                self.console.print(
+                    Text(
+                        f"   Commit {item.commit[:12]} ({item.resolution}): {item.evidence_reason}",
+                        style="dim",
+                    )
+                )
         self._report_checks(result.evidence)
 
         if result.insights and output_path != Path("-"):

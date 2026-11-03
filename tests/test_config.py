@@ -85,6 +85,36 @@ def test_yaml_accepts_code_base(tmp_path: Path) -> None:
     assert config.code_base == Path("../my-agent")
 
 
+def test_repository_history_defaults_off_and_requires_code_base() -> None:
+    config = RunConfig(_cli_parse_args=["--trace.filesystem.path", "traces.jsonl"])
+    assert config.repository_history is False
+
+    with pytest.raises(ValueError, match="repository_history requires code_base"):
+        RunConfig(
+            _cli_parse_args=[
+                "--trace.filesystem.path",
+                "traces.jsonl",
+                "--repository-history",
+            ]
+        )
+
+
+def test_repository_history_accepts_yaml(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "trace:\n"
+        "  filesystem:\n"
+        "    path: traces.jsonl\n"
+        "code_base: ../agent\n"
+        "repository_history: true\n",
+        encoding="utf-8",
+    )
+
+    config = RunConfig(_cli_parse_args=["--config", str(config_path)])
+
+    assert config.repository_history is True
+
+
 def test_langfuse_trace_export_file_yaml_with_cli_limit(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(

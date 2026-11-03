@@ -334,6 +334,10 @@ class RunConfig(BaseSettings):
         default=None,
         description="Optional local codebase used to validate trace-derived problems",
     )
+    repository_history: bool = Field(
+        default=False,
+        description="Optional Git commit evidence for insights; requires code_base",
+    )
 
     model: str | None = Field(default=None, description="Inference model")
     max_tokens: int | None = Field(
@@ -404,6 +408,12 @@ class RunConfig(BaseSettings):
                 "Place ETHOS.md in the working directory, set ethos_path in YAML, "
                 "or pass --ethos-path to an existing ETHOS.md.",
             )
+        return self
+
+    @model_validator(mode="after")
+    def repository_history_has_code_base(self) -> RunConfig:
+        if self.repository_history and self.code_base is None:
+            raise ValueError("repository_history requires code_base")
         return self
 
     @classmethod
