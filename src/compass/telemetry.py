@@ -116,6 +116,7 @@ def telemetry_session(config: RunConfig) -> Iterator[OpenInferenceSpan]:
                             endpoint=f"{endpoint}/otel/v1/traces",
                             headers=headers,
                             compression=Compression.Gzip,
+                            max_request_size=128 * 1024 * 1024,
                             timeout=float(
                                 os.getenv("OTEL_EXPORTER_OTLP_TRACES_TIMEOUT")
                                 or os.getenv("OTEL_EXPORTER_OTLP_TIMEOUT")

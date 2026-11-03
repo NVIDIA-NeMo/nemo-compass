@@ -211,6 +211,7 @@ def _run_cli(source, enabled):
                 "X-Tenant-Id": "telemetry-workspace",
             },
             compression=Compression.Gzip,
+            max_request_size=128 * 1024 * 1024,
             timeout=60,
         )
         root = next(r for r in records if r.name == "compass")
