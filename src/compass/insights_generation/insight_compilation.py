@@ -366,7 +366,12 @@ class InsightCompilation(Agent):
            Print only short excerpts. Keep full data in Python, including span IDs
            and event order. Do not change source traces. The function's result must
            depend only on the trace. Put needed imports inside the function so it
-           can run on its own. Never hardcode trace IDs, expected counts, or answer lists.
+           can run on its own. Use these imports inside the predicate:
+
+               from compass.insights_generation.insight_compilation import EvidenceDecision
+               from compass.compass_signals._trace import walk_spans
+
+           Never hardcode trace IDs, expected counts, or answer lists.
 
            Return EvidenceDecision(status=..., witness_span_ids=(...)):
            - match: recorded events establish every required condition. Cite the
