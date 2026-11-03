@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
 from functools import cached_property
 
 from nooa import Agent
@@ -53,28 +52,19 @@ occurrences of the same complaint; copied conversation history does not count.
 """
 
 
-class UserMessageExtraction(BaseModel):
-    """Executable extraction recipe; message data stays in the caller's process."""
-
-    extract: Callable[[TraceSnapshot], dict[str, list[str]]]
-
-
 class UserMessageExtractor(Agent):
-    async def build_extractor(self, trace_snapshot: TraceSnapshot) -> UserMessageExtraction:  # ty: ignore[empty-body] -- NeMo OO implements this method.
-        """Return an executable recipe for extracting ordered, verbatim user turns.
+    async def extract(self, trace_snapshot: TraceSnapshot) -> dict[str, list[str]]:  # ty: ignore[empty-body] -- NeMo OO implements this method.
+        """Extract ordered, verbatim user turns from the supplied snapshot.
 
-        Inspect the actual recorded structures and define a synchronous Python
-        function extract(snapshot) that processes its supplied TraceSnapshot.
-        Return UserMessageExtraction(extract=extract) via return_result in Python,
-        not extracted messages, serialized data, or source code as a string.
-        The caller will execute the function outside the model context. Import
-        dependencies inside the function; do not capture the inspection snapshot,
-        extracted data, or session variables. Do not hardcode trace IDs or messages.
+        Inspect the actual recorded structures and extract the messages in Python.
+        Return the complete dictionary via return_result(messages) inside Python
+        so the message data stays outside the model context.
+        Do not hardcode trace IDs or messages.
         Inspect bounded examples of each source structure, without printing whole
-        traces or extracted collections. Test the function using Python assertions
+        traces or extracted collections. Validate the result using Python assertions
         and report only counts or validation failures, never the extracted data.
 
-        The function must process the entire supplied snapshot and return exactly
+        Process the entire supplied snapshot and return exactly
         one entry per trace ID, including [] when no user text is recorded.
         Raise an error when a recorded message structure cannot be understood;
         do not silently treat extraction failures as missing messages.
@@ -101,7 +91,7 @@ class UserMessageExtractor(Agent):
         deduplicate by text: a user may genuinely repeat the same message twice.
         Do not merge separate trace IDs or invent missing user messages.
 
-        Before returning the recipe, use Python assertions to verify that every extracted
+        Before returning the messages, use Python assertions to verify that every extracted
         text is copied from its source record (apart from the protocol markers),
         every trace has an entry, and every eligible source turn was included.
         Check later actor=user turns explicitly; counting trace IDs is insufficient.
@@ -192,8 +182,7 @@ class UserSentimentCompassSignal:
     async def _analyze(self, snapshot: TraceSnapshot) -> CompassSignalResult:
         messages = {}
         if len(snapshot):
-            extraction = await UserMessageExtractor(llm=self.llm).build_extractor(snapshot)
-            messages = await asyncio.to_thread(extraction.extract, snapshot)
+            messages = await UserMessageExtractor(llm=self.llm).extract(snapshot)
         messages = TypeAdapter(dict[str, list[str]]).validate_python(messages, strict=True)
         if messages.keys() != snapshot.traces_by_id.keys():
             raise ValueError("User message extraction must cover exactly the supplied trace IDs")

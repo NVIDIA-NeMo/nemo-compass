@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -97,10 +98,14 @@ def with_agent_step(step):
     return source
 
 
+def content_id(record):
+    return "atif-" + hashlib.sha256(json.dumps(record).encode()).hexdigest()[:16]
+
+
 def test_exact_normalization_and_description(tmp_path):
     loader = loader_for(tmp_path, minimal())
     expected = Trace(
-        id="run",
+        id=content_id(minimal()),
         source_url=loader.config.path.resolve().as_uri() + "#L2",
         root_spans=[
             Span(
@@ -119,7 +124,8 @@ def test_exact_normalization_and_description(tmp_path):
             )
         ],
         aggregate=TraceAggregate(),
-        attributes={"logical_case_id": "run"},
+        session_id="run",
+        session_basis="atif.session_id",
     )
     snapshot = loader.load()
     assert list(snapshot) == [expected]
@@ -130,8 +136,15 @@ def test_exact_normalization_and_description(tmp_path):
         "path": str(loader.config.path.resolve()),
         "trace_count": 1,
         "call_count": 0,
-        "distinct_logical_cases": 1,
+        "distinct_cases": 1,
+        "distinct_sessions": 1,
     }
+
+
+def test_empty_session_id_is_treated_as_absent(tmp_path):
+    (trace,) = loader_for(tmp_path, {**minimal(), "trajectory_id": "t", "session_id": ""}).load()
+
+    assert (trace.id, trace.session_id, trace.session_basis) == ("t", None, None)
 
 
 def test_maximal_fixture_maps_each_field_to_its_typed_place():
@@ -140,7 +153,8 @@ def test_maximal_fixture_maps_each_field_to_its_typed_place():
     spans = spans_by_id(trace)
 
     # The case key is the session id; ATIF metadata is not copied into attributes.
-    assert trace.attributes == {"logical_case_id": "max-session"}
+    assert (trace.session_id, trace.session_basis) == ("max-session", "atif.session_id")
+    assert trace.attributes == {}
     for span in spans.values():
         expected = {"explicit_error": False} if span.id == "trajectory/step/3/tool/0" else {}
         assert span.attributes == expected, span.id
@@ -641,14 +655,14 @@ def test_realistic_nested_trajectory_and_signal_readers():
     # Coverage counts the prior user text the loader records on each call.
     presence = corpus_coverage(loader)["field_presence"]
     assert presence["prior_user_text"] >= 4
-    assert presence["logical_case_id"] == len(list(loader.load()))
+    # A session id is not a case; this fixture records no case.
+    assert presence["case_id"] == 0
 
 
 @pytest.mark.parametrize(
     "mutation, match",
     [
         (lambda t: t.update(schema_version="ATIF-v1.9"), "schema_version"),
-        (lambda t: t.pop("session_id"), "stable trace identity"),
         (lambda t: t.pop("agent"), "agent"),
         (lambda t: t["agent"].pop("version"), "version"),
         (lambda t: t["agent"].update(name=123), "name"),
@@ -764,13 +778,29 @@ def test_naive_timestamps_stay_on_the_turn(tmp_path):
 
 def test_loads_all_records_and_rejects_duplicates(tmp_path):
     source = minimal()
+    # A byte-identical line is the same document twice.
     with pytest.raises(ATIFTraceLoadError, match="duplicate trace id"):
         loader_for(tmp_path, source, source).load()
+    # session_id is run-scoped: a continuation may share it and set no trajectory_id.
+    continuation = {**source, "continued_trajectory_ref": "next.json"}
+    # trajectory_id identifies one document.
+    with pytest.raises(ATIFTraceLoadError, match="duplicate trace id 't'"):
+        loader_for(
+            tmp_path, {**source, "trajectory_id": "t"}, {**continuation, "trajectory_id": "t"}
+        ).load()
     second = {**source, "trajectory_id": "another"}
-    loader = loader_for(tmp_path, source, second)
-    assert [trace.id for trace in loader.load()] == ["run", "another"]
-    assert loader.describe()["distinct_logical_cases"] == 1
-    assert {to_tool_issue_trace(trace).logical_case_id for trace in loader.load()} == {"run"}
+    anonymous = {key: value for key, value in source.items() if key != "session_id"}
+    loader = loader_for(tmp_path, source, continuation, second, anonymous)
+    assert [trace.id for trace in loader.load()] == [
+        content_id(source),
+        content_id(continuation),
+        "another",
+        content_id(anonymous),
+    ]
+    assert [trace.session_id for trace in loader.load()] == ["run", "run", "run", None]
+    # Trajectories sharing a session_id are still independent cases.
+    assert loader.describe()["distinct_cases"] == 4
+    assert {to_tool_issue_trace(trace).case_id for trace in loader.load()} == {None}
 
 
 @pytest.mark.parametrize(

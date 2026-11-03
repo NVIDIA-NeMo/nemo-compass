@@ -13,7 +13,7 @@ from typing import Literal
 import yaml
 from pydantic import AliasChoices, BaseModel, Field, TypeAdapter
 
-from compass.traces import TraceSnapshot
+from compass.traces import Trace, TraceSnapshot
 from trace_ingest.source_links import SourceURL
 
 Rating = Literal["low", "med", "high"]
@@ -53,6 +53,17 @@ class Insight(BaseModel):
         description="Opaque storage ID of an existing insight. Preserve it exactly; new insights have no ID.",
     )
     name: str = Field(min_length=1)
+    severity: Rating | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Observed consequence after recovery; set during final compilation without code access.",
+    )
+    severity_reason: str | None = Field(
+        default=None,
+        min_length=1,
+        exclude_if=lambda value: value is None,
+        description="Observed consequence that supports the severity rating, in one short sentence.",
+    )
     description: str = Field(min_length=1)
     evidence: list[TraceEvidence] = Field(
         min_length=2,
@@ -68,23 +79,24 @@ class Insight(BaseModel):
         exclude_if=lambda value: value is None,
         description="How well the codebase supports this insight's claim; set when code_base is configured.",
     )
-    severity: Rating | None = Field(
-        default=None,
-        exclude_if=lambda value: value is None,
-        description="Observed consequence after recovery; set during final compilation without code access.",
-    )
-    severity_reason: str | None = Field(
-        default=None,
-        min_length=1,
-        exclude_if=lambda value: value is None,
-        description="Observed consequence that supports the severity rating, in one short sentence.",
-    )
     repository_evidence: list[CommitEvidence] = Field(
         default_factory=list,
         max_length=3,
         exclude_if=lambda value: not value,
         description="Up to three verified commits related to this insight.",
     )
+
+
+def _trace_url(trace: Trace) -> str | None:
+    """The trace's link; a merged session trace has none, so use its first linked record's."""
+    if trace.source_url is not None:
+        return trace.source_url
+    records = trace.attributes.get("records")
+    for record in records if isinstance(records, list) else ():
+        url = record.get("source_url") if isinstance(record, dict) else None
+        if isinstance(url, str):
+            return url
+    return None
 
 
 def resolve_trace_links(
@@ -110,7 +122,7 @@ def resolve_trace_links(
                 url = known_urls.get(item.trace_id)
                 available = known_spans.get(item.trace_id, {})
             else:
-                url = trace.source_url
+                url = _trace_url(trace)
                 available = {}
                 pending = list(trace.root_spans)
                 while pending:

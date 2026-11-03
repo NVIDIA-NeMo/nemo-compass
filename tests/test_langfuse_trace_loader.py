@@ -32,8 +32,6 @@ from compass.trace_loaders.langfuse import (
 )
 from compass.traces import UNSET, SpanKind
 from trace_ingest.catalog import tool_catalog
-from trace_ingest.loaders.helper.llm_span import SpanData, nemo_relay
-from trace_ingest.loaders.langfuse.normalization import _normalize_trace
 
 START = datetime(2026, 8, 1, 12, tzinfo=timezone.utc)
 END = START + timedelta(hours=1)
@@ -90,11 +88,13 @@ def test_native_export_matches_live_normalization(tmp_path, monkeypatch, envelop
 
 
 def test_export_directory_limits_and_ordering(tmp_path):
-    (tmp_path / "b.json").write_text(
-        provider_trace("old", timestamp=START).json(exclude_unset=True)
-    )
+    def native(trace_id, timestamp):
+        step = observation("step", trace_id=trace_id, start_time=timestamp)
+        return provider_trace(trace_id, timestamp=timestamp, observations=[step])
+
+    (tmp_path / "b.json").write_text(native("old", START).json(exclude_unset=True))
     (tmp_path / "a.jsonl").write_text(
-        "\n".join(provider_trace(id, timestamp=END).json(exclude_unset=True) for id in ("z", "a"))
+        "\n".join(native(id, END).json(exclude_unset=True) for id in ("z", "a"))
     )
     loader = LangfuseV3FileTraceLoader(LangfuseFileTraceConfig(tmp_path, max_traces=2))
     assert [t.id for t in loader.load()] == ["a", "z"]
@@ -108,7 +108,6 @@ def test_export_directory_limits_and_ordering(tmp_path):
     [
         ("duplicate_trace", "duplicate trace"),
         ("duplicate_observation", "duplicate observation"),
-        ("missing_parent", "missing parent"),
         ("wrong_trace", "traceId"),
         ("cycle", "parent cycle"),
         ("summary", "complete v3"),
@@ -119,8 +118,6 @@ def test_export_directory_limits_and_ordering(tmp_path):
 )
 def test_export_rejects_invalid_records_before_limit(tmp_path, case, match):
     obs = observation("child")
-    if case == "missing_parent":
-        obs = observation("child", parent_id="missing")
     if case == "wrong_trace":
         obs = observation("child", trace_id="other")
     if case == "cycle":
@@ -224,39 +221,296 @@ def test_corpus_reports_count_only_selected_traces(tmp_path, offline):
     newest = provider_trace(
         "newest",
         timestamp=END,
-        session_id=None,
-        observations=[observation("tool", trace_id="newest", observation_type="TOOL")],
+        observations=[
+            observation("tool", trace_id="newest", observation_type="TOOL", start_time=END)
+        ],
     )
-    middle = provider_trace("middle", timestamp=START, session_id="shared")
+    # Two records of one session count as one conversation toward max_traces.
+    middle = provider_trace(
+        "middle",
+        timestamp=START,
+        session_id="shared",
+        observations=[observation("span", trace_id="middle", start_time=START)],
+    )
+    later = provider_trace(
+        "later",
+        timestamp=START + timedelta(seconds=1),
+        session_id="shared",
+        observations=[
+            observation("span", trace_id="later", start_time=START + timedelta(seconds=1))
+        ],
+    )
     oldest = provider_trace(
         "oldest",
         timestamp=START - timedelta(seconds=1),
         session_id="excluded",
-        observations=[observation("span", trace_id="oldest")],
+        observations=[
+            observation("span", trace_id="oldest", start_time=START - timedelta(seconds=1))
+        ],
     )
     if offline:
         export_path = tmp_path / "traces.jsonl"
         export_path.write_text(
-            "\n".join(t.json(exclude_unset=True) for t in (newest, oldest, middle))
+            "\n".join(t.json(exclude_unset=True) for t in (newest, oldest, later, middle))
         )
         loader = LangfuseV3FileTraceLoader(LangfuseFileTraceConfig(export_path, max_traces=2))
     else:
+        selected = (newest, later, middle)
         loader = LangfuseV3TraceLoader(
             LangfuseTraceConfig(
                 START, END + timedelta(seconds=1), base_url="https://example.test", max_traces=2
             ),
-            client=FakeClient([([newest, middle], 1)], {t.id: t for t in (newest, middle)}),
+            client=FakeClient(
+                [([*selected, oldest], 1), ([later, middle], 1)], {t.id: t for t in selected}
+            ),
         )
-    assert [t.id for t in loader.load()] == ["middle", "newest"]
+    traces = list(loader.load())
+    assert [t.id for t in traces] == ["session:shared", "newest"]
+    records = traces[0].attributes["records"]
+    assert isinstance(records, list)
+    assert [record["trace_id"] for record in records if isinstance(record, dict)] == [
+        "middle",
+        "later",
+    ]
+    assert [loss.code for trace in traces for loss in trace.losses] == []
     description = loader.describe()
     expected = {
         "trace_count": 2,
         "call_count": 1,
-        "observation_count": 1,
-        "distinct_logical_cases": 2,
+        "observation_count": 3,
+        "distinct_cases": 2,
+        "distinct_sessions": 1,
         "unresolved_parent_count": 0,
     }
     assert {key: value for key, value in description.items() if key in expected} == expected
+    if isinstance(loader, LangfuseV3FileTraceLoader):
+        file_description = loader.describe()
+        assert file_description["export_trace_count"] == 4
+        assert file_description["truncated"] is True
+
+
+def test_v3_rereads_a_capped_session_with_its_filter():
+    def shared(trace_id, timestamp):
+        return provider_trace(
+            trace_id,
+            timestamp=timestamp,
+            session_id="shared",
+            observations=[observation("span", trace_id=trace_id, start_time=timestamp)],
+        )
+
+    later = shared("later", START + timedelta(seconds=1))
+    middle = shared("middle", START)
+    newest = provider_trace(
+        "newest", timestamp=END, observations=[observation("span", trace_id="newest")]
+    )
+    client = FakeClient(
+        [([later, newest], 1), ([later, middle], 1)], {t.id: t for t in (later, middle)}
+    )
+
+    (trace,) = LangfuseV3TraceLoader(
+        LangfuseTraceConfig(
+            START,
+            END + timedelta(seconds=1),
+            base_url="https://example.test",
+            max_traces=1,
+            filter_string='[{"type":"string","column":"userId","operator":"=","value":"u"}]',
+        ),
+        client=client,
+    ).load()
+
+    assert trace.id == "session:shared"
+    records = trace.attributes["records"]
+    assert isinstance(records, list)
+    assert [record["trace_id"] for record in records if isinstance(record, dict)] == [
+        "middle",
+        "later",
+    ]
+    assert trace.losses == []
+    selection, reread = client.trace.list_calls
+    assert reread["session_id"] == "shared"
+    assert reread["page"] == 1
+    assert (reread["from_timestamp"], reread["to_timestamp"]) == (
+        selection["from_timestamp"],
+        selection["to_timestamp"],
+    )
+    # A sent filter overrides Langfuse's sessionId parameter, so it carries the session too.
+    assert json.loads(str(reread["filter"]))[-1] == {
+        "type": "string",
+        "column": "sessionId",
+        "operator": "=",
+        "value": "shared",
+    }
+
+
+@pytest.mark.parametrize("offline", [False, True])
+def test_export_keeps_the_conversations_live_selection_keeps(tmp_path, offline):
+    # Live lists traces by timestamp; a trace without observations is still newest.
+    newer = provider_trace("newer-no-obs", timestamp=START + timedelta(seconds=100))
+    older = provider_trace(
+        "older",
+        timestamp=START,
+        observations=[
+            observation("span", trace_id="older", start_time=START + timedelta(seconds=200))
+        ],
+    )
+    if offline:
+        export_path = tmp_path / "traces.jsonl"
+        export_path.write_text("\n".join(t.json(exclude_unset=True) for t in (older, newer)))
+        loader = LangfuseV3FileTraceLoader(LangfuseFileTraceConfig(export_path, max_traces=1))
+    else:
+        loader = LangfuseV3TraceLoader(
+            LangfuseTraceConfig(START, END, base_url="https://example.test", max_traces=1),
+            client=FakeClient([([newer, older], 1)], {newer.id: newer}),
+        )
+    assert [t.id for t in loader.load()] == ["newer-no-obs"]
+
+
+def load_live(*traces: TraceWithFullDetails) -> list:
+    loader = LangfuseV3TraceLoader(
+        LangfuseTraceConfig(START, END, base_url="https://langfuse.test"),
+        client=FakeClient([(list(traces), 1)], {t.id: t for t in traces}),
+    )
+    return list(loader.load())
+
+
+def conversation(trace_id, *, root_type, offset, messages, reply, session_id=None):
+    start = START + timedelta(seconds=offset)
+    return provider_trace(
+        trace_id,
+        timestamp=start,
+        session_id=session_id,
+        input_value={"messages": messages},
+        output_value=reply,
+        observations=[
+            observation("root", trace_id=trace_id, observation_type=root_type, start_time=start),
+            observation(
+                "llm",
+                trace_id=trace_id,
+                parent_id="root",
+                observation_type="GENERATION",
+                start_time=start + timedelta(milliseconds=1),
+                output_value=reply,
+            ),
+        ],
+    )
+
+
+def test_v3_traces_sharing_a_session_merge_into_one_conversation():
+    first = conversation(
+        "t1",
+        root_type="AGENT",
+        offset=0,
+        messages=[{"role": "user", "content": "find it"}],
+        reply="found",
+        session_id="session-7",
+    )
+    second = conversation(
+        "t2",
+        root_type="AGENT",
+        offset=1,
+        messages=[
+            {"role": "user", "content": "find it"},
+            {"role": "assistant", "content": "found"},
+            {"role": "user", "content": "thanks"},
+        ],
+        reply="welcome",
+        session_id="session-7",
+    )
+
+    (trace,) = load_live(second, first)
+
+    assert trace.id == "session:session-7"
+    assert (trace.session_id, trace.session_basis) == ("session-7", "langfuse.sessionId")
+    assert trace.losses == []
+    (root,) = trace.root_spans
+    assert [(span.id, span.kind, span.attributes["subtype"]) for span in root.children] == [
+        ("t1/root", SpanKind.CHAIN, "AGENT"),
+        ("t2/root", SpanKind.CHAIN, "AGENT"),
+    ]
+    assert [span.source_url for span in root.children] == [
+        "https://langfuse.test/project/project-1/traces/t1",
+        "https://langfuse.test/project/project-1/traces/t2",
+    ]
+    # The second input re-sends the first exchange; only its new message is kept.
+    assert [(turn.role.value, turn.content, turn.llm_span_ids) for turn in root.turns] == [
+        ("user", "find it", []),
+        ("agent", "found", ["t1/llm"]),
+        ("user", "thanks", []),
+        ("agent", "welcome", ["t2/llm"]),
+    ]
+
+
+def test_v3_span_root_without_session_owns_its_turns():
+    (trace,) = load_live(
+        conversation(
+            "t1",
+            root_type="SPAN",
+            offset=0,
+            messages=[{"role": "user", "content": "find it"}],
+            reply="found",
+        )
+    )
+
+    assert trace.id == "t1" and trace.session_id is None
+    (root,) = trace.root_spans
+    assert (root.kind, root.attributes["subtype"]) == (SpanKind.AGENT, "SPAN")
+    assert [(turn.id, turn.role.value, turn.content, turn.llm_span_ids) for turn in root.turns] == [
+        ("root/turn/1", "user", "find it", []),
+        ("root/turn/2", "agent", "found", ["llm"]),
+    ]
+
+
+def test_steps_in_one_millisecond_follow_their_causal_order():
+    # Langfuse keeps milliseconds: a call, its tool and the answer can all start
+    # and end in the same one. Ids sort them backwards.
+    step = START + timedelta(milliseconds=1)
+
+    def child(observation_id, observation_type, output, end=step):
+        return observation(
+            observation_id,
+            trace_id="t1",
+            parent_id="root",
+            observation_type=observation_type,
+            start_time=step,
+            end_time=end,
+            output_value=output,
+        )
+
+    call = {"role": "assistant", "content": None, "tool_calls": [{"id": "c1", "type": "function"}]}
+    native = provider_trace(
+        "t1",
+        input_value={"messages": [{"role": "user", "content": "weather?"}]},
+        output_value="rain",
+        observations=[
+            observation("root", trace_id="t1", observation_type="AGENT", end_time=END),
+            child("a-answer", "GENERATION", {"role": "assistant", "content": "rain"}),
+            child("b-tool", "TOOL", {"forecast": "rain"}),
+            child("c-call", "GENERATION", json.dumps(call)),
+            # Started in the same millisecond, but ended after the others.
+            child("0-late", "GENERATION", {"role": "assistant", "content": "rain"}, END),
+        ],
+    )
+    (trace,) = load_live(native)
+    (root,) = trace.root_spans
+    assert [span.id for span in root.children] == ["c-call", "b-tool", "a-answer", "0-late"]
+    assert root.turns is not UNSET
+    assert [(turn.llm_span_ids, turn.tool_call_span_ids) for turn in root.turns[1:3]] == [
+        (["c-call"], ["b-tool"]),
+        (["a-answer"], []),
+    ]
+
+
+def test_v3_generation_root_without_session_is_not_a_run():
+    native = provider_trace(
+        "t1",
+        observations=[observation("llm", trace_id="t1", observation_type="GENERATION")],
+    )
+
+    (trace,) = load_live(native)
+
+    (root,) = trace.root_spans
+    assert root.kind is SpanKind.LLM
+    assert root.turns is UNSET
 
 
 def test_live_order_uses_query_summary_timestamps():
@@ -453,16 +707,18 @@ def provider_trace(
     *,
     timestamp: datetime = START,
     observations: list[ObservationsView] | None = None,
-    session_id: str | None = "session-7",
+    session_id: str | None = None,
     latency: float = 5.0,
     total_cost: float = 0.03,
+    input_value: object = None,
+    output_value: object = None,
 ) -> TraceWithFullDetails:
     return TraceWithFullDetails(
         id=trace_id,
         timestamp=timestamp,
         name="support-agent",
-        input={"messages": [{"role": "user", "content": "find it"}]},
-        output={"answer": "done"},
+        input=input_value or {"messages": [{"role": "user", "content": "find it"}]},
+        output=output_value or {"answer": "done"},
         session_id=session_id,
         release="2026.08",
         version="v2",
@@ -526,7 +782,7 @@ def test_loader_selects_then_fetches_complete_v3_traces() -> None:
     assert client.trace.list_calls == [
         {
             "page": 1,
-            "limit": 2,
+            "limit": 100,
             "from_timestamp": START - timedelta(days=1),
             "to_timestamp": END,
             "order_by": "timestamp.desc",
@@ -536,7 +792,7 @@ def test_loader_selects_then_fetches_complete_v3_traces() -> None:
     ]
     assert client.trace.get_calls == ["trace-1"]
     assert normalized.id == "trace-1"
-    assert normalized.attributes["logical_case_id"] == "session-7"
+    assert normalized.session_id is None
     assert normalized.aggregate.cost_usd == 0.03
     assert normalized.aggregate.latency_ms == 5_000
     assert [span.id for span in normalized.root_spans] == ["root"]
@@ -1100,464 +1356,31 @@ def test_generation_root_carries_definitions_and_tool_results() -> None:
     assert span.tool_call.results[0].is_error is (True if span.error else None)
 
 
-def relay_metadata(**attributes: object) -> dict:
-    return {
-        "attributes": {
-            key: value if isinstance(value, str) else json.dumps(value)
-            for key, value in attributes.items()
-        },
-        "scope": {"name": "opentelemetry", "attributes": {}},
+@pytest.mark.parametrize("observation_type", ["SPAN", "GENERATION"])
+def test_native_analysis_fields_survive_without_sdk_interpretation(observation_type):
+    metadata = {
+        "scope": {"name": "arbitrary-instrumentation"},
+        "attributes": {"vendor.request": '{"tools":[]}', "vendor.usage": {"read": 10}},
     }
-
-
-def test_relay_spans_become_canonical_llm_calls() -> None:
-    canary = "CANARY-relay-content"
-    request = {
-        "model": "aws/anthropic/bedrock-claude-sonnet-5-5",
-        "max_tokens": 32000,
-        "thinking": {"type": "enabled", "budget_tokens": 2048},
-        "system": [
-            {"type": "text", "text": canary, "cache_control": {"type": "ephemeral", "ttl": "1h"}}
-        ],
-        "messages": [{"role": "user", "content": canary}],
-        "tools": [{"name": "read", "description": canary, "input_schema": {"type": "object"}}],
-        "stream": True,
-    }
-    usage = {
-        "input_tokens": 4,
-        "cache_read_input_tokens": 2170,
-        "cache_creation_input_tokens": 119,
-        "output_tokens": 48,
-        "output_tokens_details": {"thinking_tokens": 0},
-    }
-    session = observation(
-        "session",
-        observation_type="AGENT",
-        name="pi",
-        end_time=START + timedelta(seconds=9),
-        metadata=relay_metadata(
-            **{
-                "nemo_relay.scope_type": "agent",
-                "nemo_relay.start.metadata.nemo_relay_scope_role": "session",
-                "nemo_relay.start.metadata.agent_kind": "pi",
-            }
-        ),
+    source = observation("s", observation_type=observation_type)
+    source = source.model_copy(
+        update={"metadata": metadata, "usage_details": {"input": 50, "vendor_write": 20}}
     )
-    # Relay's full export: Langfuse types the call a plain span.
-    llm = observation(
-        "llm",
-        parent_id="session",
-        observation_type="SPAN",
-        name="anthropic.messages",
-        start_time=START + timedelta(seconds=1),
-        end_time=START + timedelta(seconds=2),
-        metadata=relay_metadata(
-            **{
-                "nemo_relay.scope_type": "llm",
-                "nemo_relay.start.data.content": request,
-                "nemo_relay.start.data.headers": {"x-claude-code-agent-id": "a8af"},
-                "nemo_relay.end.data.model": "aws/anthropic/bedrock-claude-sonnet-5-5",
-                "nemo_relay.end.data.stop_reason": "tool_use",
-                "nemo_relay.end.data.content": [
-                    {"type": "thinking", "thinking": canary},
-                    {"type": "text", "text": "ok"},
-                    {"type": "tool_use", "input": {"path": "a"}},
-                ],
-                "nemo_relay.end.data.usage": usage,
-            }
-        ),
-    )
-    # Langfuse types count_tokens a generation too; it is kept as one, without usage.
-    count_tokens = observation(
-        "count",
-        parent_id="session",
-        observation_type="GENERATION",
-        name="anthropic.count_tokens",
-        start_time=START + timedelta(seconds=3),
-        metadata=relay_metadata(**{"nemo_relay.scope_type": "llm"}),
-    )
-    # A turn span carries a copy of its last call's usage; it is not a call.
-    turn = observation(
-        "turn",
-        parent_id="session",
-        name="claude-code-turn",
-        start_time=START + timedelta(seconds=4),
-        metadata=relay_metadata(
-            **{"nemo_relay.scope_type": "custom", "nemo_relay.end.data.usage": usage}
-        ),
-    )
-    normalized = _normalize_trace(
-        provider_trace(observations=[session, llm, count_tokens, turn]),
-        source_pointer={"provider": "langfuse"},
-    )
-
-    assert normalized.attributes["logical_case_id"] == "session-7"
-    (agent,) = normalized.root_spans
-    assert agent.kind is SpanKind.AGENT
-    # Relay records no agent ID on the session span, and none is made up.
-    assert agent.agent_id is None
-    call, counted, step = agent.children
-    assert counted.kind is SpanKind.LLM
-    assert counted.token_counts is None
-    assert (step.kind, step.token_counts) == (SpanKind.UNKNOWN, None)
-    assert call.kind is SpanKind.LLM
-    assert call.attributes["subtype"] == "SPAN"
-    assert call.token_counts is not None
-
-
-def test_relay_agent_ids_in_both_layouts():
-    def agent_id(**attributes: str) -> str | None:
-        span = SpanData(None, "SPAN", None, {"nemo_relay.scope_type": "agent", **attributes}, {})
-        return nemo_relay.agent_id(span)
-
-    assert (
-        agent_id(
-            **{
-                "nemo_relay.start.metadata.nemo_relay_scope_role": "subagent",
-                "nemo_relay.start.metadata.agent_id": "a8af",
-            }
+    full = provider_trace(observations=[source])
+    client = FakeClient(pages=[([full], 1)], details={"trace-1": full})
+    trace = next(
+        iter(
+            LangfuseV3TraceLoader(
+                LangfuseTraceConfig(START, END, base_url="https://langfuse.test"),
+                client=client,
+            ).load()
         )
-        == "a8af"
     )
-    assert (
-        agent_id(
-            **{
-                "openinference.metadata.nemo_relay_scope_role": "session",
-                "openinference.metadata.agent_kind": "pi",
-            }
-        )
-        is None
-    )
-    assert agent_id(**{"openinference.metadata.nemo_relay_scope_role": "subagent"}) is None
-    # An LLM call carries the subagent Relay attributes it to, in either layout.
-    assert agent_id(**{"nemo_relay.start.metadata.llm_correlation_subagent_id": "a8af"}) == "a8af"
-    assert agent_id(**{"openinference.metadata.llm_correlation_subagent_id": "a8af"}) == "a8af"
-    # Only spans Relay exported.
-    assert (
-        nemo_relay.agent_id(
-            SpanData(None, "SPAN", None, {"openinference.metadata.agent_id": "a8af"}, {})
-        )
-        is None
-    )
-
-
-def test_openinference_spans_without_relay() -> None:
-    llm = observation(
-        "oi",
-        observation_type="GENERATION",
-        name="ChatOpenAI",
-        start_time=START + timedelta(seconds=1),
-        end_time=START + timedelta(seconds=2),
-        model="gpt-5.5",
-        metadata=relay_metadata(
-            **{
-                "openinference.span.kind": "LLM",
-                "llm.model_name": "gpt-5.5",
-                "llm.invocation_parameters": {"model": "gpt-5.5", "temperature": 0},
-                "llm.tools.0.tool.json_schema": {"name": "Read"},
-                "llm.token_count.prompt": "11409",
-                "llm.token_count.prompt_details.cache_read": "3712",
-                "llm.token_count.prompt_details.cache_write": {"intValue": 0},
-                "llm.token_count.completion": "81",
-            }
-        ),
-    )
-    chain = observation(
-        "chain",
-        observation_type="CHAIN",
-        start_time=START + timedelta(seconds=3),
-        metadata=relay_metadata(**{"openinference.span.kind": "CHAIN"}),
-    )
-    normalized = _normalize_trace(
-        provider_trace(observations=[llm, chain]),
-        source_pointer={"provider": "langfuse"},
-    )
-
-    call, step = normalized.root_spans
-    assert (call.kind, step.kind) == (SpanKind.LLM, SpanKind.CHAIN)
-    assert call.model == "gpt-5.5"
-    assert call.token_counts is not None
-    # The spec counts cache inside llm.token_count.prompt.
-    assert call.token_counts.model_dump(exclude_none=True, exclude={"source"}) == {
-        "input_total": 11409,
-        "cached_input_tokens": 3712,
-        "output_tokens": 81,
-        "cache_write_tokens": 0,
-    }
-    assert call.tool_definitions is not UNSET
-    assert [definition.raw for definition in call.tool_definitions] == [{"name": "Read"}]
-    assert call.llm_params == {"temperature": 0}
-
-
-# One LLM observation per layout found in Langfuse, with the same keys and value
-# shapes but made-up values. Relay's usage objects keep the provider's own keys,
-# extras such as cost included.
-ANTHROPIC_USAGE = {
-    "cache_creation": {"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 300},
-    "cache_creation_input_tokens": 300,
-    "cache_read_input_tokens": 20000,
-    "cost": 0.01,
-    "input_tokens": 2,
-    "output_tokens": 50,
-    "output_tokens_details": {"thinking_tokens": 0},
-    "service_tier": "standard",
-}
-ANTHROPIC_COUNTS = {
-    "input_tokens": 2,
-    "cached_input_tokens": 20000,
-    "output_tokens": 50,
-    "cache_write_tokens": 300,
-    "cache_writes_by_ttl": {300: 300, 3600: 0},
-    "source": "nemo_relay",
-}
-OPENAI_USAGE = {
-    "cost": 0.01,
-    "input_tokens": 12000,
-    "input_tokens_details": {"cache_write_tokens": 0, "cached_tokens": 11000},
-    "output_tokens": 100,
-    "output_tokens_details": {"reasoning_tokens": 30},
-    "total_tokens": 12100,
-}
-OPENAI_COUNTS = {
-    # input_total includes the cache read.
-    "input_total": 12000,
-    "cached_input_tokens": 11000,
-    "output_tokens": 100,
-    "cache_write_tokens": 0,
-    "source": "nemo_relay",
-}
-OI_TOOLS = {
-    "llm.tools.1.tool.json_schema": {"name": "Write"},
-    "llm.tools.0.tool.json_schema": {"name": "Read"},
-}
-
-LAYOUTS = {
-    # Relay full export: Langfuse types the call a plain span and records no model;
-    # the request body holds the tools and parameters.
-    "relay-full-anthropic": {
-        "type": "SPAN",
-        "name": "anthropic.messages",
-        "metadata": relay_metadata(
-            **{
-                "nemo_relay.scope_type": "llm",
-                "nemo_relay.start.data.content": {
-                    "model": "claude-alias",
-                    "max_tokens": 32000,
-                    "thinking": {"type": "adaptive"},
-                    "system": [{"type": "text", "text": "s"}],
-                    "messages": [{"role": "user", "content": "m"}],
-                    "tools": [{"name": "Read"}, {"name": "Write"}],
-                    "stream": True,
-                },
-                "nemo_relay.end.data.model": "claude-response",
-                "nemo_relay.end.data.usage": ANTHROPIC_USAGE,
-            }
-        ),
-        "token_counts": ANTHROPIC_COUNTS,
-        "model": "claude-response",
-        "tools": ["Read", "Write"],
-        "params": ["max_tokens", "stream", "thinking"],
-    },
-    # The model is the one the response names, which can differ from the request's.
-    "relay-full-openai": {
-        "type": "SPAN",
-        "name": "openai.responses",
-        "metadata": relay_metadata(
-            **{
-                "nemo_relay.scope_type": "llm",
-                "nemo_relay.start.data.content": {
-                    "model": "gpt-alias",
-                    "instructions": "i",
-                    "input": [{"role": "user", "content": "m"}],
-                    "tools": [{"type": "function", "name": "exec_command"}],
-                    "reasoning": {"effort": "medium"},
-                    "tool_choice": "auto",
-                    "prompt_cache_key": "k",
-                    "stream": True,
-                },
-                "nemo_relay.end.data.model": "gpt-alias-global",
-                "nemo_relay.end.data.usage": OPENAI_USAGE,
-            }
-        ),
-        "token_counts": OPENAI_COUNTS,
-        "model": "gpt-alias-global",
-        "tools": ["exec_command"],
-        "params": ["prompt_cache_key", "reasoning", "stream", "tool_choice"],
-    },
-    # Relay openinference export: OpenInference attributes beside Relay's usage.
-    # The counts are Relay's, not llm.token_count.*, and Langfuse's own model wins.
-    "relay-oi-anthropic": {
-        "type": "GENERATION",
-        "name": "anthropic.messages",
-        "langfuse_model": "claude-alias",
-        "metadata": relay_metadata(
-            **{
-                "nemo_relay.scope_type": "llm",
-                "openinference.span.kind": "LLM",
-                "llm.model_name": "claude-alias",
-                "llm.invocation_parameters": {"model": "claude-alias", "max_tokens": 64000},
-                **OI_TOOLS,
-                "llm.token_count.prompt": "20302",
-                "llm.token_count.prompt_details.cache_read": '{"intValue":20000}',
-                "llm.token_count.prompt_details.cache_write": "300",
-                "llm.token_count.completion": "50",
-                "nemo_relay.end.data.model": "claude-response",
-                "nemo_relay.end.data.usage": ANTHROPIC_USAGE,
-            }
-        ),
-        "token_counts": ANTHROPIC_COUNTS,
-        "model": "claude-alias",
-        "tools": ["Read", "Write"],
-        "params": ["max_tokens"],
-    },
-    # Codex's openinference export records tools but no invocation parameters.
-    "relay-oi-openai-no-params": {
-        "type": "GENERATION",
-        "name": "openai.responses",
-        "langfuse_model": "gpt-alias",
-        "metadata": relay_metadata(
-            **{
-                "nemo_relay.scope_type": "llm",
-                "openinference.span.kind": "LLM",
-                "llm.model_name": "gpt-alias",
-                "llm.tools.0.tool.json_schema": {"name": "exec_command"},
-                "llm.token_count.prompt": "12000",
-                "llm.token_count.prompt_details.cache_read": "11000",
-                "llm.token_count.completion": "100",
-                "nemo_relay.end.data.model": "gpt-alias-global",
-                "nemo_relay.end.data.usage": OPENAI_USAGE,
-            }
-        ),
-        "token_counts": OPENAI_COUNTS,
-        "model": "gpt-alias",
-        "tools": ["exec_command"],
-        "params": None,
-    },
-    # A call without Relay's usage has no counts: llm.token_count.prompt excluded
-    # cache in some Relay builds, against the spec, so it is not read.
-    "relay-oi-no-usage": {
-        "type": "GENERATION",
-        "name": "anthropic.messages",
-        "langfuse_model": "claude-alias",
-        "metadata": relay_metadata(
-            **{
-                "nemo_relay.scope_type": "llm",
-                "openinference.span.kind": "LLM",
-                "llm.model_name": "claude-alias",
-                "llm.invocation_parameters": {"model": "claude-alias", "max_tokens": 64000},
-                **OI_TOOLS,
-                "llm.token_count.prompt": "2",
-                "llm.token_count.prompt_details.cache_read": "20000",
-                "llm.token_count.completion": "50",
-            }
-        ),
-        "token_counts": None,
-        "model": "claude-alias",
-        "tools": ["Read", "Write"],
-        "params": ["max_tokens"],
-    },
-    # Claude Code's Langfuse integration: no OTel attributes, Anthropic's cache keys.
-    "langfuse-sdk-claude": {
-        "type": "GENERATION",
-        "name": "LLM Call",
-        "langfuse_model": "claude-alias",
-        "metadata": {"scope": {"name": "langfuse-sdk"}},
-        "usage_details": {
-            "input": 2,
-            "output": 50,
-            "cache_read_input_tokens": 20000,
-            "input_cache_creation_5m": 300,
-            "total": 20352,
-        },
-        "token_counts": {
-            "input_tokens": 2,
-            "cached_input_tokens": 20000,
-            "output_tokens": 50,
-            "cache_writes_by_ttl": {300: 300},
-            "source": "langfuse_sdk",
-        },
-        "model": "claude-alias",
-        "tools": None,
-        "params": None,
-    },
-    # Codex's Langfuse integration: Langfuse splits cache out of input and reasoning
-    # out of output; the buckets add up to total.
-    "langfuse-sdk-codex": {
-        "type": "GENERATION",
-        "name": "LLM",
-        "langfuse_model": "gpt-alias",
-        "metadata": {"scope": {"name": "langfuse-sdk"}},
-        "usage_details": {
-            "input": 1000,
-            "output": 70,
-            "total": 12100,
-            "input_cached_tokens": 11000,
-            "output_reasoning_tokens": 30,
-        },
-        "token_counts": {
-            "input_tokens": 1000,
-            "cached_input_tokens": 11000,
-            "output_tokens": 100,
-            "source": "langfuse_sdk",
-        },
-        "model": "gpt-alias",
-        "tools": None,
-        "params": None,
-    },
-}
-
-
-@pytest.mark.parametrize("layout", list(LAYOUTS.values()), ids=list(LAYOUTS))
-def test_each_layout_reaches_the_span(layout: dict) -> None:
-    llm = observation(
-        "llm",
-        observation_type=layout["type"],
-        name=layout["name"],
-        model=layout.get("langfuse_model"),
-        metadata=layout["metadata"],
-        usage_details=layout.get("usage_details", {}),
-    )
-    normalized = _normalize_trace(
-        provider_trace(observations=[llm]), source_pointer={"provider": "langfuse"}
-    )
-
-    (span,) = normalized.root_spans
-    assert span.kind is SpanKind.LLM
-    counts = span.token_counts
-    assert (counts.model_dump(exclude_none=True) if counts else None) == layout["token_counts"]
-    assert span.model == layout["model"]
-    tools = span.tool_definitions
-    assert ([tool.name for tool in tools] if tools is not UNSET else None) == layout["tools"]
-    params = span.llm_params
-    assert (sorted(params) if params is not None else None) == layout["params"]
-
-
-@pytest.mark.parametrize("request_tools", [None, [], [{"name": "search", "input_schema": False}]])
-def test_request_tools_take_precedence_over_platform_input(request_tools):
-    request = {} if request_tools is None else {"tools": request_tools}
-    platform_tools = [{"name": "platform", "parameters": {"type": "object"}}]
-    llm = observation(
-        "llm",
-        observation_type="SPAN",
-        name="anthropic.messages",
-        input_value={"tools": platform_tools},
-        metadata=relay_metadata(
-            **{
-                "nemo_relay.scope_type": "llm",
-                "nemo_relay.start.data.content": json.dumps(request),
-            }
-        ),
-    )
-    normalized = _normalize_trace(provider_trace(observations=[llm]), source_pointer={})
-    (span,) = normalized.root_spans
-    assert span.kind is SpanKind.LLM
-    expected = platform_tools if request_tools is None else request_tools
-    assert span.tool_definitions is not UNSET
-    assert [entry.raw for entry in span.tool_definitions] == expected
-    assert tool_catalog(normalized) == (
-        {"platform": {"type": "object"}}
-        if request_tools is None
-        else {"search": False}
-        if request_tools
-        else {}
-    )
+    span = trace.root_spans[0]
+    native = span.attributes["langfuse"]
+    assert isinstance(native, dict)
+    assert native["metadata"] == metadata
+    assert native["usage_details"] == source.usage_details
+    assert span.token_counts is None
+    # A lone SPAN root becomes the trace's agent run; nothing makes it a model call.
+    assert span.kind is (SpanKind.LLM if observation_type == "GENERATION" else SpanKind.AGENT)

@@ -54,8 +54,24 @@ compass --config config.yaml --trace.intake.query.experiment-id my-experiment-id
 ```
 
 `sort` defaults to `started_at` (oldest first); use `-started_at` for newest first.
-`trace.max_traces` overrides `query.max_traces`. Without either limit, all matching traces
-in the window are loaded.
+
+Compass loads one trace per `session_id`. Every matching Intake trace in the window that
+shares a `session_id` is merged into one trace with id `session:<session_id>`. Each Intake
+trace's spans sit under the merged trace's root span, ordered by their earliest start, with
+ids `<trace id>/<span id>`. Per-trace Intake attributes are listed in `attributes.records`.
+Evaluator results are listed per metric as `{"trace_id", "value"}` entries; a result's
+`span_id` is the Intake span id, so prefix it with `<trace id>/` to find the span. A result
+with `status: FAILED` (the evaluator ran but could not score) is kept and has no value.
+
+A tool span's `tool_call.call_id` and `result_id` come from the ATIF tool call, or from
+the `tool_call_id` of a LangChain ToolMessage output (as OpenInference records it).
+
+`trace.max_traces` overrides `query.max_traces`, and both count merged traces, one per
+`session_id`. Selection reads matching traces until one starts session `max_traces + 1`;
+each selected `session_id` is then queried again with the same filters and window, so it
+loads completely within the window. A selected trace that the second query does not
+return is kept, and its merged trace records a `merge_incomplete` loss. Without either
+limit, every matching trace in the window is loaded in one pass.
 
 Under `trace.intake`, `page_size` controls pagination (1–1,000; default 100), and
 `timeout_seconds` sets the HTTP timeout (default 30). Endpoint and workspace have no

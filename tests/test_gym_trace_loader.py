@@ -20,7 +20,15 @@ from compass.compass_signals.tool_issues.signal import to_tool_issue_trace
 from compass.config import RunConfig, TraceConfig
 from trace_ingest.catalog import tool_catalog
 from trace_ingest.loaders import GymTraceConfig, GymTraceLoader, GymTraceLoadError
-from trace_ingest.models import UNSET, SpanKind, TokenCounts
+from trace_ingest.models import (
+    UNSET,
+    Authorship,
+    ImagePart,
+    SpanKind,
+    TextPart,
+    TokenCounts,
+    TurnRole,
+)
 
 
 def rollout():
@@ -121,7 +129,7 @@ def test_native_gym_mapping_and_cached_description(tmp_path):
     snapshot = loader.load()
     trace = next(iter(snapshot))
     assert trace.id == "rollout-1"
-    assert trace.attributes["logical_case_id"] == "task-1"
+    assert trace.case_id == "task-1"
     assert trace.attributes["gym"] == source
     assert trace.evaluator_results == {"gym.reward": 0, "gym.reward_components": {"correctness": 0}}
     assert trace.aggregate.token_counts is None  # no invented rollout accounting
@@ -152,8 +160,10 @@ def test_native_gym_mapping_and_cached_description(tmp_path):
         "format": "jsonl",
         "trace_count": 1,
         "call_count": 1,
-        "distinct_logical_cases": 1,
+        "distinct_cases": 1,
+        "distinct_sessions": 0,
         "gap_count": 1,
+        "duplicate_record_count": 0,
     }
     loader.config.path.unlink()
     assert loader.load() is snapshot
@@ -165,7 +175,7 @@ def test_corpus_records_stay_separate_and_share_logical_task(tmp_path):
     second["ng_trajectory"]["turns"][0]["rollout_id"] = "rollout-2"
     loader = loader_for(tmp_path, first, second)
     assert [trace.id for trace in loader.load()] == ["rollout-1", "rollout-2"]
-    assert loader.describe()["distinct_logical_cases"] == 1
+    assert loader.describe()["distinct_cases"] == 1
     assert len(loader_for(tmp_path, first, format="json").load()) == 1
 
 
@@ -257,8 +267,14 @@ def test_legacy_records_missing_files_and_duplicate_rollouts(tmp_path):
         loader_for(tmp_path, {"response": {"output": []}}).load()
     with pytest.raises(GymTraceLoadError):
         GymTraceLoader(GymTraceConfig(path=tmp_path / "missing")).load()
+    # The same rollout ID with different content is ambiguous.
     with pytest.raises(GymTraceLoadError):
-        loader_for(tmp_path, rollout(), rollout()).load()
+        loader_for(tmp_path, rollout(), {**rollout(), "reward": 1.0}).load()
+    # A byte-identical record is the same rollout recorded again.
+    loader = loader_for(tmp_path, rollout(), rollout())
+    (trace,) = loader.load()
+    assert trace.id == "rollout-1" and trace.source_url.endswith("#L1")
+    assert loader.describe()["duplicate_record_count"] == 1
 
 
 def test_explicit_cli_source_selection(tmp_path):
@@ -358,7 +374,7 @@ def test_upstream_opencode_producer_and_collector_fixtures(producer, case):
     loader = GymTraceLoader(GymTraceConfig(path=path, format="json"))
     trace = next(iter(loader.load()))
     assert trace.id == source["rollout_id"] == "0-0"
-    assert trace.attributes["logical_case_id"] == source["task_id"] == "0"
+    assert trace.case_id == source["task_id"] == "0"
     assert trace.attributes["gym"] == record
     assert trace.attributes["gym_loader_gaps"] == []
     assert loader.describe()["gap_count"] == len(source["gaps"])
@@ -511,7 +527,7 @@ def test_responses_envelope_maps_root_llm_and_paired_tools(tmp_path):
     assert trace.id == "gym-" + hashlib.sha256(line.strip()).hexdigest()[:16]
     assert trace.attributes["gym"] == source
     assert trace.attributes["gym_source_shape"] == "rollout_envelope"
-    assert trace.attributes["logical_case_id"] == "gym-task-index-3"
+    assert trace.case_id == "gym-task-index-3"
     assert trace.evaluator_results == {"gym.reward": 1}
     assert loader.describe()["gap_count"] == 2
     assert trace.attributes["gym_loader_gaps"] == [
@@ -528,9 +544,8 @@ def test_responses_envelope_maps_root_llm_and_paired_tools(tmp_path):
     assert tool_catalog(trace) == {"lookup": {"type": "object"}, "audit": {"type": "object"}}
     model, paired, unpaired = root.children
     assert model.kind is SpanKind.LLM and model.model == "test-model"
-    assert model.token_counts == TokenCounts(
-        input_total=30, cached_input_tokens=10, output_tokens=7
-    )
+    assert model.token_counts is None
+    assert trace.attributes["gym"]["response"]["usage"] == source["response"]["usage"]
     assert model.output == source["response"]["output"]
     assert model.start_time is None and model.end_time is None
     assert paired.input == {"sku": 1} and paired.output == "14"
@@ -558,7 +573,7 @@ def test_standalone_responses_object_and_null_attachment(tmp_path):
     trace = next(iter(loader_for(tmp_path, response, format="json").load()))
     (root,) = trace.root_spans
     assert trace.attributes["gym_source_shape"] == "responses_object"
-    assert "logical_case_id" not in trace.attributes
+    assert trace.case_id is None
     assert root.input is UNSET and root.output == "14 bolts."
     assert root.children[0].input is UNSET
     # A standalone response has no ``response`` wrapper; paths point into the record itself.
@@ -580,8 +595,8 @@ def test_responses_keep_missing_and_explicitly_empty_values_apart(tmp_path):
     source["response"]["output"][-1]["content"] = [{"type": "output_text", "text": ""}]
     (root,) = next(iter(loader_for(tmp_path, source).load())).root_spans
     assert root.input == [] and root.output == ""
-    # Missing cache details leave only the cache counts unknown.
-    assert root.children[0].token_counts == TokenCounts(input_total=900, output_tokens=5)
+    # Native usage is interpreted by evidence extraction, not ingestion.
+    assert root.children[0].token_counts is None
 
 
 def test_responses_final_output_keeps_refusal_text(tmp_path):
@@ -636,7 +651,6 @@ def test_response_error_code_marks_model_span(tmp_path):
         "orphan_result",
         "history",
         "prompt_after_echo",
-        "prompt_without_input",
         "remote",
         "remote_on_response",
         "item",
@@ -664,9 +678,6 @@ def test_ambiguous_responses_records_rejected(tmp_path, mutation):
             copy.deepcopy(request["input"][0]),
             {"type": "message", "role": "user", "content": "Another prompt"},
         ]
-    elif mutation == "prompt_without_input":
-        source["responses_create_params"]["input"] = []
-        output.insert(0, {"type": "message", "role": "user", "content": "Hidden prompt"})
     elif mutation == "remote":
         source["responses_create_params"]["previous_response_id"] = "resp-0"
     elif mutation == "remote_on_response":
@@ -694,11 +705,59 @@ def test_standalone_response_with_remote_state_rejected(tmp_path, field, value):
         loader_for(tmp_path, response, format="json").load()
 
 
-def test_standalone_response_with_prompt_output_rejected(tmp_path):
+def test_prompt_role_output_after_model_items_or_without_input_loads(tmp_path):
+    # A multi-turn agent appends the environment's reply as a user message, then calls
+    # the model again.
+    source = envelope()
+    output = source["response"]["output"]
+    output[2]["arguments"] = "{}"  # Undecodable arguments leave turns unset.
+    reply = {"type": "message", "role": "user", "content": "And nuts?"}
+    answer = {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "9 nuts."}],
+    }
+    output += [reply, answer]
+    (root,) = next(iter(loader_for(tmp_path, source).load())).root_spans
+    assert root.output == "9 nuts."
+    assert [
+        (turn.role, turn.authorship, turn.llm_span_ids, turn.content) for turn in root.turns[-2:]
+    ] == [
+        (TurnRole.USER, Authorship.UNKNOWN, [], "And nuts?"),
+        (TurnRole.AGENT, Authorship.MODEL, ["gym/response/model"], [TextPart(text="9 nuts.")]),
+    ]
+    assert root.turns[-2].extra["gym"]["item_path"] == "$.response.output[5]"
+    # Without request input, the output is the whole conversation.
     response = envelope()["response"]
-    response["output"].insert(0, {"type": "message", "role": "system", "content": "Injected"})
-    with pytest.raises(GymTraceLoadError, match="prompt-role items"):
-        loader_for(tmp_path, response, format="json").load()
+    response["output"][2]["arguments"] = "{}"
+    response["output"][:0] = [
+        {"type": "message", "role": "system", "content": "Rules"},
+        {"type": "message", "role": "user", "content": "How many bolts?"},
+    ]
+    (root,) = next(iter(loader_for(tmp_path, response, format="json").load())).root_spans
+    assert [(turn.role, turn.authorship) for turn in root.turns[:2]] == [
+        (TurnRole.SYSTEM, Authorship.UNKNOWN),
+        (TurnRole.USER, Authorship.UNKNOWN),
+    ]
+    assert root.children[1].tool_call.prior_user_text == "How many bolts?"
+
+
+@pytest.mark.parametrize(
+    "transitions, flag, match",
+    [
+        # A later transition that rewrites history (aviary's collapse_old_env_states).
+        ([[{"role": "user", "content": "A"}], [{"role": "user", "content": "B"}]], True, "extend"),
+        ([], True, "nonempty array"),
+        ([[{"role": "user", "content": "A"}]], False, "invalid Gym rollout"),
+    ],
+)
+def test_unusable_transitions_rejected(tmp_path, transitions, flag, match):
+    source = envelope()
+    source["responses_create_params"]["input"] = []
+    source["response"]["output"] = transitions
+    source["response"]["contains_transitions"] = flag
+    with pytest.raises(GymTraceLoadError, match=match):
+        loader_for(tmp_path, source).load()
 
 
 def test_eval_author_responses_fixtures_load(tmp_path):
@@ -715,6 +774,14 @@ def test_eval_author_responses_fixtures_load(tmp_path):
         {"role": "user", "content": "How many units of BOLT-17 are available?"}
     ]
     assert_result_counts(trace)
+    # Eval Author's converter projected this record to user, call and answer steps.
+    turns = trace.root_spans[0].turns
+    assert turns is not UNSET
+    assert [(turn.role, turn.tool_call_span_ids) for turn in turns] == [
+        (TurnRole.USER, []),
+        (TurnRole.AGENT, ["gym/response/tool/0"]),
+        (TurnRole.AGENT, []),
+    ]
     lines = (RESPONSES_FIXTURES / "ambiguous.jsonl").read_bytes().splitlines()
     assert len(lines) == 2
     for index, line in enumerate(lines):
@@ -725,6 +792,240 @@ def test_eval_author_responses_fixtures_load(tmp_path):
         assert tool.tool_name == "lookup_item" and tool.input == {"sku": "BOLT-17"}
         assert tool.tool_call is not None and tool.tool_call.results is not UNSET
         assert tool.tool_call.result_count == len(tool.tool_call.results) == 1
-    # Byte-identical rows share a content identity, so one JSONL corpus is a duplicate.
-    with pytest.raises(GymTraceLoadError):
-        GymTraceLoader(GymTraceConfig(path=RESPONSES_FIXTURES / "ambiguous.jsonl")).load()
+    # Byte-identical rows are one rollout recorded twice: it loads once.
+    loader = GymTraceLoader(GymTraceConfig(path=RESPONSES_FIXTURES / "ambiguous.jsonl"))
+    (trace,) = loader.load()
+    assert trace.id == "gym-" + hashlib.sha256(lines[0].strip()).hexdigest()[:16]
+    assert loader.describe()["duplicate_record_count"] == 1
+
+
+# Conversation turns, ported from Eval Author's gym-to-atif converter
+# (tests/test_gym_to_atif.py) onto Span.turns.
+
+IMAGE = "data:image/png;base64,iVBORw0KGgo="
+
+
+def turn_rollout():
+    return {
+        "responses_create_params": {
+            "instructions": "Recorded system instructions",
+            "input": [
+                {"role": "developer", "content": "Recorded developer rules"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "Read the public fixture."},
+                        {"type": "input_image", "image_url": IMAGE},
+                    ],
+                },
+            ],
+            "tools": [{"type": "function", "name": "read", "parameters": {"type": "object"}}],
+        },
+        "response": {
+            "object": "response",
+            "id": "response-fixture",
+            "model": "example-model",
+            "status": "completed",
+            "output": [
+                {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "Recorded summary"}],
+                    "encrypted_content": "OPAQUE-CONTENT",
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call-1",
+                    "name": "read",
+                    "arguments": '{"path": "fixture.json"}',
+                },
+                {"type": "function_call", "call_id": "call-2", "name": "read", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call-2", "output": "second"},
+                {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": [
+                        {"type": "input_image", "image_url": "https://example.org/fixture.png"}
+                    ],
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Done."}],
+                },
+            ],
+        },
+    }
+
+
+def test_responses_items_become_ordered_linked_turns(tmp_path):
+    trace = next(iter(loader_for(tmp_path, turn_rollout()).load()))
+    (root,) = trace.root_spans
+    model, first, second = root.children
+    assert (first.tool_call.call_id, second.tool_call.call_id) == ("call-1", "call-2")
+    rows = [
+        (
+            turn.id,
+            turn.role,
+            turn.authorship,
+            turn.content,
+            turn.llm_span_ids,
+            turn.tool_call_span_ids,
+            turn.extra["gym"],
+        )
+        for turn in root.turns
+    ]
+    copied, unknown, generated = Authorship.COPIED_CONTEXT, Authorship.UNKNOWN, Authorship.MODEL
+    assert rows == [
+        (
+            "gym/response/turn/1",
+            TurnRole.SYSTEM,
+            copied,
+            "Recorded system instructions",
+            [],
+            [],
+            {"item_path": "$.responses_create_params.instructions", "role": "system"},
+        ),
+        (
+            "gym/response/turn/2",
+            TurnRole.SYSTEM,
+            copied,
+            "Recorded developer rules",
+            [],
+            [],
+            {"item_path": "$.responses_create_params.input[0]", "role": "developer"},
+        ),
+        (
+            "gym/response/turn/3",
+            TurnRole.USER,
+            unknown,
+            [
+                TextPart(text="Read the public fixture."),
+                ImagePart(media_type="image/png", path=IMAGE),
+            ],
+            [],
+            [],
+            {"item_path": "$.responses_create_params.input[1]", "role": "user"},
+        ),
+        (
+            "gym/response/turn/4",
+            TurnRole.AGENT,
+            generated,
+            UNSET,
+            [model.id],
+            [],
+            {
+                "item_path": "$.response.output[0]",
+                "reasoning_summary": [{"type": "summary_text", "text": "Recorded summary"}],
+            },
+        ),
+        # Adjacent calls form one turn; results stay on their TOOL spans.
+        (
+            "gym/response/turn/5",
+            TurnRole.AGENT,
+            generated,
+            UNSET,
+            [model.id],
+            [first.id, second.id],
+            {"item_path": "$.response.output[1]"},
+        ),
+        (
+            "gym/response/turn/6",
+            TurnRole.AGENT,
+            generated,
+            [TextPart(text="Done.")],
+            [model.id],
+            [],
+            {"item_path": "$.response.output[5]", "role": "assistant"},
+        ),
+    ]
+    assert all(turn.reasoning is UNSET for turn in root.turns)
+    assert "OPAQUE-CONTENT" not in json.dumps([turn.model_dump(mode="json") for turn in root.turns])
+    assert trace.losses == []
+
+
+def test_request_history_turns_are_not_attributed_to_the_response(tmp_path):
+    source = envelope()
+    history = [
+        {"type": "message", "role": "user", "content": "How many bolts?"},
+        {"type": "function_call", "call_id": "a", "name": "lookup", "arguments": "{}"},
+    ]
+    source["responses_create_params"]["input"] = history
+    source["response"]["output"] = [
+        {**history[0], "id": "msg-1", "status": "completed"},
+        history[1],
+        {"type": "function_call", "call_id": "b", "name": "lookup", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "a", "output": "14"},
+    ]
+    (root,) = next(iter(loader_for(tmp_path, source).load())).root_spans
+    model, called, generated = root.children
+    # The echoed request prefix is counted once; calls split at the request boundary.
+    # Request history is copied context; its calls still link their TOOL spans.
+    assert [
+        (turn.role, turn.authorship, turn.llm_span_ids, turn.tool_call_span_ids)
+        for turn in root.turns
+    ] == [
+        (TurnRole.SYSTEM, Authorship.COPIED_CONTEXT, [], []),
+        (TurnRole.USER, Authorship.UNKNOWN, [], []),
+        (TurnRole.AGENT, Authorship.COPIED_CONTEXT, [], [called.id]),
+        (TurnRole.AGENT, Authorship.MODEL, [model.id], [generated.id]),
+    ]
+
+
+def test_bridge_serialized_images_become_image_parts(tmp_path):
+    source = turn_rollout()
+    image = {"type": "image", "source": {"media_type": "image/png", "path": "/unread/local.png"}}
+    source["atif_conversion"] = {"source_trajectory_paths": ["/unread/source.json"]}
+    source["responses_create_params"]["input"][1]["content"] = json.dumps([image])
+    source["response"]["output"][-1]["content"][0]["text"] = json.dumps([image])
+    (root,) = next(iter(loader_for(tmp_path, source).load())).root_spans
+    part = ImagePart(media_type="image/png", path="/unread/local.png")
+    assert root.turns[2].content == [part]
+    assert root.turns[-1].content == [part]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "standalone",
+        "no_user",
+        "unknown_role",
+        "non_object_arguments",
+        "unsupported_part",
+        "opaque_image",
+        "null_result",
+        "multi_trajectory_bridge",
+    ],
+)
+def test_records_without_a_mappable_conversation_leave_turns_unset(tmp_path, mutation):
+    source = turn_rollout()
+    request, output = source["responses_create_params"], source["response"]["output"]
+    if mutation == "standalone":
+        source = source["response"]
+    elif mutation == "no_user":
+        request["input"] = request["input"][:1]
+    elif mutation == "unknown_role":
+        request["input"][0]["role"] = "tool"
+    elif mutation == "non_object_arguments":
+        output[1]["arguments"] = "[]"
+    elif mutation == "unsupported_part":
+        output[-1]["content"] = [{"type": "output_audio", "data": "..."}]
+    elif mutation == "opaque_image":
+        request["input"][1]["content"][1]["image_url"] = "https://example.org/opaque"
+    elif mutation == "null_result":
+        output[3]["output"] = None
+    else:
+        source["atif_conversion"] = {"trajectories": [{"session_id": "a"}, {"session_id": "b"}]}
+    trace = next(iter(loader_for(tmp_path, source).load()))
+    (root,) = trace.root_spans
+    assert root.kind is SpanKind.AGENT and root.turns is UNSET
+    assert [span.kind for span in root.children] == [SpanKind.LLM, SpanKind.TOOL, SpanKind.TOOL]
+    assert trace.losses == []
+
+
+def test_native_attachment_records_have_no_turns(tmp_path):
+    trace = next(iter(loader_for(tmp_path, rollout()).load()))
+    pending = list(trace.root_spans)
+    while pending:
+        span = pending.pop()
+        assert span.turns is UNSET
+        pending.extend(span.children)

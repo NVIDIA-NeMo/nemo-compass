@@ -14,6 +14,10 @@ from compass.compass_signals.anomaly_and_patterns.signal import (
     AnomalyAndPatternsCompassSignal,
     AnomalyAndPatternsConfig,
 )
+from compass.compass_signals.cost_efficiency.signal import (
+    CostEfficiencyCompassSignal,
+    CostEfficiencyConfig,
+)
 from compass.compass_signals.ethos_divergence.ethos_divergence_detector import (
     EthosDivergenceCompassSignal,
     EthosDivergenceConfig,
@@ -37,9 +41,11 @@ ANOMALY_AND_PATTERNS = AnomalyAndPatternsCompassSignal.name
 TOOL_ISSUES = ToolIssueCompassSignal.name
 ETHOS_DIVERGENCE = EthosDivergenceCompassSignal.name
 GRADER_FAILURE_PATTERNS = GraderFailurePatternsCompassSignal.name
+COST_EFFICIENCY = CostEfficiencyCompassSignal.name
 BUILTIN_SIGNAL_NAMES = (
     ANOMALY_AND_PATTERNS,
     TOOL_ISSUES,
+    COST_EFFICIENCY,
     ETHOS_DIVERGENCE,
     GRADER_FAILURE_PATTERNS,
     USER_SENTIMENT,
@@ -50,6 +56,7 @@ def registered_builtin_signals(
     *,
     anomaly_and_patterns: AnomalyAndPatternsConfig | None = None,
     tool_issues: ToolIssueConfig | None = None,
+    cost_efficiency: CostEfficiencyConfig | None = None,
     ethos_divergence: EthosDivergenceConfig | None = None,
     grader_failure_patterns: GraderFailurePatternsConfig | None = None,
     user_sentiment: UserSentimentConfig | None = None,
@@ -63,6 +70,10 @@ def registered_builtin_signals(
         registry.register(AnomalyAndPatternsCompassSignal(config=anomaly_and_patterns))
     if tool_issues is not None:
         registry.register(ToolIssueCompassSignal(config=tool_issues))
+    if cost_efficiency is not None:
+        if llm_factory is None:
+            raise ValueError("cost-efficiency requires an LLM client factory")
+        registry.register(CostEfficiencyCompassSignal(config=cost_efficiency, llm=llm_factory()))
     if ethos_divergence is not None:
         if llm_factory is None:
             raise ValueError("ethos-divergence requires an LLM client factory")
@@ -87,6 +98,7 @@ def registered_builtin_signals(
 __all__ = [
     "ANOMALY_AND_PATTERNS",
     "BUILTIN_SIGNAL_NAMES",
+    "COST_EFFICIENCY",
     "ETHOS_DIVERGENCE",
     "GRADER_FAILURE_PATTERNS",
     "TOOL_ISSUES",

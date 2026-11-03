@@ -17,8 +17,11 @@ analysis. Partners can run the NeMo Compass pipeline, reuse individual Compass S
 [Insight compilation](../src/compass/insights_generation/insight_compilation.py) investigates
 candidates in their original traces, assesses their impact and whether a developer can fix them,
 merges duplicates across signals and existing insights, and ranks the results. Its instructions
-require each new insight to have support from more than one trace and to merge symptoms only when
-they establish the same problem. These decisions rely on model judgment.
+use ETHOS.md, when available, to interpret intended behavior and prioritize findings.
+New insights normally require multiple supporting traces; a single trace can qualify if it
+clearly establishes a meaningful violation of an explicit ETHOS constraint. Symptoms are
+merged only when they establish the same problem. Severity remains grounded in observed
+consequences, and existing insights are preserved. These decisions rely on model judgment.
 
 When `code_base` or ETHOS.md is available, [candidate problem validation](../src/compass/insights_generation/validation.py)
 runs before compilation. Each candidate problem gets one investigation with its supporting

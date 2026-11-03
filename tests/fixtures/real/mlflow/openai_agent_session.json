@@ -1,0 +1,336 @@
+{
+  "traces": [
+    {
+      "info": {
+        "trace_id": "tr-7a33c505e9fb2de5e6af3c337c9e68c7",
+        "trace_location": {
+          "type": "MLFLOW_EXPERIMENT",
+          "mlflow_experiment": {
+            "experiment_id": "1"
+          }
+        },
+        "request_time": "2026-10-30T15:59:02.186Z",
+        "state": "OK",
+        "trace_metadata": {
+          "mlflow.source.git.branch": "",
+          "mlflow.source.name": "generate_openai_agent.py",
+          "mlflow.trace.sizeStats": "{\"total_size_bytes\": 4097, \"num_spans\": 2, \"max\": 2434, \"p25\": 1109, \"p50\": 1551, \"p75\": 1992}",
+          "mlflow.trace.tokenUsage": "{\"input_tokens\": 36, \"output_tokens\": 28, \"total_tokens\": 64}",
+          "mlflow.traceOutputs": "\"Standard shipping takes 3-5 business days.\"",
+          "mlflow.trace_schema.version": "3",
+          "mlflow.trace.sizeBytes": "4097",
+          "mlflow.traceInputs": "{\"messages\": [{\"role\": \"user\", \"content\": \"How long does standard shipping take?\"}]}",
+          "mlflow.user": "compass",
+          "mlflow.source.git.commit": "",
+          "mlflow.source.git.repoURL": "",
+          "mlflow.source.type": "LOCAL",
+          "mlflow.trace.infoFinalized": "true",
+          "mlflow.trace.cost": "{\"input_cost\": 5.4e-06, \"output_cost\": 1.68e-05, \"total_cost\": 2.2199999999999998e-05}"
+        },
+        "tags": {
+          "mlflow.trace.spansLocation": "TRACKING_STORE",
+          "mlflow.artifactLocation": "/private/tmp/mlflow-fixture-regen/mlruns/1/traces/tr-7a33c505e9fb2de5e6af3c337c9e68c7/artifacts",
+          "mlflow.traceName": "support_agent"
+        },
+        "request_preview": "How long does standard shipping take?",
+        "response_preview": "\"Standard shipping takes 3-5 business days.\"",
+        "execution_duration_ms": 0
+      },
+      "data": {
+        "spans": [
+          {
+            "trace_id": "ejPFBen7LeXmrzwzfJ5oxw==",
+            "span_id": "Q4/84LoB+rA=",
+            "parent_span_id": null,
+            "name": "support_agent",
+            "start_time_unix_nano": 1793375942186674000,
+            "end_time_unix_nano": 1793375942187297000,
+            "events": [],
+            "status": {
+              "code": "STATUS_CODE_OK",
+              "message": ""
+            },
+            "attributes": {
+              "mlflow.traceRequestId": "\"tr-7a33c505e9fb2de5e6af3c337c9e68c7\"",
+              "mlflow.spanType": "\"AGENT\"",
+              "mlflow.spanFunctionName": "\"support_agent\"",
+              "mlflow.spanInputs": "{\"messages\": [{\"role\": \"user\", \"content\": \"How long does standard shipping take?\"}]}",
+              "mlflow.spanOutputs": "\"Standard shipping takes 3-5 business days.\"",
+              "mlflow.spanLogLevel": "20"
+            },
+            "links": []
+          },
+          {
+            "trace_id": "ejPFBen7LeXmrzwzfJ5oxw==",
+            "span_id": "b6sDTvtBMZI=",
+            "parent_span_id": "Q4/84LoB+rA=",
+            "name": "Completions",
+            "start_time_unix_nano": 1793375942186815000,
+            "end_time_unix_nano": 1793375942187267000,
+            "events": [],
+            "status": {
+              "code": "STATUS_CODE_OK",
+              "message": ""
+            },
+            "attributes": {
+              "mlflow.traceRequestId": "\"tr-7a33c505e9fb2de5e6af3c337c9e68c7\"",
+              "mlflow.spanType": "\"CHAT_MODEL\"",
+              "mlflow.spanInputs": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"system\", \"content\": \"You are a concise customer-support agent.\"}, {\"role\": \"user\", \"content\": \"How long does standard shipping take?\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"get_order_status\", \"description\": \"Look up the shipping status of an order.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"order_id\": {\"type\": \"string\"}}, \"required\": [\"order_id\"]}}}], \"temperature\": 0}",
+              "model": "\"gpt-4o-mini\"",
+              "tools": "[{\"type\": \"function\", \"function\": {\"name\": \"get_order_status\", \"description\": \"Look up the shipping status of an order.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"order_id\": {\"type\": \"string\"}}, \"required\": [\"order_id\"]}}}]",
+              "temperature": "0",
+              "mlflow.message.format": "\"openai\"",
+              "mlflow.chat.tools": "[{\"type\": \"function\", \"function\": {\"name\": \"get_order_status\", \"description\": \"Look up the shipping status of an order.\", \"parameters\": {\"properties\": {\"order_id\": {\"type\": \"string\"}}, \"type\": \"object\", \"required\": [\"order_id\"]}}}]",
+              "mlflow.llm.model": "\"gpt-4o-mini\"",
+              "mlflow.chat.tokenUsage": "{\"input_tokens\": 36, \"output_tokens\": 28, \"total_tokens\": 64}",
+              "mlflow.spanOutputs": "{\"id\": \"chatcmpl-fake-0004\", \"choices\": [{\"finish_reason\": \"stop\", \"index\": 0, \"logprobs\": null, \"message\": {\"content\": \"Standard shipping takes 3-5 business days.\", \"refusal\": null, \"role\": \"assistant\", \"annotations\": [], \"audio\": null, \"function_call\": null, \"tool_calls\": null}}], \"created\": 1793318404, \"model\": \"gpt-4o-mini-2024-07-18\", \"object\": \"chat.completion\", \"moderation\": null, \"service_tier\": null, \"system_fingerprint\": \"fp_fake\", \"usage\": {\"completion_tokens\": 28, \"prompt_tokens\": 36, \"total_tokens\": 64, \"completion_tokens_details\": null, \"prompt_tokens_details\": null}}",
+              "mlflow.spanLogLevel": "20",
+              "mlflow.llm.cost": "{\"input_cost\": 5.4e-06, \"output_cost\": 1.68e-05, \"total_cost\": 2.2199999999999998e-05}"
+            },
+            "links": []
+          }
+        ]
+      }
+    },
+    {
+      "info": {
+        "trace_id": "tr-4d16959a8f191e47e3692e8770745c76",
+        "trace_location": {
+          "type": "MLFLOW_EXPERIMENT",
+          "mlflow_experiment": {
+            "experiment_id": "1"
+          }
+        },
+        "request_time": "2026-10-30T15:59:02.185Z",
+        "state": "OK",
+        "trace_metadata": {
+          "mlflow.source.git.branch": "",
+          "mlflow.source.name": "generate_openai_agent.py",
+          "mlflow.trace.sizeStats": "{\"total_size_bytes\": 5037, \"num_spans\": 2, \"max\": 2696, \"p25\": 1370, \"p50\": 1812, \"p75\": 2254}",
+          "mlflow.trace.tokenUsage": "{\"input_tokens\": 76, \"output_tokens\": 49, \"total_tokens\": 125}",
+          "mlflow.user": "compass",
+          "mlflow.trace.sizeBytes": "5037",
+          "mlflow.trace.cost": "{\"input_cost\": 1.14e-05, \"output_cost\": 2.94e-05, \"total_cost\": 4.08e-05}",
+          "mlflow.source.git.commit": "",
+          "mlflow.source.type": "LOCAL",
+          "mlflow.trace.infoFinalized": "true",
+          "mlflow.trace.session": "support-chat-42",
+          "mlflow.traceOutputs": "\"Order A-1001 has already shipped, so I can't change its address. You can request a redirect from UPS with the tracking number.\"",
+          "mlflow.trace_schema.version": "3",
+          "mlflow.trace.user": "user-7",
+          "mlflow.traceInputs": "{\"messages\": [{\"role\": \"user\", \"content\": \"Where is my order A-1001?\"}, {\"role\": \"assistant\", \"content\": \"Order A-1001 has shipped via UPS and should arrive on 2026-11-03.\"}, {\"role\": \"user\", \"content\": \"Can you change its delivery address?\"}]}",
+          "mlflow.source.git.repoURL": ""
+        },
+        "tags": {
+          "mlflow.trace.spansLocation": "TRACKING_STORE",
+          "mlflow.artifactLocation": "/private/tmp/mlflow-fixture-regen/mlruns/1/traces/tr-4d16959a8f191e47e3692e8770745c76/artifacts",
+          "mlflow.traceName": "support_agent"
+        },
+        "request_preview": "Can you change its delivery address?",
+        "response_preview": "\"Order A-1001 has already shipped, so I can't change its address. You can request a redirect from UPS with the tracking number.\"",
+        "execution_duration_ms": 1
+      },
+      "data": {
+        "spans": [
+          {
+            "trace_id": "TRaVmo8ZHkfjaS6HcHRcdg==",
+            "span_id": "9QFEFHFUCfI=",
+            "parent_span_id": null,
+            "name": "support_agent",
+            "start_time_unix_nano": 1793375942185812000,
+            "end_time_unix_nano": 1793375942186626000,
+            "events": [],
+            "status": {
+              "code": "STATUS_CODE_OK",
+              "message": ""
+            },
+            "attributes": {
+              "mlflow.traceRequestId": "\"tr-4d16959a8f191e47e3692e8770745c76\"",
+              "mlflow.spanType": "\"AGENT\"",
+              "mlflow.spanFunctionName": "\"support_agent\"",
+              "mlflow.spanInputs": "{\"messages\": [{\"role\": \"user\", \"content\": \"Where is my order A-1001?\"}, {\"role\": \"assistant\", \"content\": \"Order A-1001 has shipped via UPS and should arrive on 2026-11-03.\"}, {\"role\": \"user\", \"content\": \"Can you change its delivery address?\"}]}",
+              "mlflow.spanOutputs": "\"Order A-1001 has already shipped, so I can't change its address. You can request a redirect from UPS with the tracking number.\"",
+              "mlflow.spanLogLevel": "20"
+            },
+            "links": []
+          },
+          {
+            "trace_id": "TRaVmo8ZHkfjaS6HcHRcdg==",
+            "span_id": "hYfJbQ3Z+Vw=",
+            "parent_span_id": "9QFEFHFUCfI=",
+            "name": "Completions",
+            "start_time_unix_nano": 1793375942185992000,
+            "end_time_unix_nano": 1793375942186579000,
+            "events": [],
+            "status": {
+              "code": "STATUS_CODE_OK",
+              "message": ""
+            },
+            "attributes": {
+              "mlflow.traceRequestId": "\"tr-4d16959a8f191e47e3692e8770745c76\"",
+              "mlflow.spanType": "\"CHAT_MODEL\"",
+              "mlflow.spanInputs": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"system\", \"content\": \"You are a concise customer-support agent.\"}, {\"role\": \"user\", \"content\": \"Where is my order A-1001?\"}, {\"role\": \"assistant\", \"content\": \"Order A-1001 has shipped via UPS and should arrive on 2026-11-03.\"}, {\"role\": \"user\", \"content\": \"Can you change its delivery address?\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"get_order_status\", \"description\": \"Look up the shipping status of an order.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"order_id\": {\"type\": \"string\"}}, \"required\": [\"order_id\"]}}}], \"temperature\": 0}",
+              "model": "\"gpt-4o-mini\"",
+              "tools": "[{\"type\": \"function\", \"function\": {\"name\": \"get_order_status\", \"description\": \"Look up the shipping status of an order.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"order_id\": {\"type\": \"string\"}}, \"required\": [\"order_id\"]}}}]",
+              "temperature": "0",
+              "mlflow.message.format": "\"openai\"",
+              "mlflow.chat.tools": "[{\"type\": \"function\", \"function\": {\"name\": \"get_order_status\", \"description\": \"Look up the shipping status of an order.\", \"parameters\": {\"properties\": {\"order_id\": {\"type\": \"string\"}}, \"type\": \"object\", \"required\": [\"order_id\"]}}}]",
+              "mlflow.llm.model": "\"gpt-4o-mini\"",
+              "mlflow.chat.tokenUsage": "{\"input_tokens\": 76, \"output_tokens\": 49, \"total_tokens\": 125}",
+              "mlflow.spanOutputs": "{\"id\": \"chatcmpl-fake-0003\", \"choices\": [{\"finish_reason\": \"stop\", \"index\": 0, \"logprobs\": null, \"message\": {\"content\": \"Order A-1001 has already shipped, so I can't change its address. You can request a redirect from UPS with the tracking number.\", \"refusal\": null, \"role\": \"assistant\", \"annotations\": [], \"audio\": null, \"function_call\": null, \"tool_calls\": null}}], \"created\": 1793318403, \"model\": \"gpt-4o-mini-2024-07-18\", \"object\": \"chat.completion\", \"moderation\": null, \"service_tier\": null, \"system_fingerprint\": \"fp_fake\", \"usage\": {\"completion_tokens\": 49, \"prompt_tokens\": 76, \"total_tokens\": 125, \"completion_tokens_details\": null, \"prompt_tokens_details\": null}}",
+              "mlflow.spanLogLevel": "20",
+              "mlflow.llm.cost": "{\"input_cost\": 1.14e-05, \"output_cost\": 2.94e-05, \"total_cost\": 4.08e-05}"
+            },
+            "links": []
+          }
+        ]
+      }
+    },
+    {
+      "info": {
+        "trace_id": "tr-da94d9e34d258bb29b8963aac45c1c2e",
+        "trace_location": {
+          "type": "MLFLOW_EXPERIMENT",
+          "mlflow_experiment": {
+            "experiment_id": "1"
+          }
+        },
+        "request_time": "2026-10-30T15:59:02.128Z",
+        "state": "OK",
+        "trace_metadata": {
+          "mlflow.source.git.branch": "",
+          "mlflow.source.name": "generate_openai_agent.py",
+          "mlflow.trace.sizeStats": "{\"total_size_bytes\": 7804, \"num_spans\": 4, \"max\": 2847, \"p25\": 669, \"p50\": 1609, \"p75\": 2616}",
+          "mlflow.trace.tokenUsage": "{\"input_tokens\": 148, \"output_tokens\": 89, \"total_tokens\": 237}",
+          "mlflow.user": "compass",
+          "mlflow.trace.sizeBytes": "7804",
+          "mlflow.trace.cost": "{\"input_cost\": 2.2199999999999998e-05, \"output_cost\": 5.34e-05, \"total_cost\": 7.56e-05}",
+          "mlflow.source.git.commit": "",
+          "mlflow.source.type": "LOCAL",
+          "mlflow.trace.infoFinalized": "true",
+          "mlflow.trace.session": "support-chat-42",
+          "mlflow.traceOutputs": "\"Order A-1001 has shipped via UPS and should arrive on 2026-11-03.\"",
+          "mlflow.trace_schema.version": "3",
+          "mlflow.trace.user": "user-7",
+          "mlflow.traceInputs": "{\"messages\": [{\"role\": \"user\", \"content\": \"Where is my order A-1001?\"}]}",
+          "mlflow.source.git.repoURL": ""
+        },
+        "tags": {
+          "mlflow.trace.spansLocation": "TRACKING_STORE",
+          "mlflow.artifactLocation": "/private/tmp/mlflow-fixture-regen/mlruns/1/traces/tr-da94d9e34d258bb29b8963aac45c1c2e/artifacts",
+          "mlflow.traceName": "support_agent"
+        },
+        "request_preview": "Where is my order A-1001?",
+        "response_preview": "\"Order A-1001 has shipped via UPS and should arrive on 2026-11-03.\"",
+        "execution_duration_ms": 57
+      },
+      "data": {
+        "spans": [
+          {
+            "trace_id": "2pTZ400li7KbiWOqxFwcLg==",
+            "span_id": "3cosjwfMNYU=",
+            "parent_span_id": null,
+            "name": "support_agent",
+            "start_time_unix_nano": 1793375942128276000,
+            "end_time_unix_nano": 1793375942185707000,
+            "events": [],
+            "status": {
+              "code": "STATUS_CODE_OK",
+              "message": ""
+            },
+            "attributes": {
+              "mlflow.traceRequestId": "\"tr-da94d9e34d258bb29b8963aac45c1c2e\"",
+              "mlflow.spanType": "\"AGENT\"",
+              "mlflow.spanFunctionName": "\"support_agent\"",
+              "mlflow.spanInputs": "{\"messages\": [{\"role\": \"user\", \"content\": \"Where is my order A-1001?\"}]}",
+              "mlflow.spanOutputs": "\"Order A-1001 has shipped via UPS and should arrive on 2026-11-03.\"",
+              "mlflow.spanLogLevel": "20"
+            },
+            "links": []
+          },
+          {
+            "trace_id": "2pTZ400li7KbiWOqxFwcLg==",
+            "span_id": "Ity8jxhTc4s=",
+            "parent_span_id": "3cosjwfMNYU=",
+            "name": "Completions",
+            "start_time_unix_nano": 1793375942177476000,
+            "end_time_unix_nano": 1793375942184449000,
+            "events": [],
+            "status": {
+              "code": "STATUS_CODE_OK",
+              "message": ""
+            },
+            "attributes": {
+              "mlflow.traceRequestId": "\"tr-da94d9e34d258bb29b8963aac45c1c2e\"",
+              "mlflow.spanType": "\"CHAT_MODEL\"",
+              "mlflow.spanInputs": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"system\", \"content\": \"You are a concise customer-support agent.\"}, {\"role\": \"user\", \"content\": \"Where is my order A-1001?\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"get_order_status\", \"description\": \"Look up the shipping status of an order.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"order_id\": {\"type\": \"string\"}}, \"required\": [\"order_id\"]}}}], \"temperature\": 0}",
+              "model": "\"gpt-4o-mini\"",
+              "tools": "[{\"type\": \"function\", \"function\": {\"name\": \"get_order_status\", \"description\": \"Look up the shipping status of an order.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"order_id\": {\"type\": \"string\"}}, \"required\": [\"order_id\"]}}}]",
+              "temperature": "0",
+              "mlflow.message.format": "\"openai\"",
+              "mlflow.chat.tools": "[{\"type\": \"function\", \"function\": {\"name\": \"get_order_status\", \"description\": \"Look up the shipping status of an order.\", \"parameters\": {\"properties\": {\"order_id\": {\"type\": \"string\"}}, \"type\": \"object\", \"required\": [\"order_id\"]}}}]",
+              "mlflow.llm.model": "\"gpt-4o-mini\"",
+              "mlflow.chat.tokenUsage": "{\"input_tokens\": 33, \"output_tokens\": 55, \"total_tokens\": 88}",
+              "mlflow.spanOutputs": "{\"id\": \"chatcmpl-fake-0001\", \"choices\": [{\"finish_reason\": \"tool_calls\", \"index\": 0, \"logprobs\": null, \"message\": {\"content\": null, \"refusal\": null, \"role\": \"assistant\", \"annotations\": [], \"audio\": null, \"function_call\": null, \"tool_calls\": [{\"id\": \"call_fake_0001\", \"function\": {\"arguments\": \"{\\\"order_id\\\": \\\"A-1001\\\"}\", \"name\": \"get_order_status\"}, \"type\": \"function\"}]}}], \"created\": 1793318401, \"model\": \"gpt-4o-mini-2024-07-18\", \"object\": \"chat.completion\", \"moderation\": null, \"service_tier\": null, \"system_fingerprint\": \"fp_fake\", \"usage\": {\"completion_tokens\": 55, \"prompt_tokens\": 33, \"total_tokens\": 88, \"completion_tokens_details\": null, \"prompt_tokens_details\": null}}",
+              "mlflow.spanLogLevel": "20",
+              "mlflow.llm.cost": "{\"input_cost\": 4.95e-06, \"output_cost\": 3.2999999999999996e-05, \"total_cost\": 3.7949999999999994e-05}"
+            },
+            "links": []
+          },
+          {
+            "trace_id": "2pTZ400li7KbiWOqxFwcLg==",
+            "span_id": "Fi6MQcAvwqI=",
+            "parent_span_id": "3cosjwfMNYU=",
+            "name": "get_order_status",
+            "start_time_unix_nano": 1793375942184568000,
+            "end_time_unix_nano": 1793375942184657000,
+            "events": [],
+            "status": {
+              "code": "STATUS_CODE_OK",
+              "message": ""
+            },
+            "attributes": {
+              "mlflow.traceRequestId": "\"tr-da94d9e34d258bb29b8963aac45c1c2e\"",
+              "mlflow.spanType": "\"TOOL\"",
+              "mlflow.spanFunctionName": "\"get_order_status\"",
+              "mlflow.spanInputs": "{\"order_id\": \"A-1001\"}",
+              "mlflow.spanOutputs": "{\"status\": \"shipped\", \"carrier\": \"UPS\", \"eta\": \"2026-11-03\"}",
+              "mlflow.spanLogLevel": "20"
+            },
+            "links": []
+          },
+          {
+            "trace_id": "2pTZ400li7KbiWOqxFwcLg==",
+            "span_id": "ABapQ787wPA=",
+            "parent_span_id": "3cosjwfMNYU=",
+            "name": "Completions",
+            "start_time_unix_nano": 1793375942184814000,
+            "end_time_unix_nano": 1793375942185662000,
+            "events": [],
+            "status": {
+              "code": "STATUS_CODE_OK",
+              "message": ""
+            },
+            "attributes": {
+              "mlflow.traceRequestId": "\"tr-da94d9e34d258bb29b8963aac45c1c2e\"",
+              "mlflow.spanType": "\"CHAT_MODEL\"",
+              "mlflow.spanInputs": "{\"model\": \"gpt-4o-mini\", \"messages\": [{\"role\": \"system\", \"content\": \"You are a concise customer-support agent.\"}, {\"role\": \"user\", \"content\": \"Where is my order A-1001?\"}, {\"role\": \"assistant\", \"annotations\": [], \"tool_calls\": [{\"id\": \"call_fake_0001\", \"function\": {\"arguments\": \"{\\\"order_id\\\": \\\"A-1001\\\"}\", \"name\": \"get_order_status\"}, \"type\": \"function\"}]}, {\"role\": \"tool\", \"tool_call_id\": \"call_fake_0001\", \"content\": \"{\\\"status\\\": \\\"shipped\\\", \\\"carrier\\\": \\\"UPS\\\", \\\"eta\\\": \\\"2026-11-03\\\"}\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"get_order_status\", \"description\": \"Look up the shipping status of an order.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"order_id\": {\"type\": \"string\"}}, \"required\": [\"order_id\"]}}}], \"temperature\": 0}",
+              "model": "\"gpt-4o-mini\"",
+              "tools": "[{\"type\": \"function\", \"function\": {\"name\": \"get_order_status\", \"description\": \"Look up the shipping status of an order.\", \"parameters\": {\"type\": \"object\", \"properties\": {\"order_id\": {\"type\": \"string\"}}, \"required\": [\"order_id\"]}}}]",
+              "temperature": "0",
+              "mlflow.message.format": "\"openai\"",
+              "mlflow.chat.tools": "[{\"type\": \"function\", \"function\": {\"name\": \"get_order_status\", \"description\": \"Look up the shipping status of an order.\", \"parameters\": {\"properties\": {\"order_id\": {\"type\": \"string\"}}, \"type\": \"object\", \"required\": [\"order_id\"]}}}]",
+              "mlflow.llm.model": "\"gpt-4o-mini\"",
+              "mlflow.chat.tokenUsage": "{\"input_tokens\": 115, \"output_tokens\": 34, \"total_tokens\": 149}",
+              "mlflow.spanOutputs": "{\"id\": \"chatcmpl-fake-0002\", \"choices\": [{\"finish_reason\": \"stop\", \"index\": 0, \"logprobs\": null, \"message\": {\"content\": \"Order A-1001 has shipped via UPS and should arrive on 2026-11-03.\", \"refusal\": null, \"role\": \"assistant\", \"annotations\": [], \"audio\": null, \"function_call\": null, \"tool_calls\": null}}], \"created\": 1793318402, \"model\": \"gpt-4o-mini-2024-07-18\", \"object\": \"chat.completion\", \"moderation\": null, \"service_tier\": null, \"system_fingerprint\": \"fp_fake\", \"usage\": {\"completion_tokens\": 34, \"prompt_tokens\": 115, \"total_tokens\": 149, \"completion_tokens_details\": null, \"prompt_tokens_details\": null}}",
+              "mlflow.spanLogLevel": "20",
+              "mlflow.llm.cost": "{\"input_cost\": 1.725e-05, \"output_cost\": 2.0399999999999998e-05, \"total_cost\": 3.7649999999999994e-05}"
+            },
+            "links": []
+          }
+        ]
+      }
+    }
+  ],
+  "next_page_token": null
+}

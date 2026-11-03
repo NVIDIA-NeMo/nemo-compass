@@ -10,20 +10,22 @@ from collections import defaultdict
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from itertools import islice
 from typing import TYPE_CHECKING
 
+from trace_ingest.loaders.helper.merge import Record, assemble, select_sessions
 from trace_ingest.loaders.langsmith._normalization import (
     LANGSMITH_DEFAULT_MAX_TRACES,
+    SESSION_METADATA_KEYS,
     LangSmithTraceLoadError,
     LangSmithTraceLoadReport,
     normalize_trace,
     required_id,
+    session_key,
     trace_sort_key,
     walk_spans,
 )
 from trace_ingest.loaders.trace_loaders import TraceDescription
-from trace_ingest.models import SpanKind, Trace, TraceSnapshot
+from trace_ingest.models import SpanKind, TraceSnapshot, case_key
 from trace_ingest.source_links import http_source_url
 
 if TYPE_CHECKING:
@@ -31,8 +33,7 @@ if TYPE_CHECKING:
     from langsmith.schemas import Run
 
 _HYDRATION_BATCH_SIZE = 50
-_V1_ROOT_QUERY_MAX_PAGE_SIZE = 100
-_ROOT_SELECT_FIELDS = ["id", "name", "run_type", "trace_id", "start_time"]
+_ROOT_SELECT_FIELDS = ["id", "name", "run_type", "trace_id", "start_time", "extra"]
 _RUN_SELECT_FIELDS = [
     "id",
     "name",
@@ -101,7 +102,11 @@ class LangSmithTraceConfig:
 
 @dataclass
 class LangSmithTraceLoader:
-    """Load a bounded selection of complete traces from the LangSmith API.
+    """Load a bounded selection of complete conversations from the LangSmith API.
+
+    Root Runs that share a thread key (``thread_id``, ``session_id`` or
+    ``conversation_id`` metadata) merge into one trace; ``max_traces`` bounds
+    the number of merged conversations.
 
     ``client`` is an injection seam for tests and custom authentication. When it
     is omitted, LangSmith is imported only when :meth:`load` is called, so users
@@ -114,7 +119,8 @@ class LangSmithTraceLoader:
     _project_id: str | None = field(default=None, init=False, repr=False)
     _resolved_api_url: str | None = field(default=None, init=False, repr=False)
     _call_count: int = field(default=0, init=False, repr=False)
-    _logical_case_count: int = field(default=0, init=False, repr=False)
+    _case_count: int = field(default=0, init=False, repr=False)
+    _session_count: int = field(default=0, init=False, repr=False)
 
     def load(self) -> TraceSnapshot:
         """Fetch and normalize the configured LangSmith corpus."""
@@ -131,55 +137,63 @@ class LangSmithTraceLoader:
             "start_time": self.config.start_time,
             "select": list(_ROOT_SELECT_FIELDS),
         }
-        # Legacy self-hosted servers cap an individual page at 100. For a
-        # larger caller bound, omit the SDK's server-side limit so it cursor
-        # paginates and stop consuming after the requested number of roots.
-        if self.config.max_traces <= _V1_ROOT_QUERY_MAX_PAGE_SIZE:
-            root_query["limit"] = self.config.max_traces
-        roots = list(islice(client.list_runs(**root_query), self.config.max_traces))
+        roots, partial = select_sessions(
+            client.list_runs(**root_query),
+            key=_root_group_key,
+            item_id=_root_trace_id,
+            limit=self.config.max_traces,
+            reread=lambda session_id: client.list_runs(
+                **{**root_query, "filter": _session_filter(session_id, self.config.filter)}
+            ),
+        )
         selected = _selected_roots(roots)
         unresolved_parent_count = 0
         run_count = 0
-        call_count = 0
-        logical_cases: set[str] = set()
-
-        def traces() -> Iterator[Trace]:
-            nonlocal unresolved_parent_count, run_count, call_count
-            for trace_id, runs in self._hydrate_selected_runs(client, project_id, selected):
-                trace, unresolved = normalize_trace(
-                    trace_id,
-                    selected[trace_id],
-                    runs,
-                    source_pointer={
-                        "provider": "langsmith",
-                        "api_url": api_url,
-                        "project_name": self.config.project_name,
-                        "project_id": project_id,
-                    },
-                    langsmith_attributes={
-                        "project_name": self.config.project_name,
-                        "project_id": project_id,
-                    },
+        records: list[Record] = []
+        for trace_id, runs in self._hydrate_selected_runs(client, project_id, selected):
+            trace, unresolved = normalize_trace(
+                trace_id,
+                selected[trace_id],
+                runs,
+                source_pointer={
+                    "provider": "langsmith",
+                    "api_url": api_url,
+                    "project_name": self.config.project_name,
+                    "project_id": project_id,
+                },
+                langsmith_attributes={
+                    "project_name": self.config.project_name,
+                    "project_id": project_id,
+                },
+            )
+            trace.source_url = http_source_url(selected[trace_id].url)
+            span_urls = {str(run.id): http_source_url(run.url) for run in runs}
+            for span in walk_spans(trace.root_spans):
+                span.source_url = span_urls.get(span.id)
+            unresolved_parent_count += unresolved
+            run_count += len(runs)
+            root_run = next(run for run in runs if str(run.id) == str(selected[trace_id].id))
+            records.append(
+                Record(
+                    trace,
+                    conversation_input=root_run.inputs,
+                    conversation_output=root_run.outputs,
                 )
-                trace.source_url = http_source_url(selected[trace_id].url)
-                span_urls = {str(run.id): http_source_url(run.url) for run in runs}
-                for span in walk_spans(trace.root_spans):
-                    span.source_url = span_urls.get(span.id)
-                unresolved_parent_count += unresolved
-                run_count += len(runs)
-                call_count += sum(
-                    span.kind is SpanKind.TOOL for span in walk_spans(trace.root_spans)
-                )
-                logical_cases.add(str(trace.attributes.get("logical_case_id") or trace.id))
-                yield trace
-
-        snapshot = TraceSnapshot(traces())
-        snapshot.sort(lambda trace_id: trace_sort_key(selected[trace_id], trace_id))
+            )
+        records.sort(key=lambda record: trace_sort_key(selected[record.trace.id], record.trace.id))
+        try:
+            traces = assemble(records, partial=partial)
+        except ValueError as error:
+            raise LangSmithTraceLoadError(str(error)) from error
+        snapshot = TraceSnapshot(traces)
 
         self._project_id = project_id
         self._resolved_api_url = api_url
-        self._call_count = call_count
-        self._logical_case_count = len(logical_cases)
+        self._call_count = sum(
+            span.kind is SpanKind.TOOL for trace in traces for span in walk_spans(trace.root_spans)
+        )
+        self._case_count = len({case_key(trace) for trace in traces})
+        self._session_count = len({trace.session_id for trace in traces if trace.session_id})
         self.report = LangSmithTraceLoadReport(
             trace_count=snapshot.trace_count,
             run_count=run_count,
@@ -229,7 +243,8 @@ class LangSmithTraceLoader:
             "source": _source_label(api_url, project_id),
             "trace_count": self.report.trace_count,
             "call_count": self._call_count,
-            "distinct_logical_cases": self._logical_case_count,
+            "distinct_cases": self._case_count,
+            "distinct_sessions": self._session_count,
             "run_count": self.report.run_count,
             "unresolved_parent_count": self.report.unresolved_parent_count,
             "project_name": self.config.project_name,
@@ -263,13 +278,31 @@ def _source_label(api_url: str, project_id: str) -> str:
     return f"langsmith:{api_url}#projects/{project_id}"
 
 
+def _root_trace_id(root: Run) -> str:
+    root_id = required_id(root, "id", "LangSmith root Run")
+    return str(getattr(root, "trace_id", None) or root_id)
+
+
+def _root_group_key(root: Run) -> tuple[str, str]:
+    session = session_key(root)
+    return ("session", session[0]) if session else ("trace", _root_trace_id(root))
+
+
+def _session_filter(session_id: str, user_filter: str | None) -> str:
+    """Roots whose thread metadata equals ``session_id``, within ``user_filter``.
+
+    A root can match through a lower-precedence key than the one it is grouped by,
+    so callers still check each returned root's thread key.
+    """
+    restriction = (
+        f"and(in(metadata_key, {json.dumps(list(SESSION_METADATA_KEYS))}), "
+        f"eq(metadata_value, {json.dumps(session_id)}))"
+    )
+    return restriction if user_filter is None else f"and({restriction}, {user_filter})"
+
+
 def _selected_roots(roots: Sequence[Run]) -> dict[str, Run]:
-    selected: dict[str, Run] = {}
-    for root in roots:
-        root_id = required_id(root, "id", "LangSmith root Run")
-        trace_id = str(getattr(root, "trace_id", None) or root_id)
-        selected[trace_id] = root
-    return selected
+    return {_root_trace_id(root): root for root in roots}
 
 
 def _run_trace_id(run: Run, selected: Mapping[str, Run]) -> str:

@@ -14,9 +14,8 @@ from urllib.parse import quote
 
 from pydantic import JsonValue
 
-from trace_ingest.loaders.helper import llm_span
-from trace_ingest.loaders.helper.llm_span import SpanData, nemo_relay
 from trace_ingest.loaders.helper.tool_definitions import tool_definitions
+from trace_ingest.loaders.helper.turns import has_input
 from trace_ingest.loaders.langfuse.config import LangfuseTraceLoadError
 from trace_ingest.models import (
     UNSET,
@@ -39,6 +38,9 @@ if TYPE_CHECKING:
 
     LangfuseObservation = ObservationsView | ObservationV2
 
+# A lone SPAN root orchestrates its trace's steps, so it can own the run's turns.
+_ORCHESTRATION = frozenset({"SPAN"})
+
 
 def _trace_id(provider_trace: TraceWithDetails | TraceWithFullDetails) -> str:
     if not provider_trace.id:
@@ -59,12 +61,9 @@ def _normalize_trace(
     provider_trace: TraceWithFullDetails,
     *,
     source_pointer: dict[str, JsonValue],
-    require_complete_tree: bool = False,
 ) -> Trace:
     trace_id = _trace_id(provider_trace)
-    root_spans, ordered = _normalize_tree(
-        trace_id, provider_trace.observations, source_pointer, require_complete_tree
-    )
+    root_spans, ordered = _normalize_tree(trace_id, provider_trace.observations, source_pointer)
     attributes: dict[str, JsonValue] = {
         "source_pointer": source_pointer,
         "langfuse": {
@@ -84,8 +83,6 @@ def _normalize_trace(
             "scores": _json_value(provider_trace.scores),
         },
     }
-    if provider_trace.session_id:
-        attributes["logical_case_id"] = str(provider_trace.session_id)
 
     # Keep repeated evaluations and observation associations rather than choosing a winner.
     scores_by_name: dict[str, list[JsonValue]] = {}
@@ -94,6 +91,8 @@ def _normalize_trace(
 
     return Trace(
         id=trace_id,
+        session_id=str(provider_trace.session_id) if provider_trace.session_id else None,
+        session_basis="langfuse.sessionId" if provider_trace.session_id else None,
         root_spans=root_spans,
         aggregate=TraceAggregate(
             cost_usd=_trace_cost(provider_trace, ordered),
@@ -104,11 +103,23 @@ def _normalize_trace(
     )
 
 
+def _conversation_io(provider_trace: TraceWithFullDetails, trace: Trace) -> tuple[object, object]:
+    """The trace's recorded input and output, else those of its lone root observation."""
+    root = trace.root_spans[0] if len(trace.root_spans) == 1 else None
+    values: list[object] = []
+    for recorded, fallback in (
+        (provider_trace.input, root.input if root else UNSET),
+        (provider_trace.output, root.output if root else UNSET),
+    ):
+        value = _io_value(recorded)
+        values.append(value if has_input(value) else fallback)
+    return values[0], values[1]
+
+
 def _normalize_tree(
     trace_id: str,
     observations: Sequence[LangfuseObservation],
     source_pointer: dict[str, JsonValue],
-    require_complete_tree: bool = False,
 ) -> tuple[list[Span], list[LangfuseObservation]]:
     by_id: dict[str, LangfuseObservation] = {}
     for observation in observations:
@@ -126,8 +137,7 @@ def _normalize_tree(
             str(observation.parent_observation_id) if observation.parent_observation_id else None
         )
         if parent_id is not None and parent_id not in by_id:
-            if require_complete_tree:
-                raise LangfuseTraceLoadError("incomplete observation tree: missing parent")
+            # The parent may be remote, such as a caller's span in distributed tracing.
             unresolved[observation_id] = parent_id
             parent_id = None
         effective_parents[observation_id] = parent_id
@@ -200,6 +210,10 @@ def _normalize_v4_trace(
     # No single trace-level I/O or session is authoritative when several physical
     # roots exist. Preserve per-observation values rather than choosing arbitrarily.
     physical_roots = [obs for obs in observations if obs.parent_observation_id is None]
+    if not physical_roots:
+        # A root whose parent was never exported (remote) is the trace's root.
+        root_ids = {span.id for span in roots}
+        physical_roots = [obs for obs in observations if str(obs.id) in root_ids]
     root = physical_roots[0] if len(physical_roots) == 1 else None
     attributes: dict[str, JsonValue] = {
         "source_pointer": pointer,
@@ -217,8 +231,7 @@ def _normalize_v4_trace(
         },
     }
     sessions = {obs.session_id for obs in observations if obs.session_id}
-    if len(sessions) == 1:
-        attributes["logical_case_id"] = next(iter(sessions))
+    session_id = next(iter(sessions)) if len(sessions) == 1 else None
     results: dict[str, list[JsonValue]] = {}
     for score in sorted(scores, key=lambda item: (item.name, item.id)):
         results.setdefault(score.name, []).append(_json_value(score))
@@ -231,6 +244,8 @@ def _normalize_v4_trace(
     project_id = next(iter(project_ids))
     return Trace(
         id=trace_id,
+        session_id=session_id,
+        session_basis="langfuse.sessionId" if session_id else None,
         root_spans=roots,
         source_url=http_source_url(
             base_url.rstrip("/")
@@ -270,22 +285,51 @@ def _canonical_observation_order(
             children[parent_id].append(observation_id)
             indegree[observation_id] += 1
 
-    ready: list[tuple[datetime, str]] = []
+    ready: list[tuple[datetime, datetime, int, str]] = []
     for observation_id, degree in indegree.items():
         if degree == 0:
-            heapq.heappush(ready, (_started_at(by_id[observation_id]), observation_id))
+            heapq.heappush(ready, _order_key(by_id[observation_id]))
 
     ordered: list[LangfuseObservation] = []
     while ready:
-        _, observation_id = heapq.heappop(ready)
+        *_, observation_id = heapq.heappop(ready)
         ordered.append(by_id[observation_id])
         for child_id in children[observation_id]:
             indegree[child_id] -= 1
             if indegree[child_id] == 0:
-                heapq.heappush(ready, (_started_at(by_id[child_id]), child_id))
+                heapq.heappush(ready, _order_key(by_id[child_id]))
     if len(ordered) != len(by_id):
         raise LangfuseTraceLoadError(f"Langfuse trace {trace_id!r} contains a parent cycle")
     return ordered
+
+
+def _order_key(observation: LangfuseObservation) -> tuple[datetime, datetime, int, str]:
+    """Start order, with causal tie-breaks for Langfuse's millisecond timestamps.
+
+    Of two steps starting in the same millisecond, one that caused the other has
+    ended by then, so the earlier end comes first. When both also end then, a
+    model call that requests tools comes before the tools, and those before the
+    calls that read their results. The random observation id breaks the rest.
+    """
+    started_at = _started_at(observation)
+    ended_at = _optional_datetime(observation.end_time) or started_at
+    if _requests_tools(observation.output):
+        rank = 0
+    elif str(observation.type).upper() == "TOOL":
+        rank = 1
+    else:
+        rank = 2
+    return started_at, ended_at, rank, str(observation.id)
+
+
+def _requests_tools(output: object) -> bool:
+    """Whether an output is a chat message with tool calls (v4 returns it as JSON text)."""
+    if isinstance(output, str):
+        try:
+            output = json.loads(output)
+        except json.JSONDecodeError:
+            return False
+    return isinstance(output, Mapping) and bool(output.get("tool_calls"))
 
 
 def _normalize_observation(
@@ -296,16 +340,11 @@ def _normalize_observation(
 ) -> Span:
     observation_id = str(observation.id)
     kind, subtype = _map_observation_kind(observation.type)
-    data = _span_data(observation)
-    llm = llm_span.normalize(data)
-    if llm is not None and kind is not SpanKind.LLM:
-        # Relay's full export types its LLM calls as plain spans.
-        kind, subtype = SpanKind.LLM, data.type
-    definitions = None
-    if kind in (SpanKind.AGENT, SpanKind.LLM):
-        definitions = llm.tool_definitions if llm else None
-        if definitions is None:
-            definitions = _tool_definitions_from_input(observation.input)
+    definitions = (
+        _tool_definitions_from_input(observation.input)
+        if kind in (SpanKind.AGENT, SpanKind.LLM)
+        else None
+    )
     started_at = _started_at(observation)
     ended_at = _optional_datetime(observation.end_time)
     pointer: dict[str, JsonValue] = {**base_pointer, "observation_id": observation_id}
@@ -316,9 +355,7 @@ def _normalize_observation(
     status_message = str(observation.status_message) if observation.status_message else None
     error = status_message or "Langfuse observation level ERROR" if level == "ERROR" else None
     name = str(observation.name) if observation.name else None
-    # Langfuse's own model, which it prices by; else the one the span records,
-    # such as Relay's for calls Langfuse does not type as generations.
-    model = str(observation.model) if observation.model else (llm.model if llm else None)
+    model = str(observation.model) if observation.model else None
     return Span(
         id=observation_id,
         kind=kind,
@@ -328,10 +365,7 @@ def _normalize_observation(
         output=_io_value(observation.output),
         cost_usd=_observation_cost(observation),
         model=model,
-        token_counts=llm.token_counts if llm else None,
         tool_definitions=definitions if definitions is not None else UNSET,
-        llm_params=llm.params if llm else None,
-        agent_id=nemo_relay.agent_id(data),
         tool_name=name if kind is SpanKind.TOOL else None,
         error=error,
         attributes={
@@ -365,23 +399,6 @@ def _map_observation_kind(value: object) -> tuple[SpanKind, str | None]:
         return SpanKind(provider_type), None
     except ValueError:
         return SpanKind.UNKNOWN, provider_type
-
-
-def _span_data(observation: LangfuseObservation) -> SpanData:
-    """What the LLM span readers need, from where Langfuse keeps it: OTel span
-    attributes and the instrumentation scope under ``metadata``, its own usage in
-    ``usageDetails``."""
-
-    metadata = observation.metadata if isinstance(observation.metadata, Mapping) else {}
-    scope = metadata.get("scope")
-    attributes = metadata.get("attributes")
-    return SpanData(
-        name=str(observation.name) if observation.name else None,
-        type=str(observation.type) if observation.type else None,
-        scope=str(scope.get("name")) if isinstance(scope, Mapping) and scope.get("name") else None,
-        attributes=attributes if isinstance(attributes, Mapping) else {},
-        usage_details=observation.usage_details or {},
-    )
 
 
 def _started_at(observation: LangfuseObservation) -> datetime:

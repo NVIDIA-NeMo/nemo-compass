@@ -275,3 +275,26 @@ def test_skipping_the_scan_requires_nonblank_reason(completion_case):
             InsightCompilation(llm=llm).compile_insights([], snapshot, [insight], RUN_TIMESTAMP)
         ) == [insight]
     assert llm.call_count == 2
+
+
+@pytest.mark.parametrize("ethos", [None, "Prefer reliable delivery over decorative formatting."])
+def test_compilation_exposes_ethos_to_the_agent(completion_case, ethos):
+    _, _, snapshot = completion_case
+    llm = FakeLLMClient(
+        [
+            response(
+                "execute_python",
+                {"code": f"assert ethos == {ethos!r}\nreturn_result([])"},
+                "check_context",
+            )
+        ]
+    )
+    assert (
+        asyncio.run(
+            InsightCompilation(llm=llm).compile_insights(
+                [], snapshot, [], RUN_TIMESTAMP, ethos=ethos
+            )
+        )
+        == []
+    )
+    assert llm.call_count == 1
