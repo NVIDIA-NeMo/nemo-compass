@@ -43,12 +43,32 @@ def _excerpt(value: object, characters: int) -> dict[str, object]:
     return {"text": text[:characters], "characters": len(text), "has_more": len(text) > characters}
 
 
-def _page(rows: Sequence[Any], offset: int, limit: int) -> dict[str, Any]:
+def _page(
+    rows: Sequence[Any],
+    offset: int,
+    limit: int,
+    render: Callable[[Any], object] | None = None,
+) -> dict[str, Any]:
     if offset < 0 or not 1 <= limit <= 50:
         raise ValueError("Use offset >= 0 and 1 <= limit <= 50")
-    end = offset + limit
+    items = []
+    characters = 0
+    # Leave room for metadata and normal pretty-print indentation within the
+    # compiler's 12k stdout capture budget. Explicit raw dumps may still truncate.
+    for row in rows[offset : offset + limit]:
+        item = render(row) if render is not None else row
+        size = len(json.dumps(item, default=str, ensure_ascii=False))
+        if size > 7000:
+            raise ValueError(
+                "One view item exceeds the page budget; use smaller excerpts or raw Python access"
+            )
+        if items and characters + size > 7000:
+            break
+        items.append(item)
+        characters += size
+    end = offset + len(items)
     return {
-        "items": list(rows[offset:end]),
+        "items": items,
         "total": len(rows),
         "next_offset": end if end < len(rows) else None,
     }
@@ -87,6 +107,8 @@ class CompilationTools:
 
     Helpers do not decide whether an issue is real, merge semantic claims, or
     interpret source text as instructions. Raw traces remain accessible in Python.
+    Pages return up to 50 items within a character budget. Always use next_offset;
+    a page can contain fewer items than requested without reaching the end.
     """
 
     def __init__(
@@ -234,10 +256,9 @@ class CompilationTools:
             if (selected_kind is None or visit.span.kind is selected_kind)
             and (tool_names is None or visit.span.tool_name in tool_names)
         ]
-        page = _page(selected, offset, limit)
+        page = _page(selected, offset, limit, lambda visit: self._span_view(visit, characters))
         page["filtered_total"] = page["total"]
         page["total"] = len(visits)
-        page["items"] = [self._span_view(visit, characters) for visit in page["items"]]
         page["ordering"] = "depth-first tree order; no global chronology inferred"
         return page
 
