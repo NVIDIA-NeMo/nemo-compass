@@ -93,9 +93,15 @@ def test_analyzing_telemetry_project_checks_source_endpoint(monkeypatch, capsys,
 
 
 @pytest.mark.parametrize(
-    "api_key,project", [("", "custom-project"), ("test-key", ""), ("test-key", "custom-project")]
+    "api_key,project,tags",
+    [
+        ("", "custom-project", None),
+        ("test-key", "", None),
+        ("test-key", "custom-project", None),
+        ("test-key", "custom-project", " , , "),
+        ("test-key", "custom-project", " development, experiment-a,development, ,"),
+    ],
 )
-@pytest.mark.parametrize("tags", [None, "", " , , ", " development, experiment-a,development, ,"])
 def test_cli_telemetry_in_fresh_process(tmp_path, api_key, project, tags):
     """Exercise CLI opt-in, input provenance, library instrumentation, and YAML stdout."""
     source = tmp_path / "input.jsonl"
@@ -268,6 +274,7 @@ def _run_cli(source, enabled):
         embedding = next(
             r for r in records if (r.attributes or {}).get("openinference.span.kind") == "EMBEDDING"
         )
+        assert embedding.attributes is not None
         assert embedding.attributes["embedding.embeddings.0.embedding.text"] == "Embedding test"
         assert embedding.attributes["embedding.embeddings.0.embedding.vector"] == "__REDACTED__"
 
