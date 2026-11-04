@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -21,10 +21,11 @@ from compass.insights_generation.evidence import (
     EvidenceCompletion,
     EvidenceDecision,
     apply_scan,
+    evaluate_predicate,
     merge_evidence,
     scan_completions,
 )
-from compass.traces import UNSET, Span, Trace, TraceSnapshot
+from compass.traces import UNSET, Span, SpanKind, Trace, TraceSnapshot
 
 
 def _text(value: object) -> str:
@@ -56,10 +57,15 @@ def _page(rows: Sequence[Any], offset: int, limit: int) -> dict[str, Any]:
 def tool_calls(trace: Trace, name: str | None = None) -> list[Span]:
     """Recorded TOOL spans in tree traversal order, not inferred chronological order."""
     return [
-        visit.span
-        for visit in walk_spans(trace)
-        if visit.span.kind.value == "TOOL" and (name is None or visit.span.tool_name == name)
+        span
+        for span in trace_spans(trace)
+        if span.kind is SpanKind.TOOL and (name is None or span.tool_name == name)
     ]
+
+
+def trace_spans(trace: Trace) -> Iterator[Span]:
+    """Yield actual Span objects in tree order, without inferring chronology."""
+    return (visit.span for visit in walk_spans(trace))
 
 
 def recorded_messages(trace: Trace) -> list[dict[str, Any]]:
@@ -69,10 +75,10 @@ def recorded_messages(trace: Trace) -> list[dict[str, Any]]:
     a global order across agents. Other source payloads remain available on spans.
     """
     return [
-        {"agent_span_id": visit.span.id, "turn": turn.model_dump(mode="json")}
-        for visit in walk_spans(trace)
-        if visit.span.turns is not UNSET
-        for turn in visit.span.turns
+        {"agent_span_id": span.id, "turn": turn.model_dump(mode="json")}
+        for span in trace_spans(trace)
+        if span.turns is not UNSET
+        for turn in span.turns
     ]
 
 
@@ -189,18 +195,48 @@ class CompilationTools:
         """Load the complete original trace for Python predicates or exact inspection."""
         return self._snapshot.get_trace_by_id(trace_id)
 
+    def trace_ids(self, offset: int = 0, limit: int = 12) -> dict[str, Any]:
+        """Page all snapshot trace IDs, including traces outside candidate lists."""
+        return _page(list(self._snapshot.traces_by_id), offset, limit)
+
+    def iter_traces(self) -> Iterator[Trace]:
+        """Stream complete source traces for Python investigation; do not dump them."""
+        return iter(self._snapshot)
+
     def inspect_trace(
-        self, trace_id: str, offset: int = 0, limit: int = 12, characters: int = 600
+        self,
+        trace_id: str,
+        offset: int = 0,
+        limit: int = 12,
+        characters: int = 600,
+        kind: str | None = None,
+        tool_names: list[str] | None = None,
     ) -> dict[str, Any]:
         """Page source spans with bounded excerpts and exact IDs for read_span.
 
         Tree traversal is NOT chronological order. Recorded timestamps, tool-call
         indexes, and raw event metadata are exposed without inventing ordering.
+        kind="TOOL" and tool_names=[...] filter exact recorded fields. total is
+        the original span count; filtered_total and next_offset describe this view.
         """
         if not 1 <= characters <= 4000:
             raise ValueError("Use 1 <= characters <= 4000")
+        selected_kind = SpanKind(kind) if kind is not None else None
+        if tool_names is not None and (
+            not isinstance(tool_names, list)
+            or not all(isinstance(name, str) for name in tool_names)
+        ):
+            raise ValueError("tool_names must be a list of exact recorded tool names")
         visits = list(walk_spans(self.trace(trace_id)))
-        page = _page(visits, offset, limit)
+        selected = [
+            visit
+            for visit in visits
+            if (selected_kind is None or visit.span.kind is selected_kind)
+            and (tool_names is None or visit.span.tool_name in tool_names)
+        ]
+        page = _page(selected, offset, limit)
+        page["filtered_total"] = page["total"]
+        page["total"] = len(visits)
         page["items"] = [self._span_view(visit, characters) for visit in page["items"]]
         page["ordering"] = "depth-first tree order; no global chronology inferred"
         return page
@@ -210,11 +246,21 @@ class CompilationTools:
         return {
             "span_id": span.id,
             "path": visit.path,
+            "tree_index": visit.index,
             "kind": span.kind.value,
             "tool_name": span.tool_name,
             "start_time": span.start_time,
             "end_time": span.end_time,
             "tool_index": span.tool_call.index if span.tool_call else None,
+            "prior_user_text": _excerpt(
+                span.tool_call.prior_user_text if span.tool_call else UNSET, characters
+            ),
+            "tool_call": _excerpt(
+                span.tool_call.model_dump(mode="json", exclude={"prior_user_text", "results"})
+                if span.tool_call
+                else UNSET,
+                characters,
+            ),
             "source_pointer": _excerpt(visit.source_pointer, characters),
             "recorded_event": _excerpt(span.attributes.get("event", UNSET), characters),
             "input": _excerpt(span.input, characters),
@@ -281,6 +327,36 @@ class CompilationTools:
         self._registered[handle] = completion
         self._targets[handle] = target
         return handle
+
+    def check(
+        self,
+        predicate: Callable[[Trace], EvidenceDecision | dict[str, object]],
+        checks: list[tuple[Trace, Decision]],
+    ) -> dict[str, Any]:
+        """Report example results/errors without printing large Trace fixtures.
+
+        Every fixture is isolated; the originals remain available in Python.
+        This does not infer expected answers or replace meaningful example design.
+        """
+        rows = []
+        for index, (trace, expected) in enumerate(checks):
+            row = {"check_index": index, "trace_id": trace.id, "expected": expected}
+            try:
+                result = evaluate_predicate(predicate, trace.model_copy(deep=True))
+                row.update(
+                    actual=result.status,
+                    passed=result.status == expected,
+                    witness_count=len(result.witness_span_ids),
+                )
+            except Exception as error:
+                row.update(passed=False, error=f"{type(error).__name__}: {str(error)[:500]}")
+            rows.append(row)
+        missing = sorted({"match", "no_match", "unknown"} - {expected for _, expected in checks})
+        return {
+            "valid": not missing and all(row["passed"] for row in rows),
+            "missing_statuses": missing,
+            "checks": rows,
+        }
 
     def _existing_target(self, identifier: object, existing_index: int | None) -> int | None:
         if existing_index is not None:

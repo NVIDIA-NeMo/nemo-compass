@@ -533,3 +533,98 @@ def test_long_existing_claim_is_recoverable_without_mutating_authority(completio
     full.evidence[0].spans.clear()
     assert tools.existing_insight(0) == insight
     assert tools._finish([]) == [insight]
+
+
+def test_filtered_inspection_preserves_counts_paths_and_independent_text_budgets():
+    from compass.insights_generation.compilation_tools import CompilationTools, trace_spans
+
+    item = Trace.model_validate(
+        {
+            "id": "filtered",
+            "aggregate": {},
+            "root_spans": [
+                {
+                    "id": "parent",
+                    "kind": "AGENT",
+                    "children": [
+                        {
+                            "id": "one",
+                            "kind": "TOOL",
+                            "tool_name": "lookup",
+                            "input": {"large": "x" * 5000},
+                            "tool_call": {"index": 4, "prior_user_text": "Only after confirmation"},
+                        },
+                        {"id": "other", "kind": "TOOL", "tool_name": "different"},
+                        {"id": "two", "kind": "TOOL", "tool_name": "lookup"},
+                    ],
+                }
+            ],
+        }
+    )
+    tools = CompilationTools([], TraceSnapshot([item]), [], RUN_TIMESTAMP)
+    first = tools.inspect_trace(
+        "filtered", kind="TOOL", tool_names=["lookup"], limit=1, characters=30
+    )
+    second = tools.inspect_trace(
+        "filtered", kind="TOOL", tool_names=["lookup"], limit=1, offset=first["next_offset"]
+    )
+    assert first["total"] == 4 and first["filtered_total"] == 2
+    assert second["total"] == 4 and second["filtered_total"] == 2
+    assert first["items"][0]["path"] == (0, 0) and first["items"][0]["tree_index"] == 1
+    assert second["items"][0]["path"] == (0, 2) and second["items"][0]["tree_index"] == 3
+    assert second["next_offset"] is None
+    assert first["items"][0]["prior_user_text"]["text"] == "Only after confirmation"
+    assert first["items"][0]["input"]["has_more"] is True
+    assert [span.id for span in trace_spans(item)] == ["parent", "one", "other", "two"]
+    assert all(isinstance(span, Span) for span in trace_spans(item))
+    with pytest.raises(ValueError):
+        tools.inspect_trace("filtered", kind="missing-kind")
+    with pytest.raises(ValueError, match="list of exact"):
+        tools.inspect_trace("filtered", tool_names="lookup")  # ty: ignore[invalid-argument-type]
+
+
+def test_first_model_request_already_contains_bounded_source_inventory(completion_case):
+    from compass.compass_signals.compass_signals import CompassSignalResult, Problem
+
+    _, _, snapshot = completion_case
+    description = "A specific source candidate is available without a discovery call"
+    signal = CompassSignalResult(
+        signal_name="source-signal",
+        problems=(Problem(description=description, supporting_trace_ids=("seed", "additional")),),
+        limitations=("Recorded capability limit",),
+    )
+    llm = FakeLLMClient([response("return_result", {"result": []}, "no_findings")])
+    assert (
+        asyncio.run(
+            InsightCompilation(llm=llm).compile_insights([signal], snapshot, [], RUN_TIMESTAMP)
+        )
+        == []
+    )
+    rendered = str(llm.last_messages)
+    assert description in rendered
+    assert "Recorded capability limit" in rendered
+    assert "next_offset" in rendered
+    assert "def inspect_trace(" in rendered
+    assert "def register(" in rendered
+    assert llm.call_count == 1
+
+
+def test_corpus_access_and_check_diagnostics_keep_source_data_in_python(completion_case):
+    from compass.insights_generation.compilation_tools import CompilationTools
+
+    insight, checks, snapshot = completion_case
+    tools = CompilationTools([], snapshot, [insight], RUN_TIMESTAMP)
+    page = tools.trace_ids(limit=2)
+    assert page["total"] == 6 and page["items"] == ["seed", "additional"]
+    assert page["next_offset"] == 2
+    assert len(list(tools.iter_traces())) == 6
+    report = tools.check(truncated_enrich, checks)
+    assert report["valid"] is True and report["missing_statuses"] == []
+    assert [row["actual"] for row in report["checks"]] == [expected for _, expected in checks]
+    assert "root_spans" not in str(report) and "unfinished" not in str(report)
+    wrong = tools.check(
+        lambda trace: {"status": "match", "witness_span_ids": ("invented",)}, checks
+    )
+    assert wrong["valid"] is False
+    assert "Cited span ID does not exist" in wrong["checks"][0]["error"]
+    assert tools.check(truncated_enrich, checks[:1])["missing_statuses"] == ["no_match", "unknown"]

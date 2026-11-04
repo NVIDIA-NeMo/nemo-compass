@@ -29,6 +29,22 @@ class EvidenceDecision(BaseModel):
     witness_span_ids: tuple[str, ...] = ()
 
 
+def evaluate_predicate(
+    predicate: Callable[[Trace], EvidenceDecision | dict[str, object]],
+    trace: Trace,
+    span_ids: set[str] | None = None,
+) -> EvidenceDecision:
+    """Validate a decision against authoritative source span IDs."""
+    if span_ids is None:
+        span_ids = {visit.span.id for visit in walk_spans(trace)}
+    decision = EvidenceDecision.model_validate(predicate(trace))
+    if decision.status == "match" and not decision.witness_span_ids:
+        raise ValueError(f"Match in trace {trace.id} must cite at least one span ID")
+    if set(decision.witness_span_ids) - span_ids:
+        raise ValueError(f"Cited span ID does not exist in trace {trace.id}")
+    return decision
+
+
 class EvidenceCompletion(BaseModel):
     """An insight with a function and examples for checking its evidence.
 
@@ -45,14 +61,7 @@ class EvidenceCompletion(BaseModel):
 
     def _evaluate(self, trace: Trace, span_ids: set[str] | None = None) -> EvidenceDecision:
         assert self.predicate is not None
-        if span_ids is None:
-            span_ids = {visit.span.id for visit in walk_spans(trace)}
-        decision = EvidenceDecision.model_validate(self.predicate(trace))
-        if decision.status == "match" and not decision.witness_span_ids:
-            raise ValueError(f"Match in trace {trace.id} must cite at least one span ID")
-        if set(decision.witness_span_ids) - span_ids:
-            raise ValueError(f"Cited span ID does not exist in trace {trace.id}")
-        return decision
+        return evaluate_predicate(self.predicate, trace, span_ids)
 
     def validate_result(self) -> None:
         """Check the function against examples, or require a reason for skipping the scan."""
