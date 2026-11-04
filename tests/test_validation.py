@@ -11,7 +11,7 @@ from nooa.unifiedllm import FakeLLMClient, LLMResponse, ToolCall
 
 from compass.compass_signals.compass_signals import Problem
 from compass.insights_generation.validation import CandidateProblemValidator
-from compass.traces import Trace, TraceAggregate
+from compass.traces import Span, SpanKind, Trace, TraceAggregate
 
 
 def _response(name: str, arguments: dict, call_id: str) -> LLMResponse:
@@ -80,6 +80,60 @@ def test_problem_validation_rejects_code_contradicted_problem(tmp_path) -> None:
     )
 
     assert _validate(tmp_path, llm) is False
+
+
+def test_problem_validation_can_inspect_evidence_beyond_the_preview(monkeypatch):
+    evidence = "The operation timed out after one second."
+    trace = Trace(
+        id="t1",
+        root_spans=[
+            Span(
+                id="s1",
+                kind=SpanKind.TOOL,
+                output={"detail": "x" * 60_000 + evidence + "x" * 60_000},
+            )
+        ],
+        aggregate=TraceAggregate(),
+    )
+    llm = FakeLLMClient(
+        [
+            _response(
+                "execute_python",
+                {
+                    "code": (
+                        "detail = supporting_traces[0].root_spans[0].output['detail']\n"
+                        f"print(detail[60000:60000 + {len(evidence)}])"
+                    )
+                },
+                "inspect",
+            ),
+            _response(
+                "return_result",
+                {"result": {"supported": True, "explanation": evidence}},
+                "done",
+            ),
+        ]
+    )
+    requests = []
+    original_call = llm.acall
+
+    async def capture_request(messages, *args, **kwargs):
+        requests.append(json.dumps(messages))
+        return await original_call(messages, *args, **kwargs)
+
+    monkeypatch.setattr(llm, "acall", capture_request)
+    problem = Problem(description="Requests time out too quickly", supporting_trace_ids=("t1",))
+
+    decision = asyncio.run(
+        CandidateProblemValidator(None, llm, "Allow at least ten seconds.").validate(
+            problem, (trace,)
+        )
+    )
+
+    assert decision.supported is True
+    assert llm.call_count == 2
+    assert evidence not in requests[0]
+    assert evidence in requests[1]
 
 
 def test_problem_validation_can_return_not_applicable(tmp_path) -> None:
