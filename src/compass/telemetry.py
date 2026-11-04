@@ -106,6 +106,9 @@ def telemetry_session(config: RunConfig) -> Iterator[OpenInferenceSpan]:
             )
             api_key = ""
     if api_key:
+        # Keep embedding spans and usage, without exporting their large numeric vectors.
+        # NOOA's LiteLLM instrumentor reads this when tracing is initialized below.
+        os.environ["OPENINFERENCE_HIDE_EMBEDDINGS_VECTORS"] = "true"
         headers = {"x-api-key": api_key, "Langsmith-Project": project}
         if workspace := os.getenv("COMPASS_TELEMETRY_LANGSMITH_WORKSPACE_ID"):
             headers["X-Tenant-Id"] = workspace
