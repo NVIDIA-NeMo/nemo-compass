@@ -44,8 +44,10 @@ when available, an explanation, and the basis for rejection. ETHOS-based rejecti
 require an exact document passage. The terminal report summarizes the number of excluded
 candidate problems; telemetry includes the rejection reasons and supporting passages.
 
-Each candidate problem adds one model investigation, limited to 25 iterations and
-up to 100,000 characters of supporting traces. Candidate problems are reviewed concurrently.
+Each candidate problem adds one model investigation, limited to 25 iterations.
+The agent initially sees a bounded preview and can inspect the complete supporting
+trace objects in Python to retrieve relevant evidence. Candidate problems are reviewed
+concurrently; time and token usage depend on the evidence inspected and investigation length.
 
 ### Confidence review after compilation
 
