@@ -159,7 +159,10 @@ class CompilationTools:
         return self._signals[signal_index].artifacts
 
     def existing(self, offset: int = 0, limit: int = 12) -> dict[str, Any]:
-        """Page existing claims; all existing insights are preserved automatically."""
+        """Page existing claims; existing_insight(index) returns a full detached copy.
+
+        All existing insights are preserved automatically.
+        """
         return _page(
             [
                 {
@@ -175,6 +178,12 @@ class CompilationTools:
             offset,
             limit,
         )
+
+    def existing_insight(self, existing_index: int) -> Insight:
+        """Read a full existing claim without mutating the authoritative original."""
+        if type(existing_index) is not int or not 0 <= existing_index < len(self._existing):
+            raise ValueError("existing_index must name an insight from existing()")
+        return self._existing[existing_index].model_copy(deep=True)
 
     def trace(self, trace_id: str) -> Trace:
         """Load the complete original trace for Python predicates or exact inspection."""

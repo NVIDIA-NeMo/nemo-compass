@@ -517,3 +517,19 @@ def test_existing_indices_update_anonymous_insights_without_duplicates(completio
         tools._finish([handle, duplicate])
     with pytest.raises(ValueError, match="duplicate persistent IDs"):
         CompilationTools([], snapshot, [insight, insight], RUN_TIMESTAMP)
+
+
+def test_long_existing_claim_is_recoverable_without_mutating_authority(completion_case):
+    from compass.insights_generation.compilation_tools import CompilationTools
+
+    insight, _, snapshot = completion_case
+    insight.description = "Important full claim. " * 100
+    tools = CompilationTools([], snapshot, [insight], RUN_TIMESTAMP)
+    preview = tools.existing()["items"][0]["description"]
+    assert preview["has_more"] is True
+    full = tools.existing_insight(0)
+    assert full.description == insight.description
+    full.description = "Changed detached copy"
+    full.evidence[0].spans.clear()
+    assert tools.existing_insight(0) == insight
+    assert tools._finish([]) == [insight]
