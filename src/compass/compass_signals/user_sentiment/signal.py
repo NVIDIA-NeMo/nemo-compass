@@ -10,6 +10,7 @@ from functools import cached_property
 
 from nooa import Agent
 from nooa.unifiedllm import UnifiedLLM
+from opentelemetry import trace
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, computed_field
 
 from compass.compass_signals.compass_signals import CompassSignalResult
@@ -24,6 +25,8 @@ from compass.compass_signals.user_sentiment.classifier import (
     ScreeningResult,
 )
 from compass.traces import TraceSnapshot
+
+tracer = trace.get_tracer(__name__)
 
 USER_SENTIMENT = """
 Identify explicit user anger or criticism of the agent system, its responses,
@@ -126,11 +129,22 @@ def screen_user_messages(
             if text[:20000].strip()
         )
     )
-    embeddings = embedding_generator.generate_batch(unique_texts)
-    classified = {
-        text: classifier.classify(embedding)
-        for text, embedding in zip(unique_texts, embeddings, strict=True)
-    }
+    with tracer.start_as_current_span(
+        "sentiment.embeddings",
+        attributes={
+            "openinference.span.kind": "CHAIN",
+            "message_count": sum(len(messages) for messages in user_messages.values()),
+            "unique_input_count": len(unique_texts),
+        },
+    ):
+        embeddings = embedding_generator.generate_batch(unique_texts)
+    with tracer.start_as_current_span(
+        "sentiment.classification", attributes={"openinference.span.kind": "CHAIN"}
+    ):
+        classified = {
+            text: classifier.classify(embedding)
+            for text, embedding in zip(unique_texts, embeddings, strict=True)
+        }
     return {
         trace_id: TraceScreeningResult(
             message_results=[
@@ -187,7 +201,10 @@ class UserSentimentCompassSignal:
     async def _analyze(self, snapshot: TraceSnapshot) -> CompassSignalResult:
         messages = {}
         if len(snapshot):
-            messages = await UserMessageExtractor(llm=self.llm).extract(snapshot)
+            with tracer.start_as_current_span(
+                "sentiment.extraction", attributes={"openinference.span.kind": "CHAIN"}
+            ):
+                messages = await UserMessageExtractor(llm=self.llm).extract(snapshot)
         messages = TypeAdapter(dict[str, list[str]]).validate_python(messages, strict=True)
         if messages.keys() != snapshot.traces_by_id.keys():
             raise ValueError("User message extraction must cover exactly the supplied trace IDs")
