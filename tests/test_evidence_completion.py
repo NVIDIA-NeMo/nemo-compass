@@ -583,6 +583,54 @@ def test_filtered_inspection_preserves_counts_paths_and_independent_text_budgets
         tools.inspect_trace("filtered", tool_names="lookup")  # ty: ignore[invalid-argument-type]
 
 
+def test_derived_span_previews_roundtrip_through_exact_reads():
+    from compass.insights_generation.compilation_tools import CompilationTools
+
+    prior = "Only after confirmation. " * 1000
+    event = {"recorded": "event" * 1000}
+    pointer = {"location": "source" * 1000}
+    item = Trace.model_validate(
+        {
+            "id": "derived",
+            "aggregate": {},
+            "root_spans": [
+                {
+                    "id": "call",
+                    "kind": "TOOL",
+                    "tool_call": {"index": 7, "prior_user_text": prior},
+                    "attributes": {"event": event, "source_pointer": pointer},
+                }
+            ],
+        }
+    )
+    tools = CompilationTools([], TraceSnapshot([item]), [], RUN_TIMESTAMP)
+    preview = tools.inspect_trace("derived", characters=50)["items"][0]
+    call = item.root_spans[0].tool_call
+    assert call is not None
+    expected = {
+        "prior_user_text": prior,
+        "recorded_event": json.dumps(event),
+        "source_pointer": json.dumps(pointer),
+        "tool_call_metadata": json.dumps(
+            call.model_dump(mode="json", exclude={"prior_user_text", "results"})
+        ),
+    }
+    for field, text in expected.items():
+        chunks = []
+        offset = 0
+        while offset is not None:
+            chunk = tools.read_span("derived", "call", field=field, offset=offset, characters=1000)
+            chunks.append(chunk["text"])
+            offset = chunk["next_offset"]
+        assert "".join(chunks) == text
+        assert preview[field]["text"] == text[:50]
+        assert preview[field]["has_more"] == (len(text) > 50)
+    full_call = tools.read_span("derived", "call", field="tool_call", characters=12000)
+    assert '"prior_user_text"' in full_call["text"]
+    with pytest.raises(ValueError, match="Unknown span view field"):
+        tools.read_span("derived", "call", field="invented")
+
+
 def test_first_model_request_already_contains_bounded_source_inventory(completion_case):
     from compass.compass_signals.compass_signals import CompassSignalResult, Problem
 
@@ -628,93 +676,3 @@ def test_corpus_access_and_check_diagnostics_keep_source_data_in_python(completi
     assert wrong["valid"] is False
     assert "Cited span ID does not exist" in wrong["checks"][0]["error"]
     assert tools.check(truncated_enrich, checks[:1])["missing_statuses"] == ["no_match", "unknown"]
-
-
-def test_compiler_output_budget_keeps_exact_source_available():
-    import re
-
-    long_trace = trace("large", output="Z" * 40000)
-    llm = FakeLLMClient(
-        [
-            response(
-                "execute_python",
-                {
-                    "code": "item = tools.trace('large')\nprint(item.root_spans[0].output)\nassert len(item.root_spans[0].output) == 40000"
-                },
-                "large_print",
-            ),
-            response(
-                "execute_python",
-                {
-                    "code": "chunk = tools.read_span('large', 'large-span', offset=20000, characters=100)\nassert chunk['text'] == 'Z' * 100\nprint('Exact source remains readable')\nreturn_result([])"
-                },
-                "exact_read",
-            ),
-        ]
-    )
-    result = asyncio.run(
-        InsightCompilation(llm=llm).compile_insights(
-            [], TraceSnapshot([long_trace]), [], RUN_TIMESTAMP
-        )
-    )
-    assert result == []
-    rendered = str(llm.last_messages)
-    assert "Output too large" in rendered
-    assert max(len(chunk) for chunk in re.findall("Z+", rendered)) <= 6000
-    assert "_CaptureConfig" not in rendered and "_TruncationConfig" not in rendered
-
-
-def test_default_pages_fit_print_budget_without_losing_rows():
-    from compass.compass_signals.compass_signals import CompassSignalResult, Problem
-    from compass.insights_generation.compilation_tools import CompilationTools
-
-    item = Trace.model_validate(
-        {
-            "id": "wide",
-            "aggregate": {},
-            "root_spans": [
-                {
-                    "id": str(index),
-                    "kind": "TOOL",
-                    "tool_name": "example",
-                    "input": "i" * 5000,
-                    "output": "o" * 5000,
-                    "error": "e" * 5000,
-                    "tool_call": {"prior_user_text": "u" * 5000},
-                }
-                for index in range(12)
-            ],
-        }
-    )
-    signal = CompassSignalResult(
-        signal_name="example",
-        problems=tuple(
-            Problem(description="d" * 2000, supporting_trace_ids=("wide",)) for _ in range(12)
-        ),
-    )
-    tools = CompilationTools([signal], TraceSnapshot([item]), [], RUN_TIMESTAMP)
-    seen = []
-    offset = 0
-    while offset is not None:
-        page = tools.inspect_trace("wide", offset=offset)
-        assert len(json.dumps(page, default=str)) < 8000
-        seen.extend(row["span_id"] for row in page["items"])
-        offset = page["next_offset"]
-    assert seen == [str(index) for index in range(12)]
-    candidates = tools.candidates()
-    assert len(json.dumps(candidates)) < 8000
-    assert candidates["next_offset"] == len(candidates["items"])
-    assert candidates["next_offset"] < candidates["total"]
-    llm = FakeLLMClient(
-        [
-            response("execute_python", {"code": "print(tools.inspect_trace('wide'))"}, "spans"),
-            response("execute_python", {"code": "print(tools.candidates())"}, "candidates"),
-            response("execute_python", {"code": "return_result([])"}, "finish"),
-        ]
-    )
-    asyncio.run(
-        InsightCompilation(llm=llm).compile_insights(
-            [signal], TraceSnapshot([item]), [], RUN_TIMESTAMP
-        )
-    )
-    assert "Output too large" not in str(llm.last_messages)

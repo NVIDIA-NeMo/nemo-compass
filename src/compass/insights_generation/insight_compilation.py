@@ -9,7 +9,6 @@ from datetime import datetime
 from nooa import Agent, no_trace, strategy
 from nooa.agentdoc import doc
 from nooa.config import CodeActConfig
-from nooa.config import truncation_config as _output_policy
 from nooa.strategies import CodeActStrategy
 from nooa.strategies.current_call import CurrentCall
 from nooa.strategy_validation import InvariantError
@@ -35,12 +34,7 @@ def _validate_handles(_agent: Agent, handles: list[str], call: CurrentCall) -> N
         raise InvariantError(str(error)) from error
 
 
-class InsightCompilation(
-    Agent,
-    truncation=_output_policy.TruncationConfig(
-        capture=_output_policy.CaptureConfig(max_stdout=12_000)
-    ),
-):
+class InsightCompilation(Agent):
     @no_trace
     async def compile_insights(
         self,

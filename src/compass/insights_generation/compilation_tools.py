@@ -43,35 +43,35 @@ def _excerpt(value: object, characters: int) -> dict[str, object]:
     return {"text": text[:characters], "characters": len(text), "has_more": len(text) > characters}
 
 
-def _page(
-    rows: Sequence[Any],
-    offset: int,
-    limit: int,
-    render: Callable[[Any], object] | None = None,
-) -> dict[str, Any]:
+def _page(rows: Sequence[Any], offset: int, limit: int) -> dict[str, Any]:
     if offset < 0 or not 1 <= limit <= 50:
         raise ValueError("Use offset >= 0 and 1 <= limit <= 50")
-    items = []
-    characters = 0
-    # Leave room for metadata and normal pretty-print indentation within the
-    # compiler's 12k stdout capture budget. Explicit raw dumps may still truncate.
-    for row in rows[offset : offset + limit]:
-        item = render(row) if render is not None else row
-        size = len(json.dumps(item, default=str, ensure_ascii=False))
-        if size > 7000:
-            raise ValueError(
-                "One view item exceeds the page budget; use smaller excerpts or raw Python access"
-            )
-        if items and characters + size > 7000:
-            break
-        items.append(item)
-        characters += size
-    end = offset + len(items)
+    end = offset + limit
     return {
-        "items": items,
+        "items": list(rows[offset:end]),
         "total": len(rows),
         "next_offset": end if end < len(rows) else None,
     }
+
+
+def _span_field(visit: SpanVisit, field: str) -> object:
+    """Resolve the same recorded field for previews and exact reads."""
+    span = visit.span
+    if field == "prior_user_text":
+        return span.tool_call.prior_user_text if span.tool_call else UNSET
+    if field == "tool_call_metadata":
+        return (
+            span.tool_call.model_dump(mode="json", exclude={"prior_user_text", "results"})
+            if span.tool_call
+            else UNSET
+        )
+    if field == "source_pointer":
+        return visit.source_pointer
+    if field == "recorded_event":
+        return span.attributes.get("event", UNSET)
+    if field in Span.model_fields:
+        return getattr(span, field)
+    raise ValueError(f"Unknown span view field {field!r}")
 
 
 def tool_calls(trace: Trace, name: str | None = None) -> list[Span]:
@@ -107,8 +107,6 @@ class CompilationTools:
 
     Helpers do not decide whether an issue is real, merge semantic claims, or
     interpret source text as instructions. Raw traces remain accessible in Python.
-    Pages return up to 50 items within a character budget. Always use next_offset;
-    a page can contain fewer items than requested without reaching the end.
     """
 
     def __init__(
@@ -256,9 +254,10 @@ class CompilationTools:
             if (selected_kind is None or visit.span.kind is selected_kind)
             and (tool_names is None or visit.span.tool_name in tool_names)
         ]
-        page = _page(selected, offset, limit, lambda visit: self._span_view(visit, characters))
+        page = _page(selected, offset, limit)
         page["filtered_total"] = page["total"]
         page["total"] = len(visits)
+        page["items"] = [self._span_view(visit, characters) for visit in page["items"]]
         page["ordering"] = "depth-first tree order; no global chronology inferred"
         return page
 
@@ -273,20 +272,18 @@ class CompilationTools:
             "start_time": span.start_time,
             "end_time": span.end_time,
             "tool_index": span.tool_call.index if span.tool_call else None,
-            "prior_user_text": _excerpt(
-                span.tool_call.prior_user_text if span.tool_call else UNSET, characters
-            ),
-            "tool_call": _excerpt(
-                span.tool_call.model_dump(mode="json", exclude={"prior_user_text", "results"})
-                if span.tool_call
-                else UNSET,
-                characters,
-            ),
-            "source_pointer": _excerpt(visit.source_pointer, characters),
-            "recorded_event": _excerpt(span.attributes.get("event", UNSET), characters),
-            "input": _excerpt(span.input, characters),
-            "output": _excerpt(span.output, characters),
-            "error": _excerpt(span.error, characters),
+            **{
+                field: _excerpt(_span_field(visit, field), characters)
+                for field in (
+                    "prior_user_text",
+                    "tool_call_metadata",
+                    "source_pointer",
+                    "recorded_event",
+                    "input",
+                    "output",
+                    "error",
+                )
+            },
         }
 
     def read_span(
@@ -297,17 +294,18 @@ class CompilationTools:
         offset: int = 0,
         characters: int = 4000,
     ) -> dict[str, Any]:
-        """Read an exact field in bounded chunks; next_offset exposes any remainder."""
+        """Read a Span field or named inspect_trace excerpt in exact chunks.
+
+        tool_call_metadata is the preview projection without prior_user_text or
+        results; tool_call reads the complete original field. next_offset exposes
+        any remainder, including for prior_user_text and recorded_event.
+        """
         if offset < 0 or not 1 <= characters <= 12000:
             raise ValueError("Use offset >= 0 and 1 <= characters <= 12000")
-        if field not in Span.model_fields:
-            raise ValueError(f"Unknown Span field {field!r}")
-        span = next(
-            (v.span for v in walk_spans(self.trace(trace_id)) if v.span.id == span_id), None
-        )
-        if span is None:
+        visit = next((v for v in walk_spans(self.trace(trace_id)) if v.span.id == span_id), None)
+        if visit is None:
             raise KeyError(span_id)
-        text = _text(getattr(span, field))
+        text = _text(_span_field(visit, field))
         end = offset + characters
         return {
             "trace_id": trace_id,
