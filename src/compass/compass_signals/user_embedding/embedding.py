@@ -44,7 +44,7 @@ def _request_embeddings(
 ) -> EmbeddingResponse:
     import litellm
 
-    return litellm.embedding(
+    response = litellm.embedding(
         model=model,
         api_base=api_base,
         api_key=api_key,
@@ -53,6 +53,10 @@ def _request_embeddings(
         timeout=timeout,
         max_retries=max_retries if max_retries else _NoRetries(),
     )
+    # LiteLLM types embedding() as possibly returning a coroutine (only when aembedding=True).
+    if not isinstance(response, EmbeddingResponse):
+        raise TypeError(f"Expected EmbeddingResponse from LiteLLM, got {type(response).__name__}")
+    return response
 
 
 @dataclass
