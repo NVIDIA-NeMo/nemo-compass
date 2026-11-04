@@ -490,3 +490,26 @@ def test_signal_inventory_preserves_capability_limits(completion_case):
     assert row["skip_reason"]["text"] == "Schema unavailable"
     assert "Cannot validate argument types" in row["limitations"]["text"]
     assert tools.signal(0) is signal
+
+
+def test_existing_indices_update_anonymous_insights_without_duplicates(completion_case):
+    from compass.insights_generation.compilation_tools import CompilationTools
+
+    insight, checks, snapshot = completion_case
+    first = insight.model_copy(update={"id": None, "name": "First anonymous claim"})
+    second = insight.model_copy(update={"id": None, "name": "Second anonymous claim"})
+    tools = CompilationTools([], snapshot, [first, second], RUN_TIMESTAMP)
+    assert [row["existing_index"] for row in tools.existing()["items"]] == [0, 1]
+    handle = tools.register({}, truncated_enrich, checks, existing_index=1)
+    with pytest.warns(UserWarning, match="1 of 6 traces"):
+        result = tools._finish([handle])
+    assert len(result) == 2
+    assert result[0] == first
+    assert result[1].id is None and result[1].name == second.name
+    assert result[1].updated_date == RUN_TIMESTAMP
+    assert {e.trace_id for e in result[1].evidence} == {"seed", "historical", "additional"}
+    duplicate = tools.register({}, truncated_enrich, checks, existing_index=1)
+    with pytest.raises(ValueError, match="one final update"):
+        tools._finish([handle, duplicate])
+    with pytest.raises(ValueError, match="duplicate persistent IDs"):
+        CompilationTools([], snapshot, [insight, insight], RUN_TIMESTAMP)

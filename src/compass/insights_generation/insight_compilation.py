@@ -137,8 +137,9 @@ class InsightCompilation(Agent):
         1. Bash tool call is returning errors
 
         Existing insights are preserved automatically. Inspect tools.existing().
-        To add evidence to an existing claim, register its supplied id; never invent
-        an id. The application preserves its claim, ratings, dates, and references.
+        To add evidence to an existing claim, pass its supplied existing_index to
+        tools.register, including when it has no persistent id. Never invent an
+        id. The application preserves its claim, ratings, dates, and references.
         New insights have no id. The application sets dates and resolves URLs.
 
         After merging findings, assign severity to each new insight based on

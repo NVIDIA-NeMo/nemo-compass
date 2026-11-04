@@ -95,6 +95,10 @@ class CompilationTools:
         self._existing = existing
         self._timestamp = run_timestamp
         self._registered: dict[str, EvidenceCompletion] = {}
+        self._targets: dict[str, int | None] = {}
+        identifiers = [insight.id for insight in existing if insight.id is not None]
+        if len(set(identifiers)) != len(identifiers):
+            raise ValueError("Existing insights contain duplicate persistent IDs")
 
     def __repr__(self) -> str:
         return f"CompilationTools(traces={len(self._snapshot)}, candidates={sum(len(s.problems) for s in self._signals)}, existing={len(self._existing)})"
@@ -159,13 +163,14 @@ class CompilationTools:
         return _page(
             [
                 {
+                    "existing_index": index,
                     "id": insight.id,
                     "name": insight.name,
                     "description": _excerpt(insight.description, 1000),
                     "severity": insight.severity,
                     "evidence_count": len(insight.evidence),
                 }
-                for insight in self._existing
+                for index, insight in enumerate(self._existing)
             ],
             offset,
             limit,
@@ -243,16 +248,19 @@ class CompilationTools:
         predicate: Callable[[Trace], EvidenceDecision | dict[str, object]] | None = None,
         checks: list[tuple[Trace, Decision]] | None = None,
         unresolved_reason: str | None = None,
+        existing_index: int | None = None,
     ) -> str:
         """Register a final claim and return its handle after checking examples.
 
         insight supplies name, description, checked evidence (trace_id and optional
-        spans), optional severity/severity_reason, and an existing id only when
-        updating that insight. Do not supply updated_date, confidence, or URLs.
+        spans) and optional severity/severity_reason. To update an existing claim,
+        pass its existing_index from existing(), including when its id is None.
+        Do not supply updated_date, confidence, or URLs.
         Pass the callable itself and match/no_match/unknown checks in Python.
         Return no predicate/checks only with a nonblank unresolved_reason.
         """
-        prepared = self._prepare_insight(insight)
+        target = self._existing_target(insight.get("id"), existing_index)
+        prepared = self._prepare_insight(insight, target)
         completion = EvidenceCompletion(
             insight=prepared,
             predicate=predicate,
@@ -262,9 +270,24 @@ class CompilationTools:
         completion.validate_result()
         handle = uuid4().hex
         self._registered[handle] = completion
+        self._targets[handle] = target
         return handle
 
-    def _prepare_insight(self, fields: dict[str, Any]) -> Insight:
+    def _existing_target(self, identifier: object, existing_index: int | None) -> int | None:
+        if existing_index is not None:
+            if type(existing_index) is not int or not 0 <= existing_index < len(self._existing):
+                raise ValueError("existing_index must name an insight from existing()")
+            if identifier is not None and identifier != self._existing[existing_index].id:
+                raise ValueError("Existing insight ID does not match existing_index")
+            return existing_index
+        if identifier is not None:
+            for index, insight in enumerate(self._existing):
+                if insight.id == identifier:
+                    return index
+            raise ValueError("Existing insight ID was not supplied to this compilation")
+        return None
+
+    def _prepare_insight(self, fields: dict[str, Any], target: int | None) -> Insight:
         supplied = dict(fields)
         unsupported = set(supplied) - {
             "id",
@@ -276,12 +299,7 @@ class CompilationTools:
         }
         if unsupported:
             raise ValueError(f"Application-owned or unknown insight fields: {sorted(unsupported)}")
-        identifier = supplied.get("id")
-        existing = next(
-            (i for i in self._existing if identifier is not None and i.id == identifier), None
-        )
-        if identifier is not None and existing is None:
-            raise ValueError("Existing insight ID was not supplied to this compilation")
+        existing = self._existing[target] if target is not None else None
         additions = self._checked_evidence(supplied.get("evidence", []), existing)
         if existing is None:
             return Insight.model_validate(
@@ -346,8 +364,8 @@ class CompilationTools:
         if len(set(handles)) != len(handles) or any(h not in self._registered for h in handles):
             raise ValueError("Return unique handles obtained from tools.register in this session")
         completions = [self._registered[h] for h in handles]
-        identifiers = [c.insight.id for c in completions if c.insight.id is not None]
-        if len(set(identifiers)) != len(identifiers):
+        targets = [self._targets[h] for h in handles if self._targets[h] is not None]
+        if len(set(targets)) != len(targets):
             raise ValueError("Register only one final update per existing insight")
         for completion in completions:
             completion.validate_result()
@@ -385,7 +403,13 @@ class CompilationTools:
             apply_scan(c, result, len(self._snapshot), self._timestamp)
             for c, result in zip(completions, results, strict=True)
         ]
-        by_id = {insight.id: insight for insight in updates if insight.id is not None}
-        return [by_id.get(insight.id, insight) for insight in self._existing] + [
-            insight for insight in updates if insight.id is None
+        by_index = {
+            self._targets[h]: insight
+            for h, insight in zip(handles, updates, strict=True)
+            if self._targets[h] is not None
+        }
+        return [by_index.get(index, insight) for index, insight in enumerate(self._existing)] + [
+            insight
+            for handle, insight in zip(handles, updates, strict=True)
+            if self._targets[handle] is None
         ]
