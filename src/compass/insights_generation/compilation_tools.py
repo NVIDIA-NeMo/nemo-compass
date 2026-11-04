@@ -120,6 +120,32 @@ class CompilationTools:
         ]
         return _page(rows, offset, limit)
 
+    def signals(self, offset: int = 0, limit: int = 12) -> dict[str, Any]:
+        """Page signal coverage, skip reasons, and limitations before judging candidates.
+
+        signal(index) exposes the complete original record for targeted Python reads.
+        Missing capabilities or evidence must not be mistaken for a clean result.
+        """
+        return _page(
+            [
+                {
+                    "signal_index": index,
+                    "name": signal.signal_name,
+                    "finding_count": signal.finding_count,
+                    "problem_count": len(signal.problems),
+                    "skip_reason": _excerpt(signal.skip_reason, 1000),
+                    "limitations": _excerpt(signal.limitations, 1000),
+                }
+                for index, signal in enumerate(self._signals)
+            ],
+            offset,
+            limit,
+        )
+
+    def signal(self, signal_index: int) -> CompassSignalResult:
+        """Full original signal, including capabilities, limitations, and artifacts."""
+        return self._signals[signal_index]
+
     def candidate(self, signal_index: int, problem_index: int) -> Problem:
         """Full source problem object, usable in Python without printing it all."""
         return self._signals[signal_index].problems[problem_index]

@@ -175,6 +175,9 @@ class InsightCompilation(Agent):
         Leave all evidence url fields unset; the application resolves URLs after compilation.
 
         Use the deterministic tools already supplied in Python:
+        - tools.signals(): signal coverage, skip reasons, and limitations. Read
+          these first; missing capabilities/evidence are not proof of no problem.
+          tools.signal(index) exposes the full original record for targeted reads.
         - tools.candidates(): bounded inventory of candidates, counts, and seed IDs.
           Follow next_offset until all candidates have been considered.
         - tools.candidate(signal_index, problem_index): full candidate object.

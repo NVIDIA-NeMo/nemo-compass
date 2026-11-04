@@ -470,3 +470,23 @@ def test_batch_telemetry_reports_shared_pass_without_nested_claim_durations(
     assert isinstance(output, str)
     statuses = [row["status"] for row in json.loads(output)["results"]]
     assert statuses == ["incomplete", "failed"]
+
+
+def test_signal_inventory_preserves_capability_limits(completion_case):
+    from compass.compass_signals.compass_signals import CompassSignalResult
+    from compass.insights_generation.compilation_tools import CompilationTools
+
+    _, _, snapshot = completion_case
+    signal = CompassSignalResult(
+        signal_name="tool_issues",
+        problems=(),
+        finding_count=7,
+        skip_reason="Schema unavailable",
+        limitations=("Cannot validate argument types",),
+    )
+    tools = CompilationTools([signal], snapshot, [], RUN_TIMESTAMP)
+    row = tools.signals()["items"][0]
+    assert row["finding_count"] == 7 and row["problem_count"] == 0
+    assert row["skip_reason"]["text"] == "Schema unavailable"
+    assert "Cannot validate argument types" in row["limitations"]["text"]
+    assert tools.signal(0) is signal
