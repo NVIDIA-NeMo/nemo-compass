@@ -165,14 +165,6 @@ def _run_cli(source, enabled):
             ...
 
     async def analyze(*args, **kwargs):
-        import litellm
-
-        embedding = litellm.embedding(
-            model="openai/text-embedding-3-small",
-            input=["Embedding test"],
-            mock_response=[0.1, 0.2, 0.3],
-        )
-        assert embedding.data[0]["embedding"] == [0.1, 0.2, 0.3]
         fake = FakeLLMClient(
             [
                 LLMResponse(
@@ -245,12 +237,6 @@ def _run_cli(source, enabled):
         assert metadata["python.version"]
         assert all(r.context.trace_id == root.context.trace_id for r in records)
         ids = {r.context.span_id for r in records}
-        from compass.telemetry_export import span_id_digest
-
-        assert metadata["compass.telemetry"] == {
-            "expected_span_count": len(ids),
-            "expected_span_id_sha256": span_id_digest(ids),
-        }
         assert all(r.parent.span_id in ids for r in records if r.parent)
         assert json.loads(str((root.attributes or {})["output.value"]))["insights"] == []
 
@@ -271,12 +257,6 @@ def _run_cli(source, enabled):
         assert model.attributes is not None
         assert model.attributes["llm.input_messages.0.message.content"] == "Say hello"
         assert model.attributes["llm.output_messages.0.message.content"] == "Hello"
-        embedding = next(
-            r for r in records if (r.attributes or {}).get("openinference.span.kind") == "EMBEDDING"
-        )
-        assert embedding.attributes is not None
-        assert embedding.attributes["embedding.embeddings.0.embedding.text"] == "Embedding test"
-        assert embedding.attributes["embedding.embeddings.0.embedding.vector"] == "__REDACTED__"
 
 
 if __name__ == "__main__":

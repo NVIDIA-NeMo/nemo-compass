@@ -3,23 +3,13 @@
 
 """Present framework operations without changing execution identity."""
 
-import hashlib
 import json
-import logging
 from collections.abc import Sequence
 from operator import attrgetter
-from threading import Lock
 
-from opentelemetry.context import Context
-from opentelemetry.exporter.otlp.proto.common.trace_encoder import encode_spans
-from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
+from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.trace import SpanContext
-
-logger = logging.getLogger(__name__)
-
-# Leave room below the OTLP exporter's 64 MiB ceiling and bound each HTTP request.
-MAX_BATCH_BYTES = 16 * 1024 * 1024
 
 _OPERATION_NAMES = {
     "nooa.tracing": {"generation": "agent.execute", "context_snapshot": "agent.context"},
@@ -35,16 +25,15 @@ _OPERATION_NAMES = {
 class _ExportSpan(ReadableSpan):
     """Read-only name override; delegate all other fields to the ended SDK span."""
 
-    def __init__(self, original: ReadableSpan, name: str, attributes: dict | None = None) -> None:
+    def __init__(self, original: ReadableSpan, name: str) -> None:
         self._original = original
         self._export_name = name
-        self._export_attributes = original.attributes if attributes is None else attributes
 
     name = property(attrgetter("_export_name"))
     context = property(attrgetter("_original.context"))
     parent = property(attrgetter("_original.parent"))
     resource = property(attrgetter("_original.resource"))
-    attributes = property(attrgetter("_export_attributes"))
+    attributes = property(attrgetter("_original.attributes"))
     events = property(attrgetter("_original.events"))
     links = property(attrgetter("_original.links"))
     kind = property(attrgetter("_original.kind"))
@@ -60,7 +49,6 @@ class _ExportSpan(ReadableSpan):
     def to_json(self, indent: int | None = 4) -> str:
         document = json.loads(self._original.to_json(indent=indent))
         document["name"] = self.name
-        document["attributes"] = dict(self.attributes or {})
         return json.dumps(document, indent=indent)
 
     def get_span_context(self) -> SpanContext | None:
@@ -82,121 +70,14 @@ def _with_operation_name(span: ReadableSpan) -> ReadableSpan:
     return _ExportSpan(span, name=name) if name else span
 
 
-def span_id_digest(span_ids: set[int]) -> str:
-    """Fingerprint an inventory independently of export or arrival order."""
-    return hashlib.sha256(
-        "".join(f"{span_id:016x}" for span_id in sorted(span_ids)).encode()
-    ).hexdigest()
-
-
-class SpanInventory(SpanProcessor):
-    """Count spans before the batch queue, so queue losses remain detectable."""
-
-    def __init__(self) -> None:
-        self.started: set[int] = set()
-        self._lock = Lock()
-
-    def on_start(self, span: Span, parent_context: Context | None = None) -> None:
-        with self._lock:
-            self.started.add(span.get_span_context().span_id)
-
-    def metadata(self) -> dict[str, int | str]:
-        with self._lock:
-            return {
-                "expected_span_count": len(self.started),
-                "expected_span_id_sha256": span_id_digest(self.started),
-            }
-
-
-def _request_size(spans: Sequence[ReadableSpan]) -> int:
-    return encode_spans(spans).ByteSize()
-
-
-def _bound_span(span: ReadableSpan, max_bytes: int) -> ReadableSpan:
-    """Summarize only oversized attribute values, keeping identity and usage intact.
-
-    Normal spans are lossless. A single oversized span cannot be split into
-    separate requests without changing its identity. Replace its largest values
-    with explicit size/hash summaries until it fits; never slice JSON mid-value.
-    """
-    attributes = dict(span.attributes or {})
-    sizes = sorted(
-        (
-            (len(json.dumps(value, ensure_ascii=False).encode()), key)
-            for key, value in attributes.items()
-        ),
-        reverse=True,
-    )
-    summarized = []
-    for size, key in sizes:
-        if size < 1024:
-            break  # Small execution metadata and token counts are never sacrificed.
-        value = attributes[key]
-        data = (
-            value.encode()
-            if isinstance(value, str)
-            else json.dumps(value, ensure_ascii=False).encode()
-        )
-        attributes[key] = json.dumps(
-            {
-                "compass_telemetry_omitted": True,
-                "original_utf8_bytes": len(data),
-                "sha256": hashlib.sha256(data).hexdigest(),
-            }
-        )
-        summarized.append(key)
-        attributes["compass.telemetry.summarized_attributes"] = tuple(summarized)
-        bounded = _ExportSpan(span, span.name, attributes)
-        if _request_size((bounded,)) <= max_bytes:
-            logger.warning(
-                "Summarized oversized telemetry attributes on span %s: %s",
-                span.name,
-                ", ".join(summarized),
-            )
-            return bounded
-    raise ValueError(
-        "Span exceeds telemetry request budget even after summarizing large attributes"
-    )
-
-
 class CompassSpanExporter(SpanExporter):
-    """Preserve span identity while exporting requests within a byte budget."""
+    """Forward spans with readable operation names."""
 
-    def __init__(self, delegate: SpanExporter, *, max_batch_bytes: int = MAX_BATCH_BYTES) -> None:
-        if max_batch_bytes <= 0:
-            raise ValueError("max_batch_bytes must be positive")
+    def __init__(self, delegate: SpanExporter) -> None:
         self._delegate = delegate
-        self._max_batch_bytes = max_batch_bytes
-        self.exported_span_ids: set[int] = set()
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
-        if not spans:
-            return SpanExportResult.SUCCESS
-        return self._export_batch(tuple(_with_operation_name(span) for span in spans))
-
-    def _export_batch(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
-        try:
-            if _request_size(spans) > self._max_batch_bytes:
-                if len(spans) > 1:
-                    middle = len(spans) // 2
-                    left = self._export_batch(spans[:middle])
-                    right = self._export_batch(spans[middle:])
-                    return (
-                        SpanExportResult.SUCCESS
-                        if left == right == SpanExportResult.SUCCESS
-                        else SpanExportResult.FAILURE
-                    )
-                spans = (_bound_span(spans[0], self._max_batch_bytes),)
-            result = self._delegate.export(spans)
-        except Exception as error:
-            # Transport errors can contain credentials. Keep only the exception type.
-            logger.error("Compass telemetry export failed (%s)", type(error).__name__)
-            result = SpanExportResult.FAILURE
-        if result == SpanExportResult.SUCCESS:
-            self.exported_span_ids.update(span.context.span_id for span in spans if span.context)
-        else:
-            logger.error("Compass telemetry incomplete: failed to export %d spans", len(spans))
-        return result
+        return self._delegate.export(tuple(_with_operation_name(span) for span in spans))
 
     def shutdown(self) -> None:
         self._delegate.shutdown()

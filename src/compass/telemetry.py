@@ -23,11 +23,10 @@ from openinference.instrumentation._spans import OpenInferenceSpan
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http import Compression
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.trace import TracerProvider
 
 from compass.config import RunConfig
 from compass.telemetry_buffer import BufferedSpanExporter
-from compass.telemetry_export import CompassSpanExporter, SpanInventory
+from compass.telemetry_export import CompassSpanExporter
 from compass.version import __version__
 from trace_ingest.loaders.trace_loaders import TraceLoader
 
@@ -106,9 +105,6 @@ def telemetry_session(config: RunConfig) -> Iterator[OpenInferenceSpan]:
             )
             api_key = ""
     if api_key:
-        # Keep embedding spans and usage, without exporting their large numeric vectors.
-        # NOOA's LiteLLM instrumentor reads this when tracing is initialized below.
-        os.environ["OPENINFERENCE_HIDE_EMBEDDINGS_VECTORS"] = "true"
         headers = {"x-api-key": api_key, "Langsmith-Project": project}
         if workspace := os.getenv("COMPASS_TELEMETRY_LANGSMITH_WORKSPACE_ID"):
             headers["X-Tenant-Id"] = workspace
@@ -124,17 +120,9 @@ def telemetry_session(config: RunConfig) -> Iterator[OpenInferenceSpan]:
                 ),
             )
         )
-        archive_dir = os.getenv("COMPASS_TELEMETRY_ARCHIVE_DIR")
-        exporter = BufferedSpanExporter(
-            transport, archive_dir=Path(archive_dir) if archive_dir else None
-        )
         # Nooa prints initialization messages; stdout belongs to the CLI's YAML output.
         with redirect_stdout(sys.stderr):
-            enable_tracing(exporters=[exporter])
-        inventory = SpanInventory()
-        provider = trace.get_tracer_provider()
-        if isinstance(provider, TracerProvider):
-            provider.add_span_processor(inventory)
+            enable_tracing(exporters=[BufferedSpanExporter(transport)])
     try:
         with record_span("compass") as root:
             root.set_input(config.model_dump(mode="json", exclude={"api_base"}))
@@ -152,22 +140,7 @@ def telemetry_session(config: RunConfig) -> Iterator[OpenInferenceSpan]:
                     f"Compass telemetry: execution content and source provenance to {project}; OTLP trace ID {root.get_span_context().trace_id:032x}",
                     file=sys.stderr,
                 )
-            try:
-                yield root
-            finally:
-                if api_key:
-                    # The root is still open and already in the inventory. Consumers
-                    # must reconcile this manifest with stored IDs, not wait for a
-                    # stable (but potentially incomplete) snapshot.
-                    root.set_attribute(
-                        "metadata",
-                        json.dumps(
-                            {
-                                **_execution_metadata(),
-                                "compass.telemetry": inventory.metadata(),
-                            }
-                        ),
-                    )
+            yield root
     finally:
         if api_key:
             shutdown_traces()

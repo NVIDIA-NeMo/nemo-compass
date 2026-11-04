@@ -6,9 +6,6 @@ import threading
 import numpy as np
 import pytest
 from litellm import EmbeddingResponse
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from tokenizers import Tokenizer, models
 
 from compass.compass_signals.user_embedding.embedding import (
@@ -60,10 +57,6 @@ def test_fixed_pool_starts_at_configured_limit(generator, monkeypatch, concurren
     barrier = threading.Barrier(concurrency, timeout=5)
     lock = threading.Lock()
     active = peak = 0
-    provider = TracerProvider()
-    exporter = InMemorySpanExporter()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    tracer = provider.get_tracer("embedding-test")
 
     def worker(batch, config, key):
         nonlocal active, peak
@@ -71,23 +64,14 @@ def test_fixed_pool_starts_at_configured_limit(generator, monkeypatch, concurren
             active += 1
             peak = max(peak, active)
         try:
-            with tracer.start_as_current_span("embedding"):
-                barrier.wait()
-                return result(batch)
+            barrier.wait()
+            return result(batch)
         finally:
             with lock:
                 active -= 1
 
     monkeypatch.setattr(generator, "_remote_batch", worker)
-    with tracer.start_as_current_span("signal.user_sentiment") as root:
-        actual = generator.generate_batch(["a"] * (concurrency * 2))
-    provider.shutdown()
-    children = [span for span in exporter.get_finished_spans() if span.name == "embedding"]
-    assert len(children) == concurrency * 2
-    assert all(span.context.trace_id == root.get_span_context().trace_id for span in children)
-    assert all(
-        span.parent and span.parent.span_id == root.get_span_context().span_id for span in children
-    )
+    actual = generator.generate_batch(["a"] * (concurrency * 2))
     assert peak == concurrency
     assert [x.data for x in actual] == [bytes([i]) for i in range(concurrency * 2)]
 

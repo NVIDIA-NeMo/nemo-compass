@@ -19,8 +19,6 @@ from opentelemetry.sdk.util.instrumentation import InstrumentationScope
 from opentelemetry.trace import Link
 from opentelemetry.util.types import Attributes
 
-from compass.telemetry_export import CompassSpanExporter
-
 logger = logging.getLogger(__name__)
 
 
@@ -98,22 +96,16 @@ class BufferedSpanExporter(SpanExporter):
     Failed records stay on disk; successful records are removed after delivery.
     """
 
-    def __init__(self, delegate: CompassSpanExporter, *, archive_dir: Path | None = None) -> None:
+    def __init__(self, delegate: SpanExporter) -> None:
         self._delegate = delegate
-        if archive_dir is not None:
-            archive_dir.mkdir(parents=True, exist_ok=True)
-        self.directory = Path(tempfile.mkdtemp(prefix="compass-telemetry-", dir=archive_dir))
-        self._retain_archive = archive_dir is not None
+        self.directory = Path(tempfile.mkdtemp(prefix="compass-telemetry-"))
         self._parents: dict[int, int | None] = {}
-        self._write_failures = 0
+        self._exported: set[int] = set()
+        self._write_failed = False
 
     @property
-    def exported_span_ids(self) -> set[int]:
-        return self._delegate.exported_span_ids
-
-    @property
-    def failed_span_count(self) -> int:
-        return self._write_failures + len(self._parents.keys() - self.exported_span_ids)
+    def _incomplete(self) -> bool:
+        return self._write_failed or bool(self._parents.keys() - self._exported)
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
         result = SpanExportResult.SUCCESS
@@ -128,7 +120,7 @@ class BufferedSpanExporter(SpanExporter):
                 temporary.replace(path)
                 self._parents[span_id] = span.parent.span_id if span.parent else None
             except Exception as error:
-                self._write_failures += 1
+                self._write_failed = True
                 logger.error("Compass telemetry buffering failed (%s)", type(error).__name__)
                 result = SpanExportResult.FAILURE
         return result
@@ -149,10 +141,10 @@ class BufferedSpanExporter(SpanExporter):
             eligible = [
                 span_id
                 for span_id in level
-                if span_id not in self.exported_span_ids
+                if span_id not in self._exported
                 and (
                     self._parents[span_id] not in self._parents
-                    or self._parents[span_id] in self.exported_span_ids
+                    or self._parents[span_id] in self._exported
                 )
             ]
             for offset in range(0, len(eligible), 8):
@@ -161,12 +153,12 @@ class BufferedSpanExporter(SpanExporter):
                     for span_id in eligible[offset : offset + 8]
                 ]
                 try:
-                    self._delegate.export([_unpack_span(path.read_bytes()) for path in paths])
-                    for path in paths:
-                        if (
-                            not self._retain_archive
-                            and int(path.stem, 16) in self.exported_span_ids
-                        ):
+                    result = self._delegate.export(
+                        [_unpack_span(path.read_bytes()) for path in paths]
+                    )
+                    if result == SpanExportResult.SUCCESS:
+                        for path in paths:
+                            self._exported.add(int(path.stem, 16))
                             path.unlink()
                 except Exception as error:
                     logger.error("Compass telemetry replay failed (%s)", type(error).__name__)
@@ -174,14 +166,12 @@ class BufferedSpanExporter(SpanExporter):
     def shutdown(self) -> None:
         try:
             self._deliver()
-            if self.failed_span_count:
+            if self._incomplete:
                 self._deliver()  # Retry transient failures without repeating acknowledged spans.
-            if self.failed_span_count:
+            if self._incomplete:
                 logger.error("Compass telemetry incomplete; retained spans in %s", self.directory)
-            elif not self._retain_archive:
+            else:
                 self.directory.rmdir()
-            if self._retain_archive:
-                logger.warning("Compass telemetry archive retained in %s", self.directory)
         finally:
             self._delegate.shutdown()
 
