@@ -359,7 +359,9 @@ class CompilationTools:
             )
         return merge_evidence([], checked)[0]
 
-    def _validate_handles(self, handles: list[str]) -> list[EvidenceCompletion]:
+    def _validate_handles(
+        self, handles: list[str], *, check_examples: bool = True
+    ) -> list[EvidenceCompletion]:
         """Reject unknown/duplicate handles and repeated updates to an existing ID."""
         if len(set(handles)) != len(handles) or any(h not in self._registered for h in handles):
             raise ValueError("Return unique handles obtained from tools.register in this session")
@@ -367,8 +369,9 @@ class CompilationTools:
         targets = [self._targets[h] for h in handles if self._targets[h] is not None]
         if len(set(targets)) != len(targets):
             raise ValueError("Register only one final update per existing insight")
-        for completion in completions:
-            completion.validate_result()
+        if check_examples:
+            for completion in completions:
+                completion.validate_result()
         return completions
 
     def scan(self, handles: list[str]) -> list[dict[str, Any]]:
@@ -376,28 +379,29 @@ class CompilationTools:
 
         No result is cached: application finalization scans again independently.
         """
-        completions = self._validate_handles(handles)
+        completions = self._validate_handles(handles, check_examples=False)
         results = scan_completions(completions, self._snapshot)
-        return [
-            {
-                "handle": handle,
-                **(
-                    {"status": "failed", "error": f"{type(result).__name__}: {str(result)[:500]}"}
-                    if isinstance(result, Exception)
-                    else {
-                        "status": "incomplete" if result[1] else "complete",
-                        "match_count": len(result[0]),
-                        "unknown_count": result[1],
-                        "example_trace_ids": [item.trace_id for item in result[0][:3]],
-                    }
-                ),
-            }
-            for handle, result in zip(handles, results, strict=True)
-        ]
+        reports = []
+        for handle, completion, result in zip(handles, completions, results, strict=True):
+            report: dict[str, Any] = {"handle": handle}
+            if isinstance(result, Exception):
+                report.update(
+                    status="skipped" if completion.predicate is None else "failed",
+                    error=f"{type(result).__name__}: {str(result)[:500]}",
+                )
+            else:
+                report.update(
+                    status="incomplete" if result[1] else "complete",
+                    match_count=len(result[0]),
+                    unknown_count=result[1],
+                    example_trace_ids=[item.trace_id for item in result[0][:3]],
+                )
+            reports.append(report)
+        return reports
 
     def _finish(self, handles: list[str]) -> list[Insight]:
         """Independently verify selected claims and preserve all existing insights."""
-        completions = self._validate_handles(handles)
+        completions = self._validate_handles(handles, check_examples=False)
         results = scan_completions(completions, self._snapshot)
         updates = [
             apply_scan(c, result, len(self._snapshot), self._timestamp)

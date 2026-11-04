@@ -322,7 +322,8 @@ def test_batch_scans_load_once_and_isolate_predicates(completion_case, monkeypat
     assert all("changed" not in item.attributes for item, _ in checks)
 
 
-def test_registration_and_fresh_final_scan_preserve_existing(completion_case):
+@pytest.mark.parametrize("failure_target", ["seed", "additional"])
+def test_registration_and_fresh_final_scan_preserve_existing(completion_case, failure_target):
     from compass.insights_generation.compilation_tools import CompilationTools
 
     insight, checks, snapshot = completion_case
@@ -332,7 +333,7 @@ def test_registration_and_fresh_final_scan_preserve_existing(completion_case):
     state = {"fail": False}
 
     def predicate(item):
-        if state["fail"] and item.id == "additional":
+        if state["fail"] and item.id == failure_target:
             raise ValueError("changed predicate state")
         return truncated_enrich(item)
 
@@ -340,6 +341,7 @@ def test_registration_and_fresh_final_scan_preserve_existing(completion_case):
         {"id": "saved", "severity_reason": "The recorded response is incomplete"}, predicate, checks
     )
     assert tools.scan([handle])[0]["match_count"] == 2
+    duplicate = tools.register({"id": "saved"}, predicate, checks)
     state["fail"] = True
     with pytest.warns(UserWarning, match="changed predicate state"):
         first, second = tools._finish([handle])
@@ -349,6 +351,8 @@ def test_registration_and_fresh_final_scan_preserve_existing(completion_case):
     assert first.severity == "med"
     assert first.severity_reason == "The recorded response is incomplete"
     assert second == unchanged
+    with pytest.raises(ValueError, match="one final update"):
+        tools._finish([handle, duplicate])
     for handles in ([handle, handle], ["made-up"]):
         with pytest.raises(ValueError, match="unique handles"):
             tools._finish(handles)
