@@ -8,21 +8,17 @@ import json
 import os
 from collections.abc import Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from contextvars import copy_context
 from dataclasses import dataclass
 from functools import cached_property
 from importlib.resources import files
 from importlib.util import find_spec
 from itertools import islice
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import numpy as np
 from litellm import EmbeddingResponse
-from opentelemetry import trace
 from pydantic import BaseModel, ConfigDict, Field
 from tokenizers import Tokenizer
-
-tracer = trace.get_tracer(__name__)
 
 
 class _NoRetries(int):
@@ -269,12 +265,7 @@ class UserEmbeddingGenerator:
             while True:
                 # Keep only one batch per worker in flight; refill as each finishes.
                 for batch in islice(batches, config.max_concurrency - len(active)):
-                    future = cast(
-                        Future[list[UserEmbedding]],
-                        executor.submit(
-                            copy_context().run, self._remote_batch, batch, config, api_key
-                        ),
-                    )
+                    future = executor.submit(self._remote_batch, batch, config, api_key)
                     active[future] = batch.index
                 if not active:
                     break
@@ -284,21 +275,6 @@ class UserEmbeddingGenerator:
         return [item for index in sorted(completed) for item in completed[index]]
 
     def _remote_batch(
-        self, batch: _RemoteBatch, config: LiteLLMEmbeddingConfig, api_key: str | None
-    ) -> list[UserEmbedding]:
-        with tracer.start_as_current_span(
-            "sentiment.embedding_batch",
-            attributes={
-                "openinference.span.kind": "CHAIN",
-                "input_offset": batch.index,
-                "input_count": len(batch.inputs),
-                "token_count": sum(batch.counts),
-                "model": config.model,
-            },
-        ):
-            return self._encode_remote_batch(batch, config, api_key)
-
-    def _encode_remote_batch(
         self, batch: _RemoteBatch, config: LiteLLMEmbeddingConfig, api_key: str | None
     ) -> list[UserEmbedding]:
         response = _request_embeddings(

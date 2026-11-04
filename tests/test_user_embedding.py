@@ -4,10 +4,6 @@
 import numpy as np
 import pytest
 from litellm import EmbeddingResponse
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from tokenizers import Tokenizer, models, pre_tokenizers
 
 from compass.compass_signals.user_embedding.embedding import (
@@ -34,23 +30,15 @@ def test_local_batch_preserves_character_limit(monkeypatch):
     assert generator.generate_batch([]) == []
 
 
-def test_screening_reuses_exact_inputs_preserving_occurrences_and_trace_context(monkeypatch):
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    tracer = provider.get_tracer("test")
-    monkeypatch.setattr("compass.compass_signals.user_embedding.embedding.tracer", tracer)
-    monkeypatch.setattr("compass.compass_signals.user_sentiment.signal.tracer", tracer)
+def test_screening_reuses_exact_inputs_preserving_occurrences(monkeypatch):
     generator = UserEmbeddingGenerator(
         litellm=LiteLLMEmbeddingConfig(model="openai/qwen", batch_size=4)
     )
     generator.remote_tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0}, unk_token="[UNK]"))
     calls = []
-    request_parents = []
 
     def embed(**kwargs):
         calls.append(kwargs["input"])
-        request_parents.append(trace.get_current_span().get_span_context().span_id)
         # Reversed response order and non-unit vectors exercise both requirements.
         return EmbeddingResponse(
             data=[
@@ -69,10 +57,7 @@ def test_screening_reuses_exact_inputs_preserving_occurrences_and_trace_context(
         "c": [],
         "d": [" " * 20000 + "ignored"],
     }
-    with tracer.start_as_current_span("signal.user_sentiment") as parent:
-        results = screen_user_messages(
-            messages, generator, ComplaintClassifier(generator.projection)
-        )
+    results = screen_user_messages(messages, generator, ComplaintClassifier(generator.projection))
     assert sorted(map(len, calls)) == [1, 4]
     prefix = generator.projection.metadata["encoder"]["prefix"]
     assert {text for call in calls for text in call} == {
@@ -89,20 +74,6 @@ def test_screening_reuses_exact_inputs_preserving_occurrences_and_trace_context(
     assert results["b"].message_results[-1].scores  # Occurrences don't share mutable state.
     assert messages["a"][-1] == long + "a"  # Evidence remains verbatim.
     assert "model" not in generator.__dict__
-    spans = exporter.get_finished_spans()
-    embeddings = next(span for span in spans if span.name == "sentiment.embeddings")
-    batches = [span for span in spans if span.name == "sentiment.embedding_batch"]
-    assert embeddings.parent is not None
-    assert embeddings.attributes is not None
-    assert embeddings.parent.span_id == parent.get_span_context().span_id
-    assert embeddings.attributes["unique_input_count"] == 5
-    assert len(batches) == 2
-    assert all(
-        span.parent is not None and span.parent.span_id == embeddings.context.span_id
-        for span in batches
-    )
-    assert set(request_parents) == {span.context.span_id for span in batches}
-    provider.shutdown()
 
 
 def test_remote_rejects_oversized_input_before_request_and_propagates_failures(monkeypatch):
