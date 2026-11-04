@@ -100,6 +100,8 @@ include = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Tests import shared helpers as `tests.*`; LiteLLM 1.98 put the working directory on sys.path, 1.108 does not.
+pythonpath = ["."]
 addopts = "-q"
 
 [tool.ruff]
