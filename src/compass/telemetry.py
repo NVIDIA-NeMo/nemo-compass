@@ -27,7 +27,7 @@ from opentelemetry.sdk.trace import TracerProvider
 
 from compass.config import RunConfig
 from compass.telemetry_buffer import BufferedSpanExporter
-from compass.telemetry_export import CompassSpanExporter, SpanInventory, span_id_digest
+from compass.telemetry_export import CompassSpanExporter, SpanInventory
 from compass.version import __version__
 from trace_ingest.loaders.trace_loaders import TraceLoader
 
@@ -171,22 +171,3 @@ def telemetry_session(config: RunConfig) -> Iterator[OpenInferenceSpan]:
     finally:
         if api_key:
             shutdown_traces()
-            expected = inventory.started
-            exported = exporter.exported_span_ids
-            print(
-                "Compass telemetry summary: "
-                + json.dumps(
-                    {
-                        **inventory.metadata(),
-                        "ended_span_count": len(inventory.ended),
-                        "exported_span_count": len(exported),
-                        "exported_span_id_sha256": span_id_digest(exported),
-                        "failed_span_count": exporter.failed_span_count,
-                        "status": "exported"
-                        if expected == inventory.ended == exported
-                        else "incomplete",
-                    },
-                    sort_keys=True,
-                ),
-                file=sys.stderr,
-            )

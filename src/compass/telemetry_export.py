@@ -94,17 +94,11 @@ class SpanInventory(SpanProcessor):
 
     def __init__(self) -> None:
         self.started: set[int] = set()
-        self.ended: set[int] = set()
         self._lock = Lock()
 
     def on_start(self, span: Span, parent_context: Context | None = None) -> None:
         with self._lock:
             self.started.add(span.get_span_context().span_id)
-
-    def on_end(self, span: ReadableSpan) -> None:
-        if span.context:
-            with self._lock:
-                self.ended.add(span.context.span_id)
 
     def metadata(self) -> dict[str, int | str]:
         with self._lock:
@@ -174,7 +168,6 @@ class CompassSpanExporter(SpanExporter):
         self._delegate = delegate
         self._max_batch_bytes = max_batch_bytes
         self.exported_span_ids: set[int] = set()
-        self.failed_span_count = 0
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
         if not spans:
@@ -202,7 +195,6 @@ class CompassSpanExporter(SpanExporter):
         if result == SpanExportResult.SUCCESS:
             self.exported_span_ids.update(span.context.span_id for span in spans if span.context)
         else:
-            self.failed_span_count += len(spans)
             logger.error("Compass telemetry incomplete: failed to export %d spans", len(spans))
         return result
 

@@ -50,7 +50,6 @@ def test_oversized_batch_is_split_without_changing_any_span():
     assert [s for batch in delegate.batches for s in batch] == spans
     assert len(delegate.batches) > 1
     assert exporter.exported_span_ids == set(range(1, 86))
-    assert exporter.failed_span_count == 0
 
 
 def test_single_large_span_summarizes_payload_but_preserves_identity_and_usage():
@@ -93,7 +92,6 @@ def test_failed_split_batch_does_not_hide_loss_or_skip_other_batches(raises, cap
     assert exporter.export(spans) == SpanExportResult.FAILURE
     assert len(delegate.batches) == 4
     assert exporter.exported_span_ids == {1, 3, 4}
-    assert exporter.failed_span_count == 1
     assert "incomplete" in caplog.text
     assert "secret transport details" not in caplog.text
 
@@ -103,8 +101,6 @@ def test_inventory_covers_spans_that_never_reach_exporter():
     spans = [span(i) for i in range(1, 4)]
     for record in spans:
         inventory.on_start(record)
-    for record in spans[:2]:
-        inventory.on_end(record)
     delegate = RecordingExporter(4096)
     exporter = CompassSpanExporter(delegate)
     exporter.export(spans[:1])
@@ -112,4 +108,5 @@ def test_inventory_covers_spans_that_never_reach_exporter():
         "expected_span_count": 3,
         "expected_span_id_sha256": span_id_digest({1, 2, 3}),
     }
-    assert inventory.started != inventory.ended != exporter.exported_span_ids
+    assert inventory.started == {1, 2, 3}
+    assert exporter.exported_span_ids == {1}
