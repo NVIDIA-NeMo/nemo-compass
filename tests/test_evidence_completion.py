@@ -212,84 +212,30 @@ def test_agent_and_application_scans_are_traced(completion_case, monkeypatch):
     assert json.loads(output)["status"] == "skipped"
 
 
-@pytest.mark.parametrize(
-    "invalid_return, diagnostic",
-    [
-        (None, "Without a predicate"),
-        ("EvidenceCompletion(insight=completion.insight)", "Without a predicate"),
-        (
-            "completion.model_copy(update={'unresolved_reason': 'partial'})",
-            "unresolved_reason=None",
-        ),
-        (
-            "completion.model_copy(update={'predicate': None, 'unresolved_reason': 'cannot check'})",
-            "Without a predicate",
-        ),
-        ("completion.model_copy(update={'checks': []})", "Checks must include"),
-        (
-            "completion.model_copy(update={'predicate': lambda t: {'status': 'match', "
-            "'witness_span_ids': (t.root_spans[0].id,)}})",
-            "expected no_match, got match",
-        ),
-        ("completion.model_copy(update={'predicate': lambda t: 1 / 0})", "division by zero"),
-        (
-            "completion.model_copy(update={'predicate': lambda t: {'status': 'match', "
-            "'witness_span_ids': ('invented',)}})",
-            "Cited span ID does not exist",
-        ),
-    ],
-)
-def test_invalid_return_can_be_fixed_in_same_python_session(
-    completion_case, invalid_return, diagnostic
-):
+def test_unregistered_handle_can_be_fixed_in_same_python_session(completion_case):
     insight, checks, snapshot = completion_case
     prepare = (
         "import json\nfrom compass.traces import UNSET\n"
         + inspect.getsource(truncated_enrich)
-        + "\nchecks = [(trace_snapshot.get_trace_by_id(i), expected) for i, expected in "
+        + "\nchecks = [(tools.trace(i), expected) for i, expected in "
         + repr([(t.id, expected) for t, expected in checks])
-        + "]\ncompletion = EvidenceCompletion(insight=existing_insights[0], "
-        "predicate=truncated_enrich, checks=checks)\noriginal_predicate = completion.predicate"
-    )
-    invalid = (
-        response("return_result", {"result": [{"insight": insight.model_dump()}]}, "invalid")
-        if invalid_return is None
-        else response("execute_python", {"code": f"return_result([{invalid_return}])"}, "invalid")
+        + "]\nhandle = tools.register({'id': 'saved'}, truncated_enrich, checks)"
     )
     llm = FakeLLMClient(
         [
             response("execute_python", {"code": prepare}, "prepare"),
-            invalid,
-            response(
-                "execute_python",
-                {
-                    "code": "assert completion.predicate is original_predicate\n"
-                    "return_result([completion])"
-                },
-                "correct",
-            ),
+            response("return_result", {"result": ["unregistered"]}, "invalid"),
+            response("execute_python", {"code": "return_result([handle])"}, "correct"),
         ]
     )
     with pytest.warns(UserWarning, match="1 of 6 traces"):
         result = asyncio.run(
             InsightCompilation(llm=llm).compile_insights([], snapshot, [insight], RUN_TIMESTAMP)
         )
-    assert result == [
-        insight.model_copy(
-            update={
-                "evidence": [
-                    *insight.evidence,
-                    TraceEvidence(
-                        trace_id="additional", spans=[SpanEvidence(span_id="additional-span")]
-                    ),
-                ],
-                "updated_date": RUN_TIMESTAMP,
-            }
-        )
-    ]
+    assert {item.trace_id for item in result[0].evidence} == {"seed", "historical", "additional"}
+    assert result[0].updated_date == RUN_TIMESTAMP
     assert llm.call_count == 3
-    assert diagnostic in str(llm.last_messages)
-    assert "JSON cannot preserve their functions" in str(llm.last_messages)
+    assert "Return unique handles" in str(llm.last_messages)
 
 
 def test_skipping_the_scan_requires_nonblank_reason(completion_case):
@@ -298,13 +244,15 @@ def test_skipping_the_scan_requires_nonblank_reason(completion_case):
     llm = FakeLLMClient(
         [
             response(
-                "return_result",
-                {"result": [{"insight": insight.model_dump(), "unresolved_reason": "   "}]},
-                "abstain",
+                "execute_python",
+                {"code": "tools.register({'id': 'saved'}, unresolved_reason='   ')"},
+                "invalid",
             ),
             response(
-                "return_result",
-                {"result": [{"insight": insight.model_dump(), "unresolved_reason": valid_reason}]},
+                "execute_python",
+                {
+                    "code": f"handle = tools.register({{'id': 'saved'}}, unresolved_reason={valid_reason!r})\nreturn_result([handle])"
+                },
                 "correct",
             ),
         ]
@@ -337,3 +285,188 @@ def test_compilation_exposes_ethos_to_the_agent(completion_case, ethos):
         == []
     )
     assert llm.call_count == 1
+
+
+def test_batch_scans_load_once_and_isolate_predicates(completion_case, monkeypatch):
+    from compass.insights_generation.evidence import scan_completions
+
+    insight, checks, snapshot = completion_case
+    passes = []
+    original = TraceSnapshot.iter_json
+
+    def counted(self):
+        passes.append(self)
+        return original(self)
+
+    def mutating(item):
+        decision = truncated_enrich(item)
+        item.attributes["changed"] = True
+        return decision
+
+    def isolated(item):
+        assert "changed" not in item.attributes
+        return truncated_enrich(item)
+
+    completions = [
+        EvidenceCompletion(insight=insight, predicate=p, checks=checks)
+        for p in (mutating, isolated)
+    ]
+    monkeypatch.setattr(TraceSnapshot, "iter_json", counted)
+    results = scan_completions(completions, snapshot)
+    assert len(passes) == 1
+    assert all(not isinstance(result, Exception) for result in results)
+    for result in results:
+        assert not isinstance(result, Exception)
+        matches, unknown = result
+        assert (len(matches), unknown) == (2, 1)
+    assert all("changed" not in item.attributes for item, _ in checks)
+
+
+def test_registration_and_fresh_final_scan_preserve_existing(completion_case):
+    from compass.insights_generation.compilation_tools import CompilationTools
+
+    insight, checks, snapshot = completion_case
+    insight.severity = "med"
+    unchanged = insight.model_copy(update={"id": "untouched", "name": "Another existing claim"})
+    tools = CompilationTools([], snapshot, [insight, unchanged], RUN_TIMESTAMP)
+    state = {"fail": False}
+
+    def predicate(item):
+        if state["fail"] and item.id == "additional":
+            raise ValueError("changed predicate state")
+        return truncated_enrich(item)
+
+    handle = tools.register(
+        {"id": "saved", "severity_reason": "The recorded response is incomplete"}, predicate, checks
+    )
+    assert tools.scan([handle])[0]["match_count"] == 2
+    state["fail"] = True
+    with pytest.warns(UserWarning, match="changed predicate state"):
+        first, second = tools._finish([handle])
+    assert first.evidence == insight.evidence
+    assert first.id == insight.id and first.name == insight.name
+    assert first.updated_date == insight.updated_date
+    assert first.severity == "med"
+    assert first.severity_reason == "The recorded response is incomplete"
+    assert second == unchanged
+    for handles in ([handle, handle], ["made-up"]):
+        with pytest.raises(ValueError, match="unique handles"):
+            tools._finish(handles)
+
+
+@pytest.mark.parametrize(
+    "fields, diagnostic",
+    [
+        ({"id": "invented"}, "ID was not supplied"),
+        ({"id": "saved", "severity_reason": ""}, "at least 1 character"),
+        ({"id": "saved", "confidence": "high"}, "Application-owned"),
+        ({"id": "saved", "updated_date": RUN_TIMESTAMP}, "Application-owned"),
+        ({"id": "saved", "evidence": [{"trace_id": "made-up"}]}, "Unknown evidence trace"),
+        (
+            {"id": "saved", "evidence": [{"trace_id": "seed", "spans": [{"span_id": "made-up"}]}]},
+            "unknown span",
+        ),
+        (
+            {"id": "saved", "evidence": [{"trace_id": "seed", "url": "https://invented.example"}]},
+            "Omit evidence URLs",
+        ),
+    ],
+)
+def test_registration_rejects_untrusted_fields(completion_case, fields, diagnostic):
+    from compass.insights_generation.compilation_tools import CompilationTools
+
+    insight, checks, snapshot = completion_case
+    insight.severity = "med"
+    tools = CompilationTools([], snapshot, [insight], RUN_TIMESTAMP)
+    with pytest.raises(ValueError, match=diagnostic):
+        tools.register(fields, truncated_enrich, checks)
+
+
+def test_inspection_is_bounded_and_raw_fields_remain_readable(completion_case):
+    from compass.insights_generation.compilation_tools import CompilationTools
+
+    insight, _, snapshot = completion_case
+    tools = CompilationTools([], snapshot, [insight], RUN_TIMESTAMP)
+    page = tools.inspect_trace("seed", characters=3, limit=1)
+    assert page["items"][0]["output"] == {"text": '{"t', "characters": 20, "has_more": True}
+    assert "no global chronology" in page["ordering"]
+    first = tools.read_span("seed", "seed-span", characters=3)
+    second = tools.read_span("seed", "seed-span", offset=first["next_offset"], characters=100)
+    assert first["text"] + second["text"] == tools.trace("seed").root_spans[0].output
+    assert second["next_offset"] is None
+    with pytest.raises(KeyError):
+        tools.read_span("seed", "not-a-span")
+
+
+def test_source_helpers_preserve_message_authorship_and_local_order():
+    from compass.insights_generation.compilation_tools import recorded_messages, tool_calls
+
+    item = Trace.model_validate(
+        {
+            "id": "recorded",
+            "aggregate": {},
+            "root_spans": [
+                {
+                    "id": "agent",
+                    "kind": "AGENT",
+                    "turns": [
+                        {
+                            "id": "turn-1",
+                            "index": 1,
+                            "role": "user",
+                            "authorship": "harness",
+                            "content": "generated task",
+                        },
+                        {
+                            "id": "turn-2",
+                            "index": 2,
+                            "role": "user",
+                            "content": "authorship not recorded",
+                        },
+                    ],
+                    "children": [
+                        {
+                            "id": "call",
+                            "kind": "TOOL",
+                            "tool_name": "lookup",
+                            "tool_call": {"index": 7},
+                            "input": {"key": "value"},
+                        },
+                    ],
+                },
+            ],
+        }
+    )
+    turns = recorded_messages(item)
+    assert [row["turn"]["authorship"] for row in turns] == ["harness", "unknown"]
+    assert [row["turn"]["index"] for row in turns] == [1, 2]
+    assert all(row["agent_span_id"] == "agent" for row in turns)
+    assert [span.id for span in tool_calls(item, "lookup")] == ["call"]
+    assert tool_calls(item, "different") == []
+
+
+def test_batch_telemetry_reports_shared_pass_without_nested_claim_durations(
+    completion_case, monkeypatch
+):
+    from compass.insights_generation.evidence import scan_completions
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(
+        telemetry, "tracer", OITracer(provider.get_tracer(__name__), config=TraceConfig())
+    )
+    insight, checks, snapshot = completion_case
+    valid = EvidenceCompletion(insight=insight, predicate=truncated_enrich, checks=checks)
+    invalid = EvidenceCompletion(insight=insight, predicate=None, checks=[])
+    results = scan_completions([valid, invalid], snapshot)
+    assert not isinstance(results[0], Exception)
+    assert isinstance(results[1], Exception)
+    (batch,) = exporter.get_finished_spans()
+    assert batch.name == "evidence_scan_batch"
+    assert batch.status.status_code == StatusCode.ERROR
+    assert batch.attributes is not None
+    output = batch.attributes["output.value"]
+    assert isinstance(output, str)
+    statuses = [row["status"] for row in json.loads(output)["results"]]
+    assert statuses == ["incomplete", "failed"]

@@ -712,9 +712,14 @@ class _DiskTraceIndex(Mapping[str, Trace]):
             return Trace.model_validate_json(row[0])
 
     def iter_traces(self) -> Iterator[Trace]:
+        for payload in self.iter_json():
+            yield Trace.model_validate_json(payload)
+
+    def iter_json(self) -> Iterator[str]:
+        """Stream normalized snapshot payloads without decoding them."""
         with closing(sqlite3.connect(self._path)) as connection:
             for (payload,) in connection.execute("SELECT payload FROM traces ORDER BY position"):
-                yield Trace.model_validate_json(payload)
+                yield payload
 
     def sort(self, key: Callable[[str], Any]) -> None:
         trace_ids = sorted(self, key=key)
@@ -732,6 +737,10 @@ class TraceSnapshot:
 
     def __iter__(self) -> Iterator[Trace]:
         return self.traces_by_id.iter_traces()
+
+    def iter_json(self) -> Iterator[str]:
+        """Iterate normalized Trace JSON for consumers that need isolated decodes."""
+        return self.traces_by_id.iter_json()
 
     def __len__(self) -> int:
         return len(self.traces_by_id)

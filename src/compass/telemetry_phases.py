@@ -210,6 +210,24 @@ def evidence_scan(insight: Insight, trace_count: int) -> AbstractContextManager[
     return _phase("evidence_scan", {"insight_name": insight.name, "trace_count": trace_count})
 
 
+def evidence_scan_batch(
+    insights: list[Insight], trace_count: int
+) -> AbstractContextManager[OpenInferenceSpan]:
+    return _phase(
+        "evidence_scan_batch",
+        {
+            "insight_names": [insight.name for insight in insights],
+            "trace_count": trace_count,
+        },
+    )
+
+
+def record_batch_scan_result(record: OpenInferenceSpan, results: list[dict]) -> None:
+    if any(result["status"] == "failed" for result in results):
+        record.set_status(StatusCode.ERROR)
+    record.set_output({"results": results})
+
+
 def record_scan_failure(record: OpenInferenceSpan, error: Exception, *, skipped: bool) -> None:
     if not skipped:
         record.record_exception(error)
