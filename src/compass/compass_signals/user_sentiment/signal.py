@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, computed_field
 from compass.compass_signals.compass_signals import CompassSignalResult
 from compass.compass_signals.issue_detector import IssueDetector
 from compass.compass_signals.user_embedding.embedding import (
+    MAX_USER_MESSAGE_CHARS,
     LiteLLMEmbeddingConfig,
     UserEmbeddingGenerator,
     validate_embedding_dependencies,
@@ -120,10 +121,10 @@ def screen_user_messages(
     # but retain whitespace: stripping would change the text sent to the model.
     unique_texts = list(
         dict.fromkeys(
-            text[:20000]
+            text[:MAX_USER_MESSAGE_CHARS]
             for messages in user_messages.values()
             for text in messages
-            if text[:20000].strip()
+            if text[:MAX_USER_MESSAGE_CHARS].strip()
         )
     )
     embeddings = embedding_generator.generate_batch(unique_texts)
@@ -134,8 +135,8 @@ def screen_user_messages(
     return {
         trace_id: TraceScreeningResult(
             message_results=[
-                classified[text[:20000]].model_copy(deep=True)
-                if text[:20000].strip()
+                classified[text[:MAX_USER_MESSAGE_CHARS]].model_copy(deep=True)
+                if text[:MAX_USER_MESSAGE_CHARS].strip()
                 else ScreeningResult(label="no_user_messages")
                 for text in messages
             ]
