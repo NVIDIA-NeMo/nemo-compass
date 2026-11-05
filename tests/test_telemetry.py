@@ -132,6 +132,7 @@ def test_cli_telemetry_in_fresh_process(tmp_path, api_key, project, tags):
             "COMPASS_TELEMETRY_LANGSMITH_ENDPOINT": "https://telemetry.example.com/api/v1/",
             "COMPASS_TELEMETRY_LANGSMITH_WORKSPACE_ID": "telemetry-workspace",
             "LANGSMITH_TRACING": "true",
+            "OPENINFERENCE_HIDE_EMBEDDINGS_VECTORS": "false",
         },
         capture_output=True,
         text=True,
@@ -165,6 +166,14 @@ def _run_cli(source, enabled):
             ...
 
     async def analyze(*args, **kwargs):
+        import litellm
+
+        embedding = litellm.embedding(
+            model="openai/text-embedding-3-small",
+            input=["Embedding test"],
+            mock_response=[0.1, 0.2, 0.3],
+        )
+        assert embedding.data[0]["embedding"] == [0.1, 0.2, 0.3]
         fake = FakeLLMClient(
             [
                 LLMResponse(
@@ -257,6 +266,12 @@ def _run_cli(source, enabled):
         assert model.attributes is not None
         assert model.attributes["llm.input_messages.0.message.content"] == "Say hello"
         assert model.attributes["llm.output_messages.0.message.content"] == "Hello"
+        embedding = next(
+            r for r in records if (r.attributes or {}).get("openinference.span.kind") == "EMBEDDING"
+        )
+        assert embedding.attributes is not None
+        assert embedding.attributes["embedding.embeddings.0.embedding.text"] == "Embedding test"
+        assert embedding.attributes["embedding.embeddings.0.embedding.vector"] == "__REDACTED__"
 
 
 if __name__ == "__main__":
