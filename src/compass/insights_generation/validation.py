@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -17,12 +18,14 @@ from nooa.strategies import CodeActStrategy
 from nooa.unifiedllm import UnifiedLLM
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from compass import telemetry_phases as telemetry
 from compass.compass_signals.compass_signals import CompassSignalResult, Problem
 from compass.insights_generation.codebase import CodebaseTools
 from compass.traces import Trace
 
 _MAX_ITERATIONS = 25
 _MAX_TRACE_CONTEXT_CHARS = 100_000
+_MAX_CONCURRENT_CONTEXT_FORMATS = 2
 
 
 class CandidateProblemDecision(BaseModel):
@@ -111,13 +114,14 @@ class CandidateProblemValidationResult:
 
 def _trace_context(supporting_traces: tuple[Trace, ...]) -> str:
     # Text, not live objects: the model should inspect the code, not mine the traces.
-    return truncating_pformat(
-        supporting_traces,
-        max_chars=_MAX_TRACE_CONTEXT_CHARS,
-        max_depth=12,
-        max_length=200,
-        max_string=10_000,
-    )
+    with telemetry.validation_context_formatting(len(supporting_traces)):
+        return truncating_pformat(
+            supporting_traces,
+            max_chars=_MAX_TRACE_CONTEXT_CHARS,
+            max_depth=12,
+            max_length=200,
+            max_string=10_000,
+        )
 
 
 class _ValidationAgent(Agent):
@@ -186,13 +190,33 @@ class CandidateProblemValidator:
         self._codebase = CodebaseTools(code_base_path) if code_base_path is not None else None
         self._ethos = ethos
         self._llm = llm
+        self._formatting_slots = asyncio.Semaphore(_MAX_CONCURRENT_CONTEXT_FORMATS)
+        self._formatting_tasks: set[asyncio.Task[str]] = set()
+
+    async def _format_trace_context(self, supporting_traces: tuple[Trace, ...]) -> str:
+        await self._formatting_slots.acquire()
+        # to_thread copies the candidate's tracing context into the worker.
+        task = asyncio.create_task(asyncio.to_thread(_trace_context, supporting_traces))
+        self._formatting_tasks.add(task)
+        task.add_done_callback(self._formatting_finished)
+        # Cancelling a validation cannot stop its worker thread. Keep its slot
+        # occupied until formatting finishes, even if the caller stops waiting.
+        return await asyncio.shield(task)
+
+    def _formatting_finished(self, task: asyncio.Task[str]) -> None:
+        self._formatting_tasks.remove(task)
+        self._formatting_slots.release()
+        if not task.cancelled():
+            # Retrieve failures even when the cancelled caller cannot await them.
+            task.exception()
 
     async def validate(
         self, problem: Problem, supporting_traces: tuple[Trace, ...]
     ) -> CandidateProblemDecision:
         agent = _ValidationAgent(self._codebase, self._llm)
+        supporting_text = await self._format_trace_context(supporting_traces)
         try:
-            decision = await agent.decide(problem, _trace_context(supporting_traces), self._ethos)
+            decision = await agent.decide(problem, supporting_text, self._ethos)
         except GenerationAborted:
             raise
         except GenerationError:
