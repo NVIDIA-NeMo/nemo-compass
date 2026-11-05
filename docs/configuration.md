@@ -30,6 +30,9 @@ Compass Signals identify candidate problems in traces. Before compilation turns 
 into insights, candidate problem validation reviews and filters these problems using
 ETHOS.md, source code, or both.
 
+Code analysis requires `rg` (ripgrep) on `PATH`, installed separately from Compass.
+See [installation instructions](../README.md#start-here) before setting `code_base`.
+
 Set `code_base` to provide your agent's local source and `ethos_path` to provide its
 ETHOS.md (or let Compass discover ETHOS.md in the current working directory).
 Each candidate problem receives its supporting traces and the configured context.
