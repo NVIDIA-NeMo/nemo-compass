@@ -174,6 +174,8 @@ def finish() -> None:
             *map(str, sorted(directory.iterdir())),
             "--verify-tag",
             "--draft",
+            "--title",
+            tag,
             "--generate-notes",
             "--notes",
             notes,
