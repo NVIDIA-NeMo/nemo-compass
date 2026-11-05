@@ -23,22 +23,15 @@ jobs:
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ secrets.PAT_BACKPORT_GITHUB_TOKEN }}
-      SOURCE: ${{ github.event.workflow_run.head_sha }}
-      BRANCH: ${{ github.event.workflow_run.head_branch }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        if: github.event.action == 'requested'
         with:
-          ref: main
+          ref: ${{ github.workflow_sha }}
           token: ${{ secrets.PAT_BACKPORT_GITHUB_TOKEN }}
       - name: Find the merged release fix
         id: fix
         if: github.event.action == 'requested'
-        run: |
-          number=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SOURCE/pulls" |
-            jq -r --arg sha "$SOURCE" --arg branch "$BRANCH" \
-              '.[] | select(.merged_at != null and .merge_commit_sha == $sha and .base.ref == $branch) | .number')
-          echo "number=$number" >> "$GITHUB_OUTPUT"
+        run: python3 tools/forward_port.py find
       - uses: korthout/backport-action@8560fb503c275d433c56f05a2f64850093baa9f7 # v4
         if: steps.fix.outputs.number != ''
         with:
@@ -52,17 +45,4 @@ jobs:
 
       - name: Merge the tested forward-port
         if: github.event.action == 'completed'
-        env:
-          PULL_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
-        run: |
-          [ -n "$PULL_NUMBER" ] || exit 0
-          pull=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PULL_NUMBER")
-          jq -e --arg sha "$SOURCE" --arg branch "$BRANCH" --arg repo "$GITHUB_REPOSITORY" '
-              .state == "open" and .draft == false and .user.login == "nemo-llm" and
-              .base.ref == "main" and .head.repo.full_name == $repo and
-              .head.sha == $sha and .head.ref == $branch and
-              (.head.ref | test("^backport-[0-9]+-to-main$"))' <<< "$pull" > /dev/null || exit 0
-          # The bot bypasses review only; GitHub still enforces required CI and branch freshness.
-          gh api --method PUT "repos/$GITHUB_REPOSITORY/pulls/$PULL_NUMBER/merge" \
-            -f sha="$SOURCE" -f merge_method=squash |
-            jq -e 'if .merged then .message else error(.message) end'
+        run: python3 tools/forward_port.py merge
