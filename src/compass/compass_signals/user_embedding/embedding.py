@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from litellm import EmbeddingResponse
+from openinference.instrumentation import suppress_tracing
 from pydantic import BaseModel, ConfigDict, Field
 from tokenizers import Tokenizer
 
@@ -44,15 +45,17 @@ def _request_embeddings(
 ) -> EmbeddingResponse:
     import litellm
 
-    return litellm.embedding(
-        model=model,
-        api_base=api_base,
-        api_key=api_key,
-        input=input,
-        encoding_format="float",
-        timeout=timeout,
-        max_retries=max_retries if max_retries else _NoRetries(),
-    )
+    # Embedding requests are excluded from Compass telemetry entirely.
+    with suppress_tracing():
+        return litellm.embedding(
+            model=model,
+            api_base=api_base,
+            api_key=api_key,
+            input=input,
+            encoding_format="float",
+            timeout=timeout,
+            max_retries=max_retries if max_retries else _NoRetries(),
+        )
 
 
 @dataclass
