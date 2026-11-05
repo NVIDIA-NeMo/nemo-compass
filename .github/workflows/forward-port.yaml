@@ -15,23 +15,25 @@ concurrency:
 jobs:
   forward-port:
     if: >-
-      github.event.action == 'requested' &&
-      github.event.workflow_run.name == 'Start release' &&
-      github.event.workflow_run.event == 'push' &&
-      startsWith(github.event.workflow_run.head_branch, 'release/')
+      (github.event.action == 'requested' && github.event.workflow_run.name == 'Start release' &&
+       github.event.workflow_run.event == 'push' && startsWith(github.event.workflow_run.head_branch, 'release/')) ||
+      (github.event.action == 'completed' && github.event.workflow_run.name == 'CI' &&
+       github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.PAT_BACKPORT_GITHUB_TOKEN }}
+      SOURCE: ${{ github.event.workflow_run.head_sha }}
+      BRANCH: ${{ github.event.workflow_run.head_branch }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        if: github.event.action == 'requested'
         with:
           ref: main
           token: ${{ secrets.PAT_BACKPORT_GITHUB_TOKEN }}
       - name: Find the merged release fix
         id: fix
-        env:
-          GH_TOKEN: ${{ secrets.PAT_BACKPORT_GITHUB_TOKEN }}
-          SOURCE: ${{ github.event.workflow_run.head_sha }}
-          BRANCH: ${{ github.event.workflow_run.head_branch }}
+        if: github.event.action == 'requested'
         run: |
           number=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SOURCE/pulls" |
             jq -r --arg sha "$SOURCE" --arg branch "$BRANCH" \
@@ -48,21 +50,10 @@ jobs:
           pull_title: '[Forward-port #${pull_number}] ${pull_title}'
           experimental: '{"conflict_resolution":"draft_commit_conflicts"}'
 
-  merge:
-    if: >-
-      github.event.action == 'completed' &&
-      github.event.workflow_run.name == 'CI' &&
-      github.event.workflow_run.event == 'pull_request' &&
-      github.event.workflow_run.conclusion == 'success'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
       - name: Merge the tested forward-port
+        if: github.event.action == 'completed'
         env:
-          GH_TOKEN: ${{ secrets.PAT_BACKPORT_GITHUB_TOKEN }}
           PULL_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
-          SOURCE: ${{ github.event.workflow_run.head_sha }}
-          BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
           [ -n "$PULL_NUMBER" ] || exit 0
           pull=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PULL_NUMBER")
