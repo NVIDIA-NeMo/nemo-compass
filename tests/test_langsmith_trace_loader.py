@@ -27,13 +27,24 @@ from compass.trace_loaders.langsmith import (
     LangSmithTraceLoader,
     LangSmithTraceLoadError,
 )
-from compass.traces import SpanKind
+from compass.traces import UNSET, SpanKind, Trace
+from trace_ingest.loaders.langsmith._normalization import SESSION_METADATA_KEYS
+from trace_ingest.models import TurnRole
 
 PROJECT_ID = UUID("10000000-0000-0000-0000-000000000000")
 TRACE_ID = UUID("20000000-0000-0000-0000-000000000000")
 LLM_ID = UUID("30000000-0000-0000-0000-000000000000")
 TOOL_ID = UUID("40000000-0000-0000-0000-000000000000")
 START = datetime(2026, 9, 2, 12, tzinfo=timezone.utc)
+
+
+def _records(trace: Trace) -> list[dict]:
+    """The merged session's per-record provenance entries."""
+    records = trace.attributes["records"]
+    assert isinstance(records, list)
+    entries = [entry for entry in records if isinstance(entry, dict)]
+    assert len(entries) == len(records)
+    return entries
 
 
 def langsmith_run(
@@ -90,9 +101,20 @@ class FakeLangSmithClient(Client):
     def list_runs(self, **kwargs):
         self.list_calls.append(kwargs)
         if kwargs.get("is_root"):
-            return iter(self.roots[: kwargs.get("limit", len(self.roots))])
+            roots = self.roots
+            thread = re.search(r"eq\(metadata_value, (\".*?\")\)", kwargs.get("filter") or "")
+            if thread:
+                value = json.loads(thread.group(1))
+                roots = [root for root in roots if value in thread_values(root.extra)]
+            return iter(roots[: kwargs.get("limit", len(roots))])
         selected = set(re.findall(r'"([0-9a-f-]{36})"', kwargs["trace_filter"]))
         return iter(item for item in self._fake_runs if str(item.trace_id) in selected)
+
+
+def thread_values(extra) -> set[str]:
+    """The values a LangSmith thread-metadata filter can match on a run's ``extra``."""
+    metadata = (extra or {}).get("metadata") or {}
+    return {str(metadata[key]) for key in SESSION_METADATA_KEYS if key in metadata}
 
 
 def trace_runs() -> list[Run]:
@@ -158,8 +180,7 @@ def test_loader_queries_bounded_roots_then_hydrates_and_normalizes_complete_trac
         "filter": 'eq(status, "success")',
         "tree_filter": 'eq(name, "get_weather")',
         "start_time": start_time,
-        "select": ["id", "name", "run_type", "trace_id", "start_time"],
-        "limit": 25,
+        "select": ["id", "name", "run_type", "trace_id", "start_time", "extra"],
     }
     assert client.list_calls[1]["project_id"] == str(PROJECT_ID)
     assert client.list_calls[1]["trace_filter"] == f'eq(id, "{TRACE_ID}")'
@@ -168,17 +189,40 @@ def test_loader_queries_bounded_roots_then_hydrates_and_normalizes_complete_trac
 
     assert snapshot.trace_count == 1
     trace = next(iter(snapshot))
-    assert trace.id == str(TRACE_ID)
-    assert trace.aggregate.cost_usd == 0.0175
+    assert trace.id == "session:thread-7"
+    # The root's total_cost already includes the LLM's 0.005.
+    assert trace.aggregate.cost_usd == 0.0125
     assert trace.aggregate.latency_ms == 3000
     assert (trace.session_id, trace.session_basis) == ("thread-7", "langsmith.metadata.thread_id")
-    assert [span.id for span in trace.root_spans] == [str(TRACE_ID)]
-    root_span = trace.root_spans[0]
+    assert trace.losses == []
+    assert [record["trace_id"] for record in _records(trace)] == [str(TRACE_ID)]
+    (session_root,) = trace.root_spans
+    assert session_root.kind is SpanKind.AGENT
+    assert [span.id for span in session_root.children] == [f"{TRACE_ID}/{TRACE_ID}"]
+    root_span = session_root.children[0]
     assert root_span.input == {"messages": [{"role": "user", "content": "Find the weather"}]}
     assert root_span.output == {"answer": None}
     assert root_span.kind is SpanKind.CHAIN
-    assert [span.id for span in root_span.children] == [str(LLM_ID), str(TOOL_ID)]
+    assert [span.id for span in root_span.children] == [
+        f"{TRACE_ID}/{LLM_ID}",
+        f"{TRACE_ID}/{TOOL_ID}",
+    ]
     assert [span.kind for span in root_span.children] == [SpanKind.LLM, SpanKind.TOOL]
+    assert [span.cost_usd for span in [root_span, *root_span.children]] == [None, 0.005, None]
+    assert session_root.turns is not UNSET
+    assert [
+        (turn.role, turn.content, turn.llm_span_ids, turn.tool_call_span_ids)
+        for turn in session_root.turns
+    ] == [
+        (TurnRole.USER, "Find the weather", [], []),
+        (
+            TurnRole.AGENT,
+            "I should use the weather tool.",
+            [f"{TRACE_ID}/{LLM_ID}"],
+            [f"{TRACE_ID}/{TOOL_ID}"],
+        ),
+        (TurnRole.AGENT, '{"answer": null}', [], []),
+    ]
     tool_span = root_span.children[-1]
     assert tool_span.tool_name == "get_weather"
     assert tool_span.attributes["status"] == "ERROR"
@@ -299,7 +343,12 @@ def test_loader_uses_langsmith_sdk_query_contract_without_importing_provider_obj
         "langsmith.feedback_stats.accepted": {str(LLM_ID): {"n": 1, "avg": False}},
     }
     expected_json = json.dumps(expected, sort_keys=True)
-    assert json.dumps(trace.evaluator_results, sort_keys=True) == expected_json
+    # The root's thread_id metadata arrives with the root selection, so the live
+    # trace is a merged session whose evaluator values name their record.
+    assert trace.id == "session:thread-7"
+    assert trace.evaluator_results == {
+        name: [{"trace_id": str(TRACE_ID), "value": value}] for name, value in expected.items()
+    }
     path = tmp_path / "trace.jsonl"
     write_trace_export_file(
         path,
@@ -317,12 +366,15 @@ def test_loader_uses_langsmith_sdk_query_contract_without_importing_provider_obj
         iter(LangSmithTraceExportFileLoader(LangSmithTraceExportFileConfig(path)).load())
     )
     assert json.dumps(exported.evaluator_results, sort_keys=True) == expected_json
-    assert [span.id for span in trace.root_spans] == [str(TRACE_ID)]
-    assert [span.id for span in trace.root_spans[0].children] == [str(LLM_ID)]
-    assert "output" not in trace.root_spans[0].children[0].model_dump()
+    (session_root,) = trace.root_spans
+    assert [span.id for span in session_root.children] == [f"{TRACE_ID}/{TRACE_ID}"]
+    record_root = session_root.children[0]
+    assert [span.id for span in record_root.children] == [f"{TRACE_ID}/{LLM_ID}"]
+    assert "output" not in record_root.children[0].model_dump()
     assert requests[0][0:2] == ("GET", "/sessions?limit=1&name=glamr-ux&include_stats=False")
     assert requests[1][2]["is_root"] is True
-    assert requests[1][2]["limit"] == 100
+    assert "limit" not in requests[1][2]
+    assert "extra" in requests[1][2]["select"]
     assert requests[2][2]["trace_filter"] == f'eq(id, "{TRACE_ID}")'
     assert [request[1] for request in requests[1:]] == ["/runs/query"] * 3
     assert requests[3][2]["cursor"] == "hydration-page-2"
@@ -349,11 +401,12 @@ def test_loader_uses_explicit_api_url_and_maps_unknown_pending_run():
         "conversation-3",
         "langsmith.metadata.conversation_id",
     )
-    assert trace.root_spans[0].kind is SpanKind.UNKNOWN
-    assert trace.root_spans[0].attributes["subtype"] == "PROMPT"
-    assert trace.root_spans[0].attributes["status"] == "UNKNOWN"
-    assert trace.root_spans[0].end_time is None
-    assert "output" not in trace.root_spans[0].model_dump()
+    (record_root,) = trace.root_spans[0].children
+    assert record_root.kind is SpanKind.UNKNOWN
+    assert record_root.attributes["subtype"] == "PROMPT"
+    assert record_root.attributes["status"] == "UNKNOWN"
+    assert record_root.end_time is None
+    assert "output" not in record_root.model_dump()
     assert loader.describe()["api_url"] == "http://localhost/api/v1"
 
 
@@ -426,6 +479,98 @@ def test_loader_paginates_root_selection_above_server_page_limit():
     assert "limit" not in client.list_calls[0]
 
 
+def thread_roots() -> list[Run]:
+    """Three single-run traces: two in thread t1, then one in thread t2."""
+    return [
+        langsmith_run(
+            UUID(int=value + 1),
+            trace_id=UUID(int=value + 1),
+            offset=value,
+            extra={"metadata": {"thread_id": thread}},
+        )
+        for value, thread in enumerate(["t1", "t1", "t2"])
+    ]
+
+
+def test_loader_merges_roots_that_share_a_thread_into_one_conversation():
+    roots = thread_roots()
+    loader = LangSmithTraceLoader(
+        LangSmithTraceConfig(project_name="threads", max_traces=2),
+        client=FakeLangSmithClient(list(reversed(roots)), roots),
+    )
+
+    snapshot = loader.load()
+
+    assert [trace.id for trace in snapshot] == ["session:t1", "session:t2"]
+    first = next(iter(snapshot))
+    assert [span.id for span in first.root_spans[0].children] == [
+        f"{UUID(int=1)}/{UUID(int=1)}",
+        f"{UUID(int=2)}/{UUID(int=2)}",
+    ]
+    assert all(loss.code != "merge_incomplete" for trace in snapshot for loss in trace.losses)
+    assert loader.report.trace_count == 2
+    assert loader.report.run_count == 3
+    description = loader.describe()
+    assert (description["trace_count"], description["distinct_sessions"]) == (2, 2)
+
+
+def single_run_roots(*metadata: dict) -> list[Run]:
+    """Single-run traces ``UUID(int=1..)``, one second apart, with the given root metadata."""
+    return [
+        langsmith_run(
+            UUID(int=value + 1),
+            trace_id=UUID(int=value + 1),
+            offset=value,
+            extra={"metadata": entry},
+        )
+        for value, entry in enumerate(metadata)
+    ]
+
+
+def test_loader_rereads_selected_threads_past_the_cap():
+    roots = single_run_roots(
+        {"thread_id": "t1"}, {"thread_id": "t1"}, {"thread_id": "t2"}, {"thread_id": "t1"}
+    )
+    client = FakeLangSmithClient(roots, roots)
+    loader = LangSmithTraceLoader(
+        LangSmithTraceConfig(project_name="threads", max_traces=1),
+        client=client,
+    )
+
+    (trace,) = loader.load()
+
+    # Selection stops at t2's root, before the fourth root; the thread re-read finds it.
+    assert trace.id == "session:t1"
+    trace_ids = [str(UUID(int=value)) for value in (1, 2, 4)]
+    assert [record["trace_id"] for record in _records(trace)] == trace_ids
+    assert trace.losses == []
+    assert client.list_calls[1]["filter"] == (
+        'and(in(metadata_key, ["thread_id", "session_id", "conversation_id"]), '
+        'eq(metadata_value, "t1"))'
+    )
+    assert client.list_calls[1]["is_root"] is True
+    assert client.list_calls[2]["trace_filter"] == f"in(id, {json.dumps(trace_ids)})"
+
+
+def test_reread_ands_the_user_filter_and_drops_other_thread_keys():
+    roots = single_run_roots(
+        {"thread_id": "t1"}, {"thread_id": "t2"}, {"thread_id": "t9", "session_id": "t1"}
+    )
+    client = FakeLangSmithClient(roots, roots)
+
+    (trace,) = LangSmithTraceLoader(
+        LangSmithTraceConfig(project_name="threads", max_traces=1, filter='eq(name, "agent")'),
+        client=client,
+    ).load()
+
+    assert client.list_calls[1]["filter"] == (
+        'and(and(in(metadata_key, ["thread_id", "session_id", "conversation_id"]), '
+        'eq(metadata_value, "t1")), eq(name, "agent"))'
+    )
+    # The third root matches "t1" through session_id but belongs to thread t9.
+    assert [record["trace_id"] for record in _records(trace)] == [str(UUID(int=1))]
+
+
 def test_loader_rejects_missing_selected_root_in_hydration():
     root = langsmith_run(TRACE_ID)
     client = FakeLangSmithClient([root], [])
@@ -494,7 +639,11 @@ def test_live_source_link_uses_sdk_ui_url():
     client = FakeLangSmithClient([root], runs)
     loader = LangSmithTraceLoader(LangSmithTraceConfig(project_name="project"), client)
     assert root.app_path is not None
-    assert next(iter(loader.load())).source_url == "https://ui.langsmith.test" + root.app_path
+    trace = next(iter(loader.load()))
+    url = "https://ui.langsmith.test" + root.app_path
+    assert trace.source_url is None
+    assert _records(trace)[0]["source_url"] == url
+    assert trace.root_spans[0].children[0].source_url == url
 
 
 @pytest.mark.parametrize("child_path", ["/o/acme/projects/p/r/child?trace_id=parent", None, ""])
@@ -510,12 +659,34 @@ def test_span_links_use_each_sdk_run_url_at_any_depth(child_path):
         LangSmithTraceConfig(project_name="project"), client=FakeLangSmithClient([root], runs)
     )
     trace = next(iter(loader.load()))
-    root_span = trace.root_spans[0]
+    (root_span,) = trace.root_spans[0].children
     llm_span = root_span.children[0]
     tool_span = llm_span.children[0]
-    assert root_span.source_url == root.url == trace.source_url
-    assert llm_span.id == str(LLM_ID)
+    assert root_span.source_url == root.url == _records(trace)[0]["source_url"]
+    assert llm_span.id == f"{TRACE_ID}/{LLM_ID}"
     assert llm_span.source_url == llm.url
-    assert tool_span.id == str(TOOL_ID)
+    assert tool_span.id == f"{TRACE_ID}/{TOOL_ID}"
     assert tool_span.source_url == (tool.url if child_path else None)
-    assert llm_span.source_url != trace.source_url
+    assert llm_span.source_url != root_span.source_url
+
+
+def test_loader_reads_the_model_tool_call_id_of_tool_runs():
+    root = langsmith_run(TRACE_ID)
+    tool = langsmith_run(
+        TOOL_ID,
+        parent_id=TRACE_ID,
+        name="get_weather",
+        run_type="tool",
+        offset=1,
+        extra={"tool_call_id": "toolu_01Jd7c27FT9pVshw55h7N6JB"},
+    )
+    loader = LangSmithTraceLoader(
+        LangSmithTraceConfig(project_name="tools"),
+        client=FakeLangSmithClient([root], [root, tool]),
+    )
+
+    (trace,) = loader.load()
+
+    (tool_span,) = trace.root_spans[0].children
+    assert tool_span.tool_call is not None
+    assert tool_span.tool_call.call_id == "toolu_01Jd7c27FT9pVshw55h7N6JB"

@@ -26,6 +26,8 @@ from trace_ingest.models import (
 )
 
 LANGSMITH_DEFAULT_MAX_TRACES = 100
+# Root-run metadata keys read as the thread key, in precedence order.
+SESSION_METADATA_KEYS = ("thread_id", "session_id", "conversation_id")
 
 
 class _LangSmithRun(Protocol):
@@ -97,6 +99,14 @@ def normalize_trace(
         )
 
     ordered = _canonical_run_order(trace_id, by_id, effective_parents)
+    # LangSmith's total_cost on a Run includes every descendant's cost, so only a Run
+    # without costed descendants has its own cost, and the trace costs its topmost Runs.
+    costs = {
+        run_id: cost
+        for run_id, run in by_id.items()
+        if (cost := _run_cost_usd(run, run_id)) is not None
+    }
+    rollups = {ancestor for run_id in costs for ancestor in _ancestors(run_id, effective_parents)}
     base_pointer: dict[str, JsonValue] = {**source_pointer, "trace_id": trace_id}
     normalized_by_id: dict[str, Span] = {}
     root_spans: list[Span] = []
@@ -109,6 +119,8 @@ def normalize_trace(
             unresolved_parent_id=unresolved.get(run_id),
             base_pointer=base_pointer,
             source_pointer=(run_source_pointers or {}).get(run_id),
+            cost_usd=None if run_id in rollups else costs.get(run_id),
+            total_cost=costs.get(run_id),
         )
         feedback = getattr(run, "feedback_stats", None)
         if feedback is not None:
@@ -138,7 +150,7 @@ def normalize_trace(
                 ]
             )
             normalized.tool_call = ToolCall(
-                call_id=run_id,
+                call_id=_tool_call_id(run) or run_id,
                 index=tool_call_index,
                 result_count=len(results),
                 results=results,
@@ -151,8 +163,13 @@ def normalize_trace(
         else:
             normalized_by_id[parent_id].children.append(normalized)
 
-    cost = _trace_cost_usd(runs, trace_id)
-    session = _session_key(root)
+    top_costs = [
+        cost
+        for run_id, cost in costs.items()
+        if not any(ancestor in costs for ancestor in _ancestors(run_id, effective_parents))
+    ]
+    cost = sum(top_costs) if top_costs else None
+    session = session_key(root)
     attributes: dict[str, JsonValue] = {
         "source_pointer": base_pointer,
         "langsmith": dict(langsmith_attributes),
@@ -235,6 +252,8 @@ def _normalize_run(
     unresolved_parent_id: str | None,
     base_pointer: Mapping[str, JsonValue],
     source_pointer: Mapping[str, JsonValue] | None,
+    cost_usd: float | None,
+    total_cost: float | None,
 ) -> Span:
     run_id = required_id(run, "id", "LangSmith Run")
     kind, subtype = _map_run_kind(getattr(run, "run_type", None))
@@ -258,8 +277,21 @@ def _normalize_run(
         pointer["unresolved_parent_run_id"] = unresolved_parent_id
 
     status, error = _map_run_status(run)
+    langsmith: dict[str, JsonValue] = {
+        "run_type": str(getattr(run, "run_type", None) or ""),
+        "tags": _json_value(getattr(run, "tags", None)),
+        "extra": _json_value(getattr(run, "extra", None)),
+        "feedback_stats": _json_value(getattr(run, "feedback_stats", None)),
+        "dotted_order": str(getattr(run, "dotted_order", None) or "") or None,
+        "total_cost": total_cost,
+    }
+    interrupt = getattr(run, "error", None)
+    if status == "INTERRUPTED" and interrupt not in (None, ""):
+        langsmith["interrupt"] = str(interrupt)
     name = getattr(run, "name", None)
     name = str(name) if name not in (None, "") else None
+    metadata = _metadata(run)
+    model = metadata.get("ls_model_name") if kind is SpanKind.LLM else None
     return Span(
         id=run_id,
         kind=kind,
@@ -268,7 +300,8 @@ def _normalize_run(
         input=_optional_json_field(getattr(run, "inputs", None)),
         output=_optional_json_field(getattr(run, "outputs", None)),
         tool_name=name if kind is SpanKind.TOOL else None,
-        cost_usd=_run_cost_usd(run, run_id),
+        cost_usd=cost_usd,
+        model=model if isinstance(model, str) and model else None,
         error=error,
         attributes={
             "name": name,
@@ -276,13 +309,7 @@ def _normalize_run(
             "duration_ms": duration_ms,
             "source_pointer": pointer,
             "status": status,
-            "langsmith": {
-                "run_type": str(getattr(run, "run_type", None) or ""),
-                "tags": _json_value(getattr(run, "tags", None)),
-                "extra": _json_value(getattr(run, "extra", None)),
-                "feedback_stats": _json_value(getattr(run, "feedback_stats", None)),
-                "dotted_order": str(getattr(run, "dotted_order", None) or "") or None,
-            },
+            "langsmith": langsmith,
         },
     )
 
@@ -307,10 +334,14 @@ def _map_run_kind(run_type: object) -> tuple[SpanKind, str | None]:
 
 
 def _map_run_status(run: _LangSmithRun) -> tuple[str, str | None]:
+    status = str(getattr(run, "status", None) or "").lower()
+    if status == "interrupted":
+        # A LangGraph interrupt pauses the run for human input; its error field holds
+        # the GraphInterrupt, which is not a failure.
+        return "INTERRUPTED", None
     error = getattr(run, "error", None)
     if error not in (None, ""):
         return "ERROR", str(error)
-    status = str(getattr(run, "status", None) or "").lower()
     if status == "success":
         return "SUCCESS", None
     if status == "error":
@@ -359,26 +390,6 @@ def _json_value(value: object) -> JsonValue:
         ) from error
 
 
-def _trace_cost_usd(runs: Sequence[_LangSmithRun], trace_id: str) -> float | None:
-    costs: list[float] = []
-    for run in runs:
-        value = getattr(run, "total_cost", None)
-        if value is None:
-            continue
-        try:
-            cost = float(value)
-        except (TypeError, ValueError) as error:
-            raise LangSmithTraceLoadError(
-                f"LangSmith trace {trace_id!r} has invalid Run cost {value!r}"
-            ) from error
-        if not math.isfinite(cost) or cost < 0:
-            raise LangSmithTraceLoadError(
-                f"LangSmith trace {trace_id!r} has invalid Run cost {value!r}"
-            )
-        costs.append(cost)
-    return sum(costs) if costs else None
-
-
 def _run_cost_usd(run: _LangSmithRun, run_id: str) -> float | None:
     value = getattr(run, "total_cost", None)
     if value is None:
@@ -392,6 +403,33 @@ def _run_cost_usd(run: _LangSmithRun, run_id: str) -> float | None:
     if not math.isfinite(cost) or cost < 0:
         raise LangSmithTraceLoadError(f"LangSmith Run {run_id!r} has invalid cost {value!r}")
     return cost
+
+
+def _metadata(run: _LangSmithRun) -> Mapping[str, object]:
+    extra = getattr(run, "extra", None)
+    metadata = extra.get("metadata") if isinstance(extra, Mapping) else None
+    return metadata if isinstance(metadata, Mapping) else {}
+
+
+def _tool_call_id(run: _LangSmithRun) -> str | None:
+    """The model's id for this tool call, which LangChain records on the tool Run."""
+
+    extra = getattr(run, "extra", None)
+    value = extra.get("tool_call_id") if isinstance(extra, Mapping) else None
+    if value in (None, ""):
+        # CLI exports drop extra but keep the ToolMessage the tool returned.
+        outputs = getattr(run, "outputs", None)
+        message = outputs.get("output") if isinstance(outputs, Mapping) else None
+        if isinstance(message, Mapping) and message.get("type") == "tool":
+            value = message.get("tool_call_id")
+    return value if isinstance(value, str) and value else None
+
+
+def _ancestors(run_id: str, parents: Mapping[str, str | None]) -> Iterator[str]:
+    parent = parents[run_id]
+    while parent is not None:
+        yield parent
+        parent = parents[parent]
 
 
 def _trace_latency_ms(runs: Sequence[_LangSmithRun]) -> float | None:
@@ -408,14 +446,16 @@ def _trace_latency_ms(runs: Sequence[_LangSmithRun]) -> float | None:
     return (max(ends) - min(starts)).total_seconds() * 1_000
 
 
-def _session_key(root: _LangSmithRun) -> tuple[str, str] | None:
+def session_key(root: _LangSmithRun) -> tuple[str, str] | None:
+    """Return a root Run's thread key and the metadata field it was read from."""
+
     extra = getattr(root, "extra", None)
     if not isinstance(extra, Mapping):
         return None
     metadata = extra.get("metadata")
     if not isinstance(metadata, Mapping):
         return None
-    for key in ("thread_id", "session_id", "conversation_id"):
+    for key in SESSION_METADATA_KEYS:
         value = metadata.get(key)
         if value not in (None, ""):
             return str(value), f"langsmith.metadata.{key}"

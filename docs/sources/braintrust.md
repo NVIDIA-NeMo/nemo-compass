@@ -50,6 +50,12 @@ The default limit is 100 complete traces. Selection follows descending Braintrus
 order. All pages of spans for each selected trace are loaded, including children outside the
 window, and the resulting traces are ordered by root creation time and ID.
 Use a window of completed runs; the loader does not wait for in-flight spans.
+Braintrust has no fixed session column; sessions are a `metadata` key the user chooses (commonly
+`metadata.session_id`), which this loader does not read, so each trace is one conversation. A trace
+whose single root is a `task`, `eval` or `function` span loads that root as the agent span, keeping
+the Braintrust type as its subtype, with conversation turns: the root input, one model turn per LLM
+span with the tool calls that follow it, and a closing turn for the root output when it differs
+from the last reply.
 
 For a single run:
 
@@ -60,7 +66,9 @@ compass --config config.yaml --trace.max-traces 25
 The API endpoint defaults to `https://api.braintrust.dev`. Set `BRAINTRUST_API_URL` in `.env`
 for a different deployment, or set `api_url` under `trace.braintrust` to override it.
 Use `https://api-eu.braintrust.dev` for EU data or your self-hosted data plane URL.
-The loader uses Braintrust’s SQL query API, requiring data plane v1.1.29 or later.
+The loader uses Braintrust’s [SQL query API](https://www.braintrust.dev/docs/api-reference/query),
+requiring data plane v1.1.29 or later. It follows the redirects to stored results that hosted
+deployments send for large responses, without forwarding the API key to the stored copy.
 
 ## Links to Braintrust
 
@@ -82,10 +90,18 @@ using each referenced event’s row ID for both project logs and experiments.
 
 ## What is preserved
 
-Inputs, outputs, errors, scores, and provider metadata are retained. Missing outputs stay
-missing; explicit JSON null remains a recorded result. Root scores become trace evaluation
-results, span `metrics.estimated_cost` becomes cost, and whole-trace latency is derived from
-span times. Other metrics remain in `attributes.braintrust.metrics`.
+Inputs, outputs, errors, scores, and provider metadata are retained; an error logged as a JSON
+object rather than text becomes its JSON text. Missing outputs stay missing; explicit JSON null
+remains a recorded result. Root scores become trace evaluation results, and whole-trace latency
+is derived from span times. Span `metrics.estimated_cost` becomes cost; whole-trace cost totals
+the LLM spans, except scorer calls, so parent rollups are not counted again, and is left unknown
+when any of those spans does not report it. Token metrics and other metrics remain in
+`attributes.braintrust.metrics`.
+
+Spans are ordered by start time. SDKs may record whole-second starts, so for equal starts the
+Python SDK's span creation counter (`span_attributes.exec_counter`) decides, then the span ID.
+A tool span's call ID is the model's tool-call ID from its `metadata.tool_call_id`,
+`tool_use_id` or `tool_id`, or the span ID when none is recorded.
 
 Tool catalogs are not normalized into schemas, which limits tool-schema checks.
 Duplicate IDs, missing parents, cycles, and multiple-parent spans produce an error.

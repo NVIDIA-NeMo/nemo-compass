@@ -8,19 +8,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from trace_ingest.loaders.helper.merge import Record
 from trace_ingest.loaders.langfuse.config import (
     LangfuseFileTraceConfig,
     LangfuseFileTraceDescription,
     LangfuseTraceLoadError,
     _describe_corpus,
 )
-from trace_ingest.loaders.langfuse.file_io import _parse_trace_export
+from trace_ingest.loaders.langfuse.file_io import _newest_conversations, _parse_trace_export
 from trace_ingest.loaders.langfuse.normalization import (
+    _conversation_io,
     _normalize_trace,
     _trace_id,
     _trace_timestamp,
 )
-from trace_ingest.models import Trace, TraceSnapshot
+from trace_ingest.models import TraceSnapshot
 from trace_ingest.source_links import file_source_url
 
 
@@ -29,7 +31,8 @@ class LangfuseV3FileTraceLoader:
     """Read full v3 trace responses without contacting Langfuse.
 
     Accepts raw API bodies and the CLI's status/headers/body envelopes. All
-    records are validated before selecting the newest complete traces.
+    records are validated and merged by session before selecting the newest
+    conversations.
     """
 
     config: LangfuseFileTraceConfig
@@ -37,6 +40,7 @@ class LangfuseV3FileTraceLoader:
         default_factory=lambda: TraceSnapshot([]), init=False, repr=False
     )
     _export_trace_count: int = field(default=0, init=False, repr=False)
+    _merged_trace_count: int = field(default=0, init=False, repr=False)
 
     def load(self) -> TraceSnapshot:
         """Validate native exports and reuse live trace normalization."""
@@ -57,7 +61,7 @@ class LangfuseV3FileTraceLoader:
             raise LangfuseTraceLoadError(
                 f"Langfuse export {export_path} contains no JSON/JSONL files"
             )
-        traces: dict[tuple[datetime, str], Trace] = {}
+        records: dict[tuple[datetime, str], Record] = {}
         seen: set[str] = set()
         for path in files:
             contents = path.read_bytes()
@@ -72,7 +76,6 @@ class LangfuseV3FileTraceLoader:
                         raise LangfuseTraceLoadError("observation traceId does not match its trace")
                     trace = _normalize_trace(
                         provider,
-                        require_complete_tree=True,
                         source_pointer={
                             "provider": "langfuse",
                             "export_path": str(path),
@@ -81,14 +84,20 @@ class LangfuseV3FileTraceLoader:
                         },
                     )
                     trace.source_url = file_source_url(path)
-                    traces[(_trace_timestamp(provider), trace_id)] = trace
+                    records[(_trace_timestamp(provider), trace_id)] = Record(
+                        trace, *_conversation_io(provider, trace)
+                    )
                 except (ValueError, LangfuseTraceLoadError) as error:
                     raise LangfuseTraceLoadError(
                         f"Invalid Langfuse export {path}, record {index}: {error}"
                     ) from error
 
-        snapshot = TraceSnapshot(traces[key] for key in sorted(traces)[-self.config.max_traces :])
-        self._export_trace_count = len(traces)
+        traces, merged_count = _newest_conversations(
+            [(key[0], records[key]) for key in sorted(records)], self.config.max_traces
+        )
+        snapshot = TraceSnapshot(traces)
+        self._export_trace_count = len(records)
+        self._merged_trace_count = merged_count
         self._snapshot = snapshot
         return snapshot
 
@@ -99,5 +108,5 @@ class LangfuseV3FileTraceLoader:
             "export_path": str(self.config.path.resolve()),
             "export_trace_count": self._export_trace_count,
             "max_traces": self.config.max_traces,
-            "truncated": self._export_trace_count > self._snapshot.trace_count,
+            "truncated": self._merged_trace_count > self._snapshot.trace_count,
         }

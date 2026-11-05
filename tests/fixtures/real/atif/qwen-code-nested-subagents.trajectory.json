@@ -1,0 +1,149 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "session_id": "session-1",
+  "agent": {
+    "name": "qwen-code",
+    "version": "0.19.11",
+    "model_name": "qwen3-coder-plus"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "timestamp": "2026-01-01T00:00:00Z",
+      "source": "user",
+      "message": "Delegate."
+    },
+    {
+      "step_id": 2,
+      "timestamp": "2026-01-01T00:00:01Z",
+      "source": "agent",
+      "model_name": "qwen3-coder-plus",
+      "message": "",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_parent",
+          "function_name": "agent",
+          "arguments": {
+            "subagent_type": "Explore"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_parent",
+            "content": "Done.",
+            "subagent_trajectory_ref": [
+              {
+                "trajectory_id": "Explore-call_parent",
+                "session_id": "session-1",
+                "extra": {
+                  "agent_name": "Explore"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "final_metrics": {
+    "total_steps": 2
+  },
+  "subagent_trajectories": [
+    {
+      "schema_version": "ATIF-v1.7",
+      "session_id": "session-1",
+      "trajectory_id": "Explore-call_parent",
+      "agent": {
+        "name": "qwen-code",
+        "version": "0.19.11",
+        "model_name": "qwen3-coder-plus",
+        "extra": {
+          "subagent_id": "Explore-call_parent",
+          "subagent_name": "Explore",
+          "parent_agent_id": null
+        }
+      },
+      "steps": [
+        {
+          "step_id": 1,
+          "timestamp": "2026-01-01T00:00:00Z",
+          "source": "user",
+          "message": "Explore."
+        },
+        {
+          "step_id": 2,
+          "timestamp": "2026-01-01T00:00:01Z",
+          "source": "agent",
+          "model_name": "qwen3-coder-plus",
+          "message": "",
+          "tool_calls": [
+            {
+              "tool_call_id": "call_child",
+              "function_name": "agent",
+              "arguments": {
+                "subagent_type": "general-purpose"
+              }
+            }
+          ],
+          "observation": {
+            "results": [
+              {
+                "source_call_id": "call_child",
+                "content": "Nested work done.",
+                "subagent_trajectory_ref": [
+                  {
+                    "trajectory_id": "general-purpose-call_child",
+                    "session_id": "session-1",
+                    "extra": {
+                      "agent_name": "general-purpose"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "final_metrics": {
+        "total_steps": 2
+      },
+      "subagent_trajectories": [
+        {
+          "schema_version": "ATIF-v1.7",
+          "session_id": "session-1",
+          "trajectory_id": "general-purpose-call_child",
+          "agent": {
+            "name": "qwen-code",
+            "version": "0.19.11",
+            "model_name": "qwen3-coder-plus",
+            "extra": {
+              "subagent_id": "general-purpose-call_child",
+              "subagent_name": "general-purpose",
+              "parent_agent_id": "Explore-call_parent"
+            }
+          },
+          "steps": [
+            {
+              "step_id": 1,
+              "timestamp": "2026-01-01T00:00:00Z",
+              "source": "user",
+              "message": "Do nested work."
+            },
+            {
+              "step_id": 2,
+              "timestamp": "2026-01-01T00:00:01Z",
+              "source": "agent",
+              "model_name": "qwen3-coder-plus",
+              "message": "Nested result."
+            }
+          ],
+          "final_metrics": {
+            "total_steps": 2
+          }
+        }
+      ]
+    }
+  ]
+}
