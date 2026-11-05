@@ -1,21 +1,21 @@
 <!-- SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# Prepare a Compass release
+# Release Compass
 
-The distribution is `nemo-compass`. The CLI and Python imports use `compass`.
+1. Run [Start release](https://github.com/NVIDIA-NeMo/nemo-compass/actions/workflows/start-release.yaml)
+   on `main` with the final version (for example, `0.3.0`) and an optional commit SHA.
+   The workflow creates the release branch and uploads an RC to a draft GitHub release.
+2. Submit fixes as PRs to the release branch; each merge prepares
+   another RC and automatically opens a forward-port PR to main. CI starts
+   automatically, and the PR auto-merges when
+   checks and approvals permit; the fix author resolves blocked forward-ports.
+   Leave version updates to automation and do not merge main into the release branch.
+3. Once a candidate is ready, run
+   [Publish release](https://github.com/NVIDIA-NeMo/nemo-compass/actions/workflows/publish-release.yaml)
+   on `main` with its RC tag. This rebuilds and validates the final package, stages its
+   wheel in NGC, and publishes the GitHub release.
 
-1. Set the version in `pyproject.toml`, run `uv lock`, and merge both files into `main`.
-2. Open [Actions → Prepare release](https://github.com/NVIDIA-NeMo/nemo-compass/actions/workflows/prepare-release.yaml)
-   and select **Run workflow**. Choose `main`, optionally enter a specific commit
-   SHA, and start the run.
-3. Wait for CI to pass. The action tags the checked commit and creates a draft
-   release with the wheel, source archive, and checksums. Version `0.1.0`, for
-   example, produces tag `v0.1.0`.
-4. Review the draft's notes and files before publishing the GitHub release.
-
-The action does not publish to PyPI.
-
-If a run fails, open it in Actions and choose **Re-run failed jobs**. If it left an
-incomplete draft, delete that draft before retrying. Keep the tag. If the tag
-already points to a different commit, use a new version.
+For failures, use **Re-run failed jobs** on the original run. If a partial draft was
+left behind, delete only that unpublished draft and keep its tag before retrying.
+Never delete or modify a published release. Do not rerun successful workflows.

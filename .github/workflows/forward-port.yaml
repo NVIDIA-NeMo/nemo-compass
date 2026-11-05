@@ -1,0 +1,45 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Forward-port release fixes
+# Every merged release-branch PR is propagated; no label or manual dispatch needed.
+on:
+  pull_request_target:
+    branches: ['release/**']
+    types: [closed]
+permissions:
+  contents: read
+concurrency:
+  group: forward-port-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  forward-port:
+    if: github.event.pull_request.merged
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: main
+          token: ${{ secrets.PAT_BACKPORT_GITHUB_TOKEN }}
+      - uses: korthout/backport-action@8560fb503c275d433c56f05a2f64850093baa9f7 # v4
+        id: port
+        with:
+          github_token: ${{ secrets.PAT_BACKPORT_GITHUB_TOKEN }}
+          target_branches: main
+          label_pattern: ''
+          add_author_as_assignee: true
+          pull_title: '[Forward-port #${pull_number}] ${pull_title}'
+          experimental: '{"conflict_resolution":"draft_commit_conflicts"}'
+      - name: Enable normal auto-merge for clean forward-ports
+        env:
+          GH_TOKEN: ${{ secrets.PAT_BACKPORT_GITHUB_TOKEN }}
+          PULL_NUMBERS: ${{ steps.port.outputs.created_pull_numbers }}
+        run: |
+          for number in $PULL_NUMBERS; do
+            if [ "$(gh pr view "$number" --json isDraft --jq .isDraft)" = false ]; then
+              if ! gh pr merge "$number" --auto --squash; then
+                gh pr comment "$number" --body 'Automatic merge could not be enabled. The assigned fix author must finish propagation under the normal repository rules.'
+              fi
+            fi
+          done
