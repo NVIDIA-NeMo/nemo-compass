@@ -147,10 +147,10 @@ class BufferedSpanExporter(SpanExporter):
                     or self._parents[span_id] in self._exported
                 )
             ]
-            for offset in range(0, len(eligible), 8):
+            for offset in range(0, len(eligible), 64):
                 paths = [
                     self.directory / f"{span_id:016x}.span"
-                    for span_id in eligible[offset : offset + 8]
+                    for span_id in eligible[offset : offset + 64]
                 ]
                 try:
                     result = self._delegate.export(
