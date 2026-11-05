@@ -2,44 +2,76 @@
 # SPDX-License-Identifier: Apache-2.0
 
 name: Forward-port release fixes
-# Every merged release-branch PR is propagated; no label or manual dispatch needed.
 on:
-  pull_request_target:
-    branches: ['release/**']
-    types: [closed]
+  workflow_run:
+    workflows: ['Start release', CI]
+    types: [requested, completed]
+    branches: ['release/**', 'backport-*-to-main']
 permissions:
   contents: read
 concurrency:
-  group: forward-port-${{ github.event.pull_request.number }}
+  group: forward-port-${{ github.event.workflow_run.id }}
   cancel-in-progress: false
 jobs:
   forward-port:
-    if: github.event.pull_request.merged
-    runs-on: ubuntu-latest
+    if: >-
+      github.event.action == 'requested' &&
+      github.event.workflow_run.name == 'Start release' &&
+      github.event.workflow_run.event == 'push' &&
+      startsWith(github.event.workflow_run.head_branch, 'release/')
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: main
           token: ${{ secrets.PAT_BACKPORT_GITHUB_TOKEN }}
+      - name: Find the merged release fix
+        id: fix
+        env:
+          GH_TOKEN: ${{ secrets.PAT_BACKPORT_GITHUB_TOKEN }}
+          SOURCE: ${{ github.event.workflow_run.head_sha }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          number=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SOURCE/pulls" |
+            jq -r --arg sha "$SOURCE" --arg branch "$BRANCH" \
+              '.[] | select(.merged_at != null and .merge_commit_sha == $sha and .base.ref == $branch) | .number')
+          echo "number=$number" >> "$GITHUB_OUTPUT"
       - uses: korthout/backport-action@8560fb503c275d433c56f05a2f64850093baa9f7 # v4
-        id: port
+        if: steps.fix.outputs.number != ''
         with:
           github_token: ${{ secrets.PAT_BACKPORT_GITHUB_TOKEN }}
+          source_pr_number: ${{ steps.fix.outputs.number }}
           target_branches: main
           label_pattern: ''
           add_author_as_assignee: true
           pull_title: '[Forward-port #${pull_number}] ${pull_title}'
           experimental: '{"conflict_resolution":"draft_commit_conflicts"}'
-      - name: Enable normal auto-merge for clean forward-ports
+
+  merge:
+    if: >-
+      github.event.action == 'completed' &&
+      github.event.workflow_run.name == 'CI' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Merge the tested forward-port
         env:
           GH_TOKEN: ${{ secrets.PAT_BACKPORT_GITHUB_TOKEN }}
-          PULL_NUMBERS: ${{ steps.port.outputs.created_pull_numbers }}
+          PULL_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          SOURCE: ${{ github.event.workflow_run.head_sha }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
-          for number in $PULL_NUMBERS; do
-            if [ "$(gh pr view "$number" --json isDraft --jq .isDraft)" = false ]; then
-              if ! gh pr merge "$number" --auto --squash; then
-                gh pr comment "$number" --body 'Automatic merge could not be enabled. The assigned fix author must finish propagation under the normal repository rules.'
-              fi
-            fi
-          done
+          [ -n "$PULL_NUMBER" ] || exit 0
+          pull=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PULL_NUMBER")
+          jq -e --arg sha "$SOURCE" --arg branch "$BRANCH" --arg repo "$GITHUB_REPOSITORY" '
+              .state == "open" and .draft == false and .user.login == "nemo-llm" and
+              .base.ref == "main" and .head.repo.full_name == $repo and
+              .head.sha == $sha and .head.ref == $branch and
+              (.head.ref | test("^backport-[0-9]+-to-main$"))' <<< "$pull" > /dev/null || exit 0
+          # The bot bypasses review only; GitHub still enforces required CI and branch freshness.
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/pulls/$PULL_NUMBER/merge" \
+            -f sha="$SOURCE" -f merge_method=squash |
+            jq -e 'if .merged then .message else error(.message) end'

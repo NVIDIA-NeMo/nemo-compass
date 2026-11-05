@@ -8,8 +8,8 @@
    The workflow creates the release branch and uploads an RC to a draft GitHub release.
 2. Submit fixes as PRs to the release branch; each merge prepares
    another RC and automatically opens a forward-port PR to main. CI starts
-   automatically, and the PR auto-merges when
-   checks and approvals permit; the fix author resolves blocked forward-ports.
+   automatically; clean forward-ports merge after required checks pass without another
+   review. The fix author resolves blocked forward-ports.
    Leave version updates to automation and do not merge main into the release branch.
 3. Once a candidate is ready, run
    [Publish release](https://github.com/NVIDIA-NeMo/nemo-compass/actions/workflows/publish-release.yaml)
