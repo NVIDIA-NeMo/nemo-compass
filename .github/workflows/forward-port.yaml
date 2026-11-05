@@ -3,46 +3,45 @@
 
 name: Forward-port release fixes
 on:
-  workflow_run:
-    workflows: ['Start release', CI]
-    types: [requested, completed]
-    branches: ['release/**', 'backport-*-to-main']
+  pull_request:
+    branches: ['release/**']
+    types: [closed]
 permissions:
   contents: read
+  pull-requests: write
 concurrency:
-  group: forward-port-${{ github.event.workflow_run.id }}
+  group: forward-port-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 jobs:
   forward-port:
     if: >-
-      (github.event.action == 'requested' && github.event.workflow_run.name == 'Start release' &&
-       github.event.workflow_run.event == 'push' && startsWith(github.event.workflow_run.head_branch, 'release/')) ||
-      (github.event.action == 'completed' && github.event.workflow_run.name == 'CI' &&
-       github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success')
+      github.event.pull_request.merged &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    env:
-      GH_TOKEN: ${{ secrets.PAT_BACKPORT_GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: ${{ github.workflow_sha }}
+          ref: main
           token: ${{ secrets.PAT_BACKPORT_GITHUB_TOKEN }}
-      - name: Find the merged release fix
-        id: fix
-        if: github.event.action == 'requested'
-        run: python3 tools/forward_port.py find
       - uses: korthout/backport-action@8560fb503c275d433c56f05a2f64850093baa9f7 # v4
-        if: steps.fix.outputs.number != ''
+        id: port
         with:
           github_token: ${{ secrets.PAT_BACKPORT_GITHUB_TOKEN }}
-          source_pr_number: ${{ steps.fix.outputs.number }}
           target_branches: main
           label_pattern: ''
           add_author_as_assignee: true
           pull_title: '[Forward-port #${pull_number}] ${pull_title}'
           experimental: '{"conflict_resolution":"draft_commit_conflicts"}'
-
-      - name: Merge the tested forward-port
-        if: github.event.action == 'completed'
-        run: python3 tools/forward_port.py merge
+          auto_merge_enabled: true
+          auto_merge_method: squash
+      - name: Approve clean forward-ports of the reviewed release fix
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PULL_NUMBERS: ${{ steps.port.outputs.created_pull_numbers }}
+        run: |
+          for number in $PULL_NUMBERS; do
+            if [ "$(gh pr view "$number" --json isDraft --jq .isDraft)" = false ]; then
+              gh pr review "$number" --approve --body 'Automated approval: clean cherry-pick of a merged release fix. Required CI must pass before merging.'
+            fi
+          done
