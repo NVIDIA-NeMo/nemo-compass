@@ -8,8 +8,7 @@ on:
     branches: ['release/**']
     types: [closed]
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 concurrency:
   group: forward-port-${{ github.event.pull_request.number }}
   cancel-in-progress: false
@@ -22,10 +21,11 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: main
+          token: ${{ secrets.PAT_BACKPORT_GITHUB_TOKEN }}
       - uses: korthout/backport-action@8560fb503c275d433c56f05a2f64850093baa9f7 # v4
         id: port
         with:
-          github_token: ${{ github.token }}
+          github_token: ${{ secrets.PAT_BACKPORT_GITHUB_TOKEN }}
           target_branches: main
           label_pattern: ''
           add_author_as_assignee: true
@@ -33,7 +33,7 @@ jobs:
           experimental: '{"conflict_resolution":"draft_commit_conflicts"}'
       - name: Enable normal auto-merge for clean forward-ports
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.PAT_BACKPORT_GITHUB_TOKEN }}
           PULL_NUMBERS: ${{ steps.port.outputs.created_pull_numbers }}
         run: |
           for number in $PULL_NUMBERS; do
