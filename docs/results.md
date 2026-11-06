@@ -72,7 +72,7 @@ Skipped:  Ethos — no document
           Grader failures — no results
           Sentiment — no embedding backend
 
-To run skipped analyses: https://github.com/NVIDIA-NeMo/labs-nemo-compass/blob/main/docs/compass-signals.md
+To run skipped analyses: https://github.com/NVIDIA-NeMo/nemo-compass/blob/main/docs/compass-signals.md
 
 Saved: out/try-next-step/insights.yml
 ```
