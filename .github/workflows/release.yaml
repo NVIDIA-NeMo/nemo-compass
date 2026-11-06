@@ -31,6 +31,9 @@ jobs:
   plan:
     if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required to read draft release assets.
+      actions: read
     outputs:
       source: ${{ steps.plan.outputs.source }}
       branch: ${{ steps.plan.outputs.branch }}
