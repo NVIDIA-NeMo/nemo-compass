@@ -98,10 +98,6 @@ def record_problem_decision(record: OpenInferenceSpan, decision: CandidateProble
     record.set_output(decision.model_dump(mode="json"))
 
 
-def validation_context_formatting(trace_count: int) -> AbstractContextManager[OpenInferenceSpan]:
-    return _phase("candidate_problem_validation.format_context", {"trace_count": trace_count})
-
-
 def candidate_problem_validation(
     signal_results: list[CompassSignalResult], code_base: Path | None, ethos: str | None = None
 ) -> AbstractContextManager[OpenInferenceSpan]:

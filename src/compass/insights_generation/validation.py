@@ -18,7 +18,6 @@ from nooa.strategies import CodeActStrategy
 from nooa.unifiedllm import UnifiedLLM
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from compass import telemetry_phases as telemetry
 from compass.compass_signals.compass_signals import CompassSignalResult, Problem
 from compass.insights_generation.codebase import CodebaseTools
 from compass.traces import Trace
@@ -114,14 +113,13 @@ class CandidateProblemValidationResult:
 
 def _trace_context(supporting_traces: tuple[Trace, ...]) -> str:
     # Text, not live objects: the model should inspect the code, not mine the traces.
-    with telemetry.validation_context_formatting(len(supporting_traces)):
-        return truncating_pformat(
-            supporting_traces,
-            max_chars=_MAX_TRACE_CONTEXT_CHARS,
-            max_depth=12,
-            max_length=200,
-            max_string=10_000,
-        )
+    return truncating_pformat(
+        supporting_traces,
+        max_chars=_MAX_TRACE_CONTEXT_CHARS,
+        max_depth=12,
+        max_length=200,
+        max_string=10_000,
+    )
 
 
 class _ValidationAgent(Agent):
