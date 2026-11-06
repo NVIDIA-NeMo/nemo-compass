@@ -18,7 +18,7 @@ in the environment or `.env`.
 | `ethos_path` | Optional path to [ETHOS.md](https://github.com/NVIDIA/skills/tree/main/skills/ethos-orchestrate), which defines the agent’s purpose and behavioral requirements. Defaults to `ETHOS.md` in the current working directory. Used by the ethos divergence signal, candidate problem validation, and insight compilation. |
 | `output_path` | YAML output file; defaults to `insights.yml`. Use `-` for stdout. |
 | `model`, `api_base`, `max_tokens` | [Inference settings](model-access.md#choose-a-model). |
-| `compass_signals` | [Compass Signals and their prerequisites](compass-signals.md). All five are enabled by default. |
+| `compass_signals` | [Compass Signals and their prerequisites](compass-signals.md). All signals are enabled by default. |
 | `code_base` | [Local agent source](#candidate-problem-validation) to consult during candidate problem validation and confidence review. |
 | `existing_insights` | Previous JSON or YAML insight collection to reconcile with this run. |
 

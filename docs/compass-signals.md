@@ -81,7 +81,8 @@ your evaluation suite or create missing scores. Setup and export details live in
 ## Tool issues
 
 Load traces with recorded tool spans, names, arguments, and results.
-Include tool schemas when available so argument-validation checks can run.
+Include tool schemas when available so argument-validation checks can run. When a trace
+merges a session's records, each call is checked against the tools its own record offered.
 If the report says “No tool calls,” check that your selected traces and export preserve them.
 
 ## Anomalies and patterns

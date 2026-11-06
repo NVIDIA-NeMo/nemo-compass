@@ -239,7 +239,8 @@ def _run_cli(source, enabled):
             "source": f"fs:{source}",
             "trace_count": 1,
             "call_count": 0,
-            "distinct_logical_cases": 1,
+            "distinct_cases": 1,
+            "distinct_sessions": 0,
         }
         ingestion = next(r for r in records if r.name == "ingestion")
         assert json.loads(str((ingestion.attributes or {})["output.value"])) == {"trace_count": 1}

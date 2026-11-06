@@ -5,12 +5,15 @@
 # that fall outside NeMo Platform's default permissive-license allowlist.
 overrides:
   aiohappyeyeballs: PSF-2.0
+  boto3: Apache-2.0
+  botocore: Apache-2.0
   certifi: MPL-2.0
   cffi: MIT-0
   colorama: BSD-3-Clause
   databricks-sdk: Apache-2.0
   fastuuid: BSD-3-Clause
   gitdb: BSD-3-Clause
+  hyperframe: MIT
   jinja2: BSD-3-Clause
   mlflow-skinny: Apache-2.0
   mpmath: BSD-3-Clause

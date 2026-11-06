@@ -5,8 +5,12 @@
 
 Source contract: https://github.com/harbor-framework/harbor/blob/main/rfcs/0001-trajectory-format.md
 
-Each non-blank line is one trajectory with a ``trajectory_id`` or ``session_id``.
-``trace.attributes["logical_case_id"]`` is the ``session_id``, when recorded.
+Each non-blank line is one trajectory. The trace id is its ``trajectory_id``,
+else ``"atif-" + sha256(line)[:16]`` over the line without surrounding
+whitespace (a repeated line is a duplicate). ``session_id`` is not the trace id:
+it is run-scoped, and a trajectory, its continuations and its siblings may share
+it. ``Trace.session_id`` is the ``session_id``, when recorded
+(``session_basis`` ``atif.session_id``).
 
 Accepted input is Harbor's ``Trajectory`` field set for ATIF-v1.0 through v1.8,
 validated strictly (no type coercion, unknown keys rejected), plus
@@ -55,6 +59,7 @@ follow. Each ``Loss.detail`` is structured:
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -90,6 +95,7 @@ from trace_ingest.models import (
     TraceSnapshot,
     Turn,
     TurnRole,
+    case_key,
 )
 from trace_ingest.source_links import file_source_url
 
@@ -720,17 +726,17 @@ def _agent_span(source: _Trajectory, prefix: str, losses: list[Loss]) -> Span:
     )
 
 
-def _normalize(source: _Trajectory) -> Trace:
-    trace_id = source.trajectory_id or source.session_id
-    if not trace_id:
-        raise ValueError("trajectory_id or session_id is required for stable trace identity")
+def _normalize(source: _Trajectory, raw: bytes) -> Trace:
+    # session_id is run-scoped (RFC 0001 v1.7): documents of one run may share it.
+    trace_id = source.trajectory_id or "atif-" + hashlib.sha256(raw.strip()).hexdigest()[:16]
     losses: list[Loss] = []
     root = _agent_span(source, "trajectory", losses)
     return Trace(
         id=trace_id,
         root_spans=[root],
         aggregate=TraceAggregate(cost_usd=root.cost_usd, token_counts=root.token_counts),
-        attributes={} if source.session_id is None else {"logical_case_id": source.session_id},
+        session_id=source.session_id or None,
+        session_basis="atif.session_id" if source.session_id else None,
         losses=losses,
     )
 
@@ -746,6 +752,7 @@ class ATIFTraceLoader:
         path = self.config.path
         _line_number = call_count = 0
         cases: set[str] = set()
+        sessions: set[str] = set()
 
         def traces() -> Iterator[Trace]:
             nonlocal _line_number, call_count
@@ -753,14 +760,16 @@ class ATIFTraceLoader:
                 for _line_number, raw in enumerate(corpus, 1):
                     if not raw.strip():
                         continue
-                    trace = _normalize(_Trajectory.model_validate_json(raw))
+                    trace = _normalize(_Trajectory.model_validate_json(raw), raw)
                     trace.source_url = file_source_url(path, _line_number)
                     pending = list(trace.root_spans)
                     while pending:
                         span = pending.pop()
                         call_count += span.kind is SpanKind.TOOL
                         pending.extend(span.children)
-                    cases.add(str(trace.attributes.get("logical_case_id") or trace.id))
+                    cases.add(case_key(trace))
+                    if trace.session_id:
+                        sessions.add(trace.session_id)
                     yield trace
 
         try:
@@ -774,7 +783,8 @@ class ATIFTraceLoader:
             path=str(path.resolve()),
             trace_count=len(snapshot),
             call_count=call_count,
-            distinct_logical_cases=len(cases),
+            distinct_cases=len(cases),
+            distinct_sessions=len(sessions),
         )
 
     def load(self) -> TraceSnapshot:

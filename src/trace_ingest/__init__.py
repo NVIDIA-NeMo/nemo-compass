@@ -28,6 +28,7 @@ from trace_ingest.models import (
     TraceSnapshot,
     Turn,
     TurnRole,
+    case_key,
 )
 
 __all__ = [
@@ -55,4 +56,5 @@ __all__ = [
     "Turn",
     "TurnRole",
     "UNSET",
+    "case_key",
 ]

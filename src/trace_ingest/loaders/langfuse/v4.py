@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from trace_ingest.loaders.helper.merge import Record, assemble, select_sessions
 from trace_ingest.loaders.langfuse.config import (
     LangfuseTraceConfig,
     LangfuseTraceDescription,
@@ -17,12 +19,13 @@ from trace_ingest.loaders.langfuse.config import (
     _describe_live_source,
 )
 from trace_ingest.loaders.langfuse.filters import _bounded_filter
-from trace_ingest.loaders.langfuse.normalization import _normalize_v4_trace, _started_at
-from trace_ingest.loaders.langfuse.v4_records import _group_observations, _group_scores
-from trace_ingest.models import (
-    Trace,
-    TraceSnapshot,
+from trace_ingest.loaders.langfuse.normalization import (
+    _ORCHESTRATION,
+    _normalize_v4_trace,
+    _started_at,
 )
+from trace_ingest.loaders.langfuse.v4_records import _group_observations, _group_scores
+from trace_ingest.models import TraceSnapshot
 
 if TYPE_CHECKING:
     from langfuse import Langfuse
@@ -47,38 +50,22 @@ class LangfuseV4TraceLoader:
     )
 
     def load(self) -> TraceSnapshot:
-        """Reconstruct bounded traces from observations and separately fetched scores."""
+        """Reconstruct bounded traces from observations and scores, merged by session."""
         client = self.client
         base_url = self.base_url
-        selected: dict[str, datetime] = {}
-        cursor: str | None = None
-        seen_cursors: set[str] = set()
-        bounded_filter = _bounded_filter(
-            self.config.filter_string,
-            from_timestamp=self.config.from_timestamp,
-            to_timestamp=self.config.to_timestamp,
-            time_column="startTime",
+        observations, partial = select_sessions(
+            self._selection(client),
+            key=lambda entry: (
+                ("session", entry[1].session_id) if entry[1].session_id else ("trace", entry[0])
+            ),
+            item_id=lambda entry: entry[0],
+            limit=self.config.max_traces,
+            reread=lambda session_id: self._selection(client, session_id),
         )
-        while len(selected) < self.config.max_traces:
-            response = client.api.observations.get_many(
-                limit=_API_PAGE_SIZE,
-                fields="core",
-                from_start_time=self.config.from_timestamp,
-                to_start_time=self.config.to_timestamp,
-                filter=bounded_filter,
-                cursor=cursor,
-            )
-            for observation in response.data:
-                if not observation.trace_id:
-                    raise LangfuseTraceLoadError("Langfuse returned an observation without traceId")
-                selected.setdefault(observation.trace_id, _started_at(observation))
-                if len(selected) == self.config.max_traces:
-                    break
-            if len(selected) == self.config.max_traces:
-                break
-            cursor = _next_cursor(response.meta.cursor, seen_cursors, bool(response.data))
-            if cursor is None:
-                break
+        # A trace whose observations disagree on the session may be read under two keys.
+        selected: dict[str, datetime] = {}
+        for trace_id, observation in observations:
+            selected.setdefault(trace_id, _started_at(observation))
 
         trace_ids = sorted(selected, key=lambda key: (selected[key], key))
         # map preserves selection order even when requests complete out of order.
@@ -108,7 +95,7 @@ class LangfuseV4TraceLoader:
                 if cursor is None:
                     break
         by_trace, _ = _group_scores(groups, scores)
-        traces: list[Trace] = []
+        records: list[Record] = []
         for trace_id in trace_ids:
             trace = _normalize_v4_trace(trace_id, groups[trace_id], by_trace[trace_id], base_url)
             trace.attributes["observation_window"] = {
@@ -116,9 +103,52 @@ class LangfuseV4TraceLoader:
                 "to_timestamp": self.config.to_timestamp.isoformat(),
                 "may_exclude_trace_steps": True,
             }
-            traces.append(trace)
+            langfuse = trace.attributes["langfuse"]
+            assert isinstance(langfuse, dict)
+            records.append(Record(trace, langfuse.get("input"), langfuse.get("output")))
+        try:
+            traces = assemble(records, orchestration_subtypes=_ORCHESTRATION, partial=partial)
+        except ValueError as error:
+            raise LangfuseTraceLoadError(str(error)) from error
         self._snapshot = TraceSnapshot(traces)
         return self._snapshot
+
+    def _selection(
+        self, client: Langfuse, session_id: str | None = None
+    ) -> Iterator[tuple[str, ObservationV2]]:
+        """Each trace's first observation in the window, by trace id, optionally of one session."""
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        seen: set[str] = set()
+        bounded_filter = _bounded_filter(
+            self.config.filter_string,
+            from_timestamp=self.config.from_timestamp,
+            to_timestamp=self.config.to_timestamp,
+            time_column="startTime",
+            session_id=session_id,
+        )
+        session = {} if session_id is None else {"session_id": session_id}
+        while True:
+            response = client.api.observations.get_many(
+                limit=_API_PAGE_SIZE,
+                fields="core,basic",
+                from_start_time=self.config.from_timestamp,
+                to_start_time=self.config.to_timestamp,
+                filter=bounded_filter,
+                cursor=cursor,
+                **session,
+            )
+            for observation in response.data:
+                trace_id = observation.trace_id
+                if not trace_id:
+                    raise LangfuseTraceLoadError("Langfuse returned an observation without traceId")
+                # A trace's first observation decides its session key.
+                if trace_id not in seen:
+                    seen.add(trace_id)
+                    yield trace_id, observation
+            cursor = _next_cursor(response.meta.cursor, seen_cursors, bool(response.data))
+            if cursor is None:
+                return
 
     def _fetch_observations(self, trace_id: str) -> list[ObservationV2]:
         observations: list[ObservationV2] = []

@@ -1,0 +1,197 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Release orchestration; CI owns building and validating package bytes."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+def run(*args: str) -> str:
+    return subprocess.check_output(args, text=True).strip()
+
+
+def api(path: str) -> dict:
+    return json.loads(run("gh", "api", f"repos/{os.environ['GITHUB_REPOSITORY']}/{path}"))
+
+
+def sha(ref: str) -> str:
+    return run("git", "rev-parse", "--verify", f"{ref}^{{commit}}")
+
+
+def tag_source(tag: str) -> str:
+    # Tags may have been created by a previous attempt after this checkout.
+    run("git", "fetch", "origin", f"refs/tags/{tag}")
+    return sha("FETCH_HEAD")
+
+
+def release_version(value: str) -> str:
+    if not re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", value):
+        raise ValueError("Use a final version such as 0.3.0")
+    return value
+
+
+def candidate(branch: str, commit: str) -> str:
+    version = release_version(branch.removeprefix("release/"))
+    base = f"refs/tags/release-base/{version}"
+    run("git", "merge-base", "--is-ancestor", base, commit)
+    count = int(run("git", "rev-list", "--first-parent", "--count", f"{base}..{commit}"))
+    return f"{version}rc{count + 1}"
+
+
+def current(branch: str, commit: str) -> None:
+    head = api(f"git/ref/heads/{branch}")["object"]["sha"]
+    if head != commit:
+        run("git", "fetch", "origin", head)
+        newer = candidate(branch, head)
+        raise ValueError(f"Branch changed: validate {newer} at {head} before publishing.")
+
+
+def verify(directory: Path) -> dict:
+    manifest = json.loads((directory / "candidate.json").read_text())
+    expected = manifest["sha256"]
+    if not expected or any(Path(name).name != name for name in expected):
+        raise ValueError("Invalid artifact manifest")
+    for name, digest in expected.items():
+        if hashlib.sha256((directory / name).read_bytes()).hexdigest() != digest:
+            raise ValueError(f"Artifact checksum mismatch: {name}")
+    return manifest
+
+
+def set_version() -> None:
+    """Set build metadata without re-resolving locked dependencies."""
+    version = os.environ["PACKAGE_VERSION"]
+    run("uv", "version", "--frozen", version)
+    lock = Path("uv.lock")
+    updated, count = re.subn(
+        r'(name = "nemo-compass"\nversion = ")[^"]+("\n)',
+        lambda match: match[1] + version + match[2],
+        lock.read_text(),
+    )
+    assert count == 1, "Expected exactly one Compass lock entry"
+    lock.write_text(updated)
+
+
+def record() -> None:
+    """Keep source, checksums and the original CI attempt with the built artifacts."""
+    version = os.environ["PACKAGE_VERSION"]
+    manifest = {
+        "source": os.environ["SOURCE"],
+        "branch": "release/" + version.split("rc")[0],
+        "version": version,
+        "run_id": os.environ["GITHUB_RUN_ID"],
+        "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+        "sha256": dict(
+            line.split()[::-1] for line in Path("dist/SHA256SUMS").read_text().splitlines()
+        ),
+    }
+    Path("dist/candidate.json").write_text(json.dumps(manifest, indent=2) + "\n")
+
+
+def plan() -> None:
+    action = os.environ.get("ACTION", "") or "candidate"
+    if action == "start":
+        version = release_version(os.environ["VERSION"])
+        branch = f"release/{version}"
+        selected = os.environ.get("COMMIT", "") or os.environ["GITHUB_SHA"]
+        if not re.fullmatch(r"[0-9a-f]{40}", selected):
+            raise ValueError("Commit must be a full main commit SHA")
+        commit = sha(selected)
+        run("git", "merge-base", "--is-ancestor", commit, "origin/main")
+        # A retry may reuse the branch only while it is still at the original cut.
+        existing = run("git", "ls-remote", "origin", f"refs/heads/{branch}")
+        if existing and existing.split()[0] != commit:
+            raise ValueError("Release branch already advanced; use its current candidate")
+        package_version = version + "rc1"
+    elif action == "publish":
+        tag = os.environ["CANDIDATE"]
+        if not re.fullmatch(r"v\d+\.\d+\.\d+rc[1-9]\d*", tag):
+            raise ValueError("Select an exact candidate tag, e.g. v0.3.0rc2")
+        accepted = json.loads(
+            run("gh", "release", "download", tag, "--pattern", "candidate.json", "--output", "-")
+        )
+        commit, branch = accepted["source"], accepted["branch"]
+        if accepted["version"] != tag[1:] or tag_source(tag) != commit:
+            raise ValueError("Candidate identity differs from its tag")
+        completed = api(f"actions/runs/{accepted['run_id']}")
+        if (
+            completed["conclusion"] != "success"
+            or completed["path"] != ".github/workflows/start-release.yaml"
+        ):
+            raise ValueError("Candidate preparation has not succeeded")
+        current(branch, commit)
+        if candidate(branch, commit) != tag[1:]:
+            raise ValueError("Selected candidate does not match branch history")
+        package_version = release_version(branch.removeprefix("release/"))
+    else:
+        branch = os.environ["GITHUB_REF_NAME"]
+        commit = os.environ["GITHUB_SHA"]
+        current(branch, commit)
+        package_version = candidate(branch, commit)
+    values = {"source": commit, "branch": branch, "version": package_version, "action": action}
+    with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+        for key, value in values.items():
+            print(f"{key}={value}", file=output)
+
+
+def finish() -> None:
+    source, branch, version = (os.environ[key] for key in ("SOURCE", "BRANCH", "PACKAGE_VERSION"))
+    action = os.environ["ACTION"]
+    tag = f"v{version}"
+    if action == "start":
+        base = f"refs/tags/release-base/{version.split('rc')[0]}"
+        run(
+            "git", "push", "--atomic", "origin", f"{source}:refs/heads/{branch}", f"{source}:{base}"
+        )
+    current(branch, source)
+    directory = Path("dist")
+    manifest = verify(directory)
+    if (manifest["source"], manifest["branch"], manifest["version"], manifest["run_id"]) != (
+        source,
+        branch,
+        version,
+        os.environ["GITHUB_RUN_ID"],
+    ):
+        raise ValueError("Build record differs from the planned release")
+    run("git", "push", "origin", f"{source}:refs/tags/{tag}")
+    try:
+        url = run(
+            "gh",
+            "release",
+            "create",
+            tag,
+            *map(str, sorted(directory.iterdir())),
+            "--verify-tag",
+            "--draft",
+            "--title",
+            tag,
+            "--generate-notes",
+            "--prerelease=" + str(action != "publish").lower(),
+        )
+        if action == "publish":
+            current(branch, source)
+            run("gh", "release", "edit", tag, "--draft=false")
+    except (subprocess.CalledProcessError, ValueError) as error:
+        raise ValueError(
+            f"{error}\nIf {tag} has an unpublished draft, delete only that draft, keep the tag, "
+            "then choose Re-run failed jobs on this run. "
+            "Never delete or modify a published release."
+        ) from error
+    with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
+        print(f"[{tag}]({url}) — source `{source}`", file=summary)
+
+
+if __name__ == "__main__":
+    try:
+        {"set-version": set_version, "record": record, "plan": plan, "finish": finish}[
+            sys.argv[1]
+        ]()
+    except (ValueError, KeyError, subprocess.CalledProcessError) as error:
+        sys.exit(str(error))

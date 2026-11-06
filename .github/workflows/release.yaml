@@ -1,0 +1,88 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Release jobs
+on:
+  workflow_call:
+    inputs:
+      action:
+        type: string
+        required: true
+      version:
+        type: string
+        default: ''
+      commit:
+        type: string
+        default: ''
+      candidate:
+        type: string
+        default: ''
+    outputs:
+      source:
+        value: ${{ jobs.validate.outputs.commit }}
+      branch:
+        value: ${{ jobs.plan.outputs.branch }}
+      version:
+        value: ${{ jobs.plan.outputs.version }}
+permissions:
+  contents: read
+  actions: read
+jobs:
+  plan:
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Required to read draft release assets.
+      actions: read
+    outputs:
+      source: ${{ steps.plan.outputs.source }}
+      branch: ${{ steps.plan.outputs.branch }}
+      version: ${{ steps.plan.outputs.version }}
+      action: ${{ steps.plan.outputs.action }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+          persist-credentials: true
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTION: ${{ inputs.action }}
+          VERSION: ${{ inputs.version }}
+          COMMIT: ${{ inputs.commit }}
+          CANDIDATE: ${{ inputs.candidate }}
+        run: python3 tools/release.py plan
+  validate:
+    needs: plan
+    uses: ./.github/workflows/ci.yaml
+    with:
+      release-ref: ${{ needs.plan.outputs.source }}
+      release-version: ${{ needs.plan.outputs.version }}
+  draft-release:
+    name: Store release candidate
+    needs: [plan, validate]
+    if: inputs.action != 'publish'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-distributions
+          path: dist
+      - name: Verify and store artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE: ${{ needs.validate.outputs.commit }}
+          BRANCH: ${{ needs.plan.outputs.branch }}
+          PACKAGE_VERSION: ${{ needs.plan.outputs.version }}
+          ACTION: ${{ needs.plan.outputs.action }}
+        run: |
+          (cd dist && sha256sum --check SHA256SUMS)
+          python3 tools/release.py finish

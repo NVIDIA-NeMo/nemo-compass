@@ -20,3 +20,42 @@ Tau benchmark project:
 
 The complete Tau Bench license is provided in
 third_party/tau-bench-LICENSE.txt.
+
+Test fixtures under tests/fixtures/real/ include data from these projects. They are
+used only by the test suite and are not part of the source or wheel distributions.
+Each fixture directory's README.md records the exact source revision and files.
+
+  Harbor (tests/fixtures/real/atif/, tests/fixtures/real/intake/)
+  License: Apache-2.0
+  Source: https://github.com/harbor-framework/harbor (v0.24.0,
+          b53b8134e1241686dca7759af188f987ecc48e8b)
+  License text: tests/fixtures/real/intake/LICENSE-harbor.txt
+
+  LangChain docs (tests/fixtures/real/langsmith/)
+  Copyright (c) 2025 LangChain
+  License: MIT
+  Source: https://github.com/langchain-ai/docs
+          (529d160b243aee561329e0d40754fdc10905c57a, src/code-samples/trace-links.json;
+          runs from the public LangSmith project docs-code-samples)
+  License text: tests/fixtures/real/langsmith/LICENSE-langchain-docs.txt
+
+  Braintrust Java SDK (tests/fixtures/real/braintrust/btql-*.json)
+  Copyright (c) 2025 Braintrust Data, Inc.
+  License: MIT
+  Source: https://github.com/braintrustdata/braintrust-sdk-java
+          (ae1e2c6142592d6888b28a2e0f7162d16b893203)
+  License text: tests/fixtures/real/braintrust/LICENSE-braintrust-sdk-java.txt
+
+  Braintrust Ruby SDK (tests/fixtures/real/braintrust/trace_spans.btql-response.jsonl)
+  Copyright 2025 Braintrust
+  License: Apache-2.0
+  Source: https://github.com/braintrustdata/braintrust-sdk-ruby
+          (42c2e9db2b5ee0e6476c55842f27ac98ef973fa0)
+  License text: tests/fixtures/real/braintrust/LICENSE-braintrust-sdk-ruby.txt
+
+  Braintrust Python SDK (tests/fixtures/real/braintrust/*.fetch-response.json)
+  Copyright 2023 Braintrust Data LLC
+  License: Apache-2.0
+  Source: https://github.com/braintrustdata/braintrust-sdk-python
+          (7a3a6c4f2d9b51c34119b2c7e8468153d621fb25)
+  License text: tests/fixtures/real/braintrust/LICENSE-braintrust-sdk-python.txt
