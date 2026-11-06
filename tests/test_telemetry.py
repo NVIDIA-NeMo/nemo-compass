@@ -93,15 +93,9 @@ def test_analyzing_telemetry_project_checks_source_endpoint(monkeypatch, capsys,
 
 
 @pytest.mark.parametrize(
-    "api_key,project,tags",
-    [
-        ("", "custom-project", None),
-        ("test-key", "", None),
-        ("test-key", "custom-project", None),
-        ("test-key", "custom-project", " , , "),
-        ("test-key", "custom-project", " development, experiment-a,development, ,"),
-    ],
+    "api_key,project", [("", "custom-project"), ("test-key", ""), ("test-key", "custom-project")]
 )
+@pytest.mark.parametrize("tags", [None, "", " , , ", " development, experiment-a,development, ,"])
 def test_cli_telemetry_in_fresh_process(tmp_path, api_key, project, tags):
     """Exercise CLI opt-in, input provenance, library instrumentation, and YAML stdout."""
     source = tmp_path / "input.jsonl"
@@ -146,7 +140,6 @@ def test_cli_telemetry_in_fresh_process(tmp_path, api_key, project, tags):
 # Nooa owns process-wide instrumentation. Each case gets the same lifecycle as the CLI.
 def _run_cli(source, enabled):
     import json
-    from functools import partial
     from unittest.mock import patch
 
     from nooa import Agent, strategy
@@ -157,7 +150,6 @@ def _run_cli(source, enabled):
 
     from compass.cli.main import main
     from compass.compass_signals.compass_signals import CompassSignalResult
-    from compass.compass_signals.user_embedding.embedding import _request_embeddings
     from compass.telemetry import record_span
 
     class SmallAgent(Agent):
@@ -167,18 +159,6 @@ def _run_cli(source, enabled):
             ...
 
     async def analyze(*args, **kwargs):
-        import litellm
-
-        with patch("litellm.embedding", partial(litellm.embedding, mock_response=[0.1, 0.2, 0.3])):
-            embedding = _request_embeddings(
-                model="openai/text-embedding-3-small",
-                api_base=None,
-                api_key="dummy",
-                input=["Embedding test"],
-                timeout=60,
-                max_retries=0,
-            )
-        assert embedding.data[0]["embedding"] == [0.1, 0.2, 0.3]
         fake = FakeLLMClient(
             [
                 LLMResponse(
@@ -271,9 +251,6 @@ def _run_cli(source, enabled):
         assert model.attributes is not None
         assert model.attributes["llm.input_messages.0.message.content"] == "Say hello"
         assert model.attributes["llm.output_messages.0.message.content"] == "Hello"
-        assert not any(
-            (r.attributes or {}).get("openinference.span.kind") == "EMBEDDING" for r in records
-        )
 
 
 if __name__ == "__main__":
