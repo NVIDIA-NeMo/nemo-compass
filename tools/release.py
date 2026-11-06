@@ -161,10 +161,6 @@ def finish() -> None:
     ):
         raise ValueError("Build record differs from the planned release")
     run("git", "push", "origin", f"{source}:refs/tags/{tag}")
-    build_url = f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{manifest['run_id']}/attempts/{manifest['run_attempt']}"
-    notes = f"Source: `{source}`\nVersion: `{version}`\n[Validated build]({build_url})\n"
-    if action == "publish":
-        notes += f"Accepted {os.environ['CANDIDATE']} by @{os.environ['GITHUB_ACTOR']}\n"
     try:
         url = run(
             "gh",
@@ -177,8 +173,6 @@ def finish() -> None:
             "--title",
             tag,
             "--generate-notes",
-            "--notes",
-            notes,
             "--prerelease=" + str(action != "publish").lower(),
         )
         if action == "publish":
