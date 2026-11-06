@@ -304,7 +304,8 @@ def _conversation_tools(
             assert span.tool_call is not None
             if span.tool_call.result_count:
                 raise ValueError("duplicate tool result")
-            span.output = item.get("output", UNSET)
+            # ty cannot resolve Pydantic 2.14's recursive JsonValue alias here.
+            span.output = item.get("output", UNSET)  # ty: ignore[invalid-assignment]
             span.tool_call.result_id = call_id
             span.tool_call.result_count = 1
             span.attributes["gym_result"] = {"item": item, **location}
@@ -864,7 +865,8 @@ def _normalize(record: dict[str, Any], digest: str) -> Trace:
         # Gym serializes output=None even when unavailable. A non-null enriched
         # output establishes a result; null needs an explicit conversation item.
         if span.output is UNSET and "output" in row:
-            span.output = row["output"]
+            # ty cannot resolve Pydantic 2.14's recursive JsonValue alias here.
+            span.output = row["output"]  # ty: ignore[invalid-assignment]
             if row["output"] is not None:
                 assert span.tool_call is not None
                 span.tool_call.result_id = call_id

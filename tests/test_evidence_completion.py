@@ -166,10 +166,8 @@ def test_already_complete_claim_gains_no_traces(completion_case, updated_date):
 def response(name, arguments, call_id):
     return LLMResponse(
         raw_response=None,
-        content="",
-        tool_calls=[ToolCall(id=call_id, name=name, arguments=json.dumps(arguments))],
+        parts=(ToolCall(id=call_id, name=name, arguments=json.dumps(arguments)),),
         finish_reason="tool_calls",
-        assistant_message={},
     )
 
 

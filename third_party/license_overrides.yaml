@@ -17,6 +17,7 @@ overrides:
   jinja2: BSD-3-Clause
   mlflow-skinny: Apache-2.0
   mpmath: BSD-3-Clause
+  nooa: Apache-2.0
   numpy: BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0
   packaging: Apache-2.0 OR BSD-2-Clause
   orjson: MPL-2.0 AND (Apache-2.0 OR MIT)

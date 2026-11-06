@@ -25,7 +25,7 @@ See DEVELOPMENT.md for collection scope and exception handling.
 | [`aiosignal 1.4.0`](https://pypi.org/project/aiosignal/1.4.0/) | `APACHE-2.0` | [NOTICES.txt](third_party/NOTICES.txt), [Apache-2.0.txt](third_party/license_texts/Apache-2.0.txt) |
 | [`annotated-doc 0.0.5`](https://pypi.org/project/annotated-doc/0.0.5/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`annotated-types 0.8.0`](https://pypi.org/project/annotated-types/0.8.0/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
-| [`anyio 4.14.2`](https://pypi.org/project/anyio/4.14.2/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
+| [`anyio 4.16.0`](https://pypi.org/project/anyio/4.16.0/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`attrs 26.1.0`](https://pypi.org/project/attrs/26.1.0/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`backoff 2.2.1`](https://pypi.org/project/backoff/2.2.1/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`boto3 1.43.124`](https://pypi.org/project/boto3/1.43.124/) | `APACHE-2.0` | [NOTICES.txt](third_party/NOTICES.txt), [Apache-2.0.txt](third_party/license_texts/Apache-2.0.txt) |
@@ -70,16 +70,17 @@ See DEVELOPMENT.md for collection scope and exception handling.
 | [`jsonschema-specifications 2025.9.1`](https://pypi.org/project/jsonschema-specifications/2025.9.1/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`langfuse 4.17.0`](https://pypi.org/project/langfuse/4.17.0/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`langsmith 0.12.2`](https://pypi.org/project/langsmith/0.12.2/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
-| [`litellm 1.108.0`](https://pypi.org/project/litellm/1.108.0/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
+| [`litellm 1.105.7`](https://pypi.org/project/litellm/1.105.7/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`markdown-it-py 4.2.0`](https://pypi.org/project/markdown-it-py/4.2.0/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`markupsafe 3.0.3`](https://pypi.org/project/markupsafe/3.0.3/) | `BSD-3-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt) |
 | [`mdurl 0.1.2`](https://pypi.org/project/mdurl/0.1.2/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`mlflow-skinny 3.15.2`](https://pypi.org/project/mlflow-skinny/3.15.2/) | `APACHE-2.0` | [NOTICES.txt](third_party/NOTICES.txt), [Apache-2.0.txt](third_party/license_texts/Apache-2.0.txt) |
 | [`mpmath 1.3.0`](https://pypi.org/project/mpmath/1.3.0/) | `BSD-3-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt) |
+| [`msgpack 1.2.4`](https://pypi.org/project/msgpack/1.2.4/) | `APACHE-2.0` | [NOTICES.txt](third_party/NOTICES.txt), [Apache-2.0.txt](third_party/license_texts/Apache-2.0.txt) |
 | [`multidict 6.7.1`](https://pypi.org/project/multidict/6.7.1/) | `APACHE-2.0` | [NOTICES.txt](third_party/NOTICES.txt), [Apache-2.0.txt](third_party/license_texts/Apache-2.0.txt) |
 | [`narwhals 2.25.0`](https://pypi.org/project/narwhals/2.25.0/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`networkx 3.6.1`](https://pypi.org/project/networkx/3.6.1/) | `BSD-3-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt) |
-| [`nooa 0.0.10`](https://pypi.org/project/nooa/0.0.10/) | `APACHE-2.0` | [NOTICES.txt](third_party/NOTICES.txt), [Apache-2.0.txt](third_party/license_texts/Apache-2.0.txt) |
+| [`nooa 0.0.12`](https://pypi.org/project/nooa/0.0.12/) | `APACHE-2.0` | [NOTICES.txt](third_party/NOTICES.txt), [Apache-2.0.txt](third_party/license_texts/Apache-2.0.txt) |
 | [`numpy 2.5.2`](https://pypi.org/project/numpy/2.5.2/) | `BSD-3-CLAUSE AND 0BSD AND MIT AND ZLIB AND CC0-1.0` | [NOTICES.txt](third_party/NOTICES.txt), [0BSD.txt](third_party/license_texts/0BSD.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt), [CC0-1.0.txt](third_party/license_texts/CC0-1.0.txt), [MIT.txt](third_party/license_texts/MIT.txt), [Zlib.txt](third_party/license_texts/Zlib.txt) |
 | [`openai 2.54.0`](https://pypi.org/project/openai/2.54.0/) | `APACHE-2.0` | [NOTICES.txt](third_party/NOTICES.txt), [Apache-2.0.txt](third_party/license_texts/Apache-2.0.txt) |
 | [`openinference-instrumentation 0.1.61`](https://pypi.org/project/openinference-instrumentation/0.1.61/) | `APACHE-2.0` | [NOTICES.txt](third_party/NOTICES.txt), [Apache-2.0.txt](third_party/license_texts/Apache-2.0.txt) |
@@ -101,8 +102,8 @@ See DEVELOPMENT.md for collection scope and exception handling.
 | [`pyasn1 0.6.4`](https://pypi.org/project/pyasn1/0.6.4/) | `BSD-2-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-2-Clause.txt](third_party/license_texts/BSD-2-Clause.txt) |
 | [`pyasn1-modules 0.4.2`](https://pypi.org/project/pyasn1-modules/0.4.2/) | `BSD-3-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt) |
 | [`pycparser 3.0`](https://pypi.org/project/pycparser/3.0/) | `BSD-3-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt) |
-| [`pydantic 2.13.4`](https://pypi.org/project/pydantic/2.13.4/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
-| [`pydantic-core 2.46.4`](https://pypi.org/project/pydantic-core/2.46.4/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
+| [`pydantic 2.14.3`](https://pypi.org/project/pydantic/2.14.3/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
+| [`pydantic-core 2.50.4`](https://pypi.org/project/pydantic-core/2.50.4/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`pydantic-settings 2.15.0`](https://pypi.org/project/pydantic-settings/2.15.0/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`pygments 2.21.0`](https://pypi.org/project/pygments/2.21.0/) | `BSD-2-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-2-Clause.txt](third_party/license_texts/BSD-2-Clause.txt) |
 | [`python-dateutil 2.9.0.post0`](https://pypi.org/project/python-dateutil/2.9.0.post0/) | `APACHE-2.0` | [NOTICES.txt](third_party/NOTICES.txt), [Apache-2.0.txt](third_party/license_texts/Apache-2.0.txt) |
@@ -137,7 +138,7 @@ See DEVELOPMENT.md for collection scope and exception handling.
 | [`typer 0.27.2`](https://pypi.org/project/typer/0.27.2/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`typing-extensions 4.16.0`](https://pypi.org/project/typing-extensions/4.16.0/) | `PSF-2.0` | [NOTICES.txt](third_party/NOTICES.txt), [PSF-2.0.txt](third_party/license_texts/PSF-2.0.txt) |
 | [`typing-inspection 0.4.4`](https://pypi.org/project/typing-inspection/0.4.4/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
-| [`urllib3 2.7.0`](https://pypi.org/project/urllib3/2.7.0/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
+| [`urllib3 2.8.0`](https://pypi.org/project/urllib3/2.8.0/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`uuid-utils 0.17.1`](https://pypi.org/project/uuid-utils/0.17.1/) | `BSD-3-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt) |
 | [`uvicorn 0.52.4`](https://pypi.org/project/uvicorn/0.52.4/) | `BSD-3-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt) |
 | [`websockets 17.1`](https://pypi.org/project/websockets/17.1/) | `BSD-3-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt) |

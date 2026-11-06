@@ -16,10 +16,8 @@ from compass.traces import Trace, TraceAggregate
 def _response(name: str, arguments: dict, call_id: str) -> LLMResponse:
     return LLMResponse(
         raw_response=None,
-        content="",
-        tool_calls=[ToolCall(id=call_id, name=name, arguments=json.dumps(arguments))],
+        parts=(ToolCall(id=call_id, name=name, arguments=json.dumps(arguments)),),
         finish_reason="tool_calls",
-        assistant_message={},
     )
 
 
