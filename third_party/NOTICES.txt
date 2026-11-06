@@ -805,12 +805,12 @@ SOFTWARE.
 
 
 ================================================================================
-anyio==4.14.2
+anyio==4.16.0
 ================================================================================
 
-Source: https://files.pythonhosted.org/packages/da/35/f2287558c17e29fafc8ef3daf819bb9834061cfa43bff8014f7df7f63bdc/anyio-4.14.2-py3-none-any.whl
-SHA256: sha256:9f505dda5ac9f0c8309b5e8bd445a8c2bf7246f3ce950121e45ea15bc41d1494
-File: anyio-4.14.2.dist-info/licenses/LICENSE
+Source: https://files.pythonhosted.org/packages/a9/16/7757fb84c819accc7d7e9af5291b261e4abb8627ee040f99e7d35ef2457a/anyio-4.16.0-py3-none-any.whl
+SHA256: sha256:c66ae634e0b8228396b801741beb3294326d4b6102f7bba4041c0dfb58c29026
+File: anyio-4.16.0.dist-info/licenses/LICENSE
 
 The MIT License (MIT)
 
@@ -4341,12 +4341,12 @@ SOFTWARE.
 
 
 ================================================================================
-litellm==1.108.0
+litellm==1.105.7
 ================================================================================
 
-Source: https://files.pythonhosted.org/packages/6e/8f/44671cdf62fa1cf70a1bde9ffb672cc5a26e3e1853177ef7dd3d307e3699/litellm-1.108.0.tar.gz
-SHA256: sha256:531b2088cd9b0e95518b450ed8fd7fac4cdd81529af7930a0b5180e67d2b0c04
-File: litellm-1.108.0/LICENSE
+Source: https://files.pythonhosted.org/packages/95/55/5a4513ef7ff6e9f3514eb66eda1bcb980bc510876f06edc4b82d82be27e1/litellm-1.105.7.tar.gz
+SHA256: sha256:b8f4f61e71ceb8156632f277aa750bd55c979b2ce5ea27ebe14b1c7dd37018ad
+File: litellm-1.105.7/LICENSE
 
 Portions of this software are licensed as follows:
 
@@ -4997,6 +4997,30 @@ DAMAGE.
 
 
 ================================================================================
+msgpack==1.2.4
+================================================================================
+
+Source: https://files.pythonhosted.org/packages/cc/52/1ec7ead2c7528bf3d1db73e886fa4df10f9e6f0eb7854a448b7090cfcef7/msgpack-1.2.4.tar.gz
+SHA256: sha256:475c44e12f2a5de766a8448783f149c9b33f3f49b88953c6cd739a77d93c732c
+File: msgpack-1.2.4/COPYING
+
+Copyright (C) 2008-2011 INADA Naoki <songofacandy@gmail.com>
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+
+
+================================================================================
 multidict==6.7.1
 ================================================================================
 
@@ -5098,11 +5122,11 @@ NetworkX is distributed with the 3-clause BSD license.
 
 
 ================================================================================
-nooa==0.0.10
+nooa==0.0.12
 ================================================================================
 
-Source: https://files.pythonhosted.org/packages/02/84/ec56e26a39873862f046146bf677b1d259e7e923180f508747baa1076ed9/nooa-0.0.10-py3-none-any.whl
-SHA256: sha256:8a74d3e62bb4a216d6fcb1ba912b5d9e49ecc0bf8c2d685f808594a816cbe4ca
+Source: https://files.pythonhosted.org/packages/e7/f9/02a93d263bfb99285f97370214a814e2312743d55d7935e511274559e5e8/nooa-0.0.12-py3-none-any.whl
+SHA256: sha256:a37df385db3874dd347a63934cea3e316541ea3cd64e3096f3f84cd03fcd636f
 File: THIRD_PARTY_NOTICES.md
 
 # Third-Party Notices
@@ -5132,6 +5156,11 @@ litellm - MIT License
 Attribution Statements: NVIDIA includes `litellm` under the MIT License for use with NVIDIA OO Agents.
 License Text(https://spdx.org/licenses/MIT.html)
 Source/Homepage: https://github.com/BerriAI/litellm
+
+msgpack - Apache License 2.0
+Attribution Statements: NVIDIA includes `msgpack` under the Apache License 2.0 for use with NVIDIA OO Agents.
+License Text(https://spdx.org/licenses/Apache-2.0.html)
+Source/Homepage: https://github.com/msgpack/msgpack-python
 
 openinference-instrumentation-litellm - Apache License 2.0
 Attribution Statements: NVIDIA includes `openinference-instrumentation-litellm` under the Apache License 2.0 for use with NVIDIA OO Agents.
@@ -5885,9 +5914,9 @@ package registries. Canonical SPDX license references are available from
 https://spdx.org/licenses/.
 
 
-Source: https://files.pythonhosted.org/packages/02/84/ec56e26a39873862f046146bf677b1d259e7e923180f508747baa1076ed9/nooa-0.0.10-py3-none-any.whl
-SHA256: sha256:8a74d3e62bb4a216d6fcb1ba912b5d9e49ecc0bf8c2d685f808594a816cbe4ca
-File: nooa-0.0.10.dist-info/licenses/LICENSE
+Source: https://files.pythonhosted.org/packages/e7/f9/02a93d263bfb99285f97370214a814e2312743d55d7935e511274559e5e8/nooa-0.0.12-py3-none-any.whl
+SHA256: sha256:a37df385db3874dd347a63934cea3e316541ea3cd64e3096f3f84cd03fcd636f
+File: nooa-0.0.12.dist-info/licenses/LICENSE
 
                                  Apache License
                            Version 2.0, January 2004
@@ -13099,12 +13128,12 @@ OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
 ================================================================================
-pydantic==2.13.4
+pydantic==2.14.3
 ================================================================================
 
-Source: https://files.pythonhosted.org/packages/fd/7b/122376b1fd3c62c1ed9dc80c931ace4844b3c55407b6fb2d199377c9736f/pydantic-2.13.4-py3-none-any.whl
-SHA256: sha256:45a282cde31d808236fd7ea9d919b128653c8b38b393d1c4ab335c62924d9aba
-File: pydantic-2.13.4.dist-info/licenses/LICENSE
+Source: https://files.pythonhosted.org/packages/72/b8/b864503789ef5c58597d2a7b4adbee62c26440ab1e682581fc6838df8947/pydantic-2.14.3-py3-none-any.whl
+SHA256: sha256:3f7b347782ab7e4cf4c798496ae3a82787d9f21ec12676a9c564355eeef8daa8
+File: pydantic-2.14.3.dist-info/licenses/LICENSE
 
 The MIT License (MIT)
 
@@ -13130,12 +13159,12 @@ SOFTWARE.
 
 
 ================================================================================
-pydantic-core==2.46.4
+pydantic-core==2.50.4
 ================================================================================
 
-Source: https://files.pythonhosted.org/packages/9d/56/921726b776ace8d8f5db44c4ef961006580d91dc52b803c489fafd1aa249/pydantic_core-2.46.4.tar.gz
-SHA256: sha256:62f875393d7f270851f20523dd2e29f082bcc82292d66db2b64ea71f64b6e1c1
-File: pydantic_core-2.46.4/LICENSE
+Source: https://files.pythonhosted.org/packages/9c/0f/34f9ce4ba701dd0b815033ef94d99b56f66200e578ee6052aa3ac26f064e/pydantic_core-2.50.4.tar.gz
+SHA256: sha256:aead3b74b68396bf0feab5d57e050b730ded7df55853c1e048a87e00aaf033c6
+File: pydantic_core-2.50.4/LICENSE
 
 The MIT License (MIT)
 
@@ -29464,12 +29493,12 @@ SOFTWARE.
 
 
 ================================================================================
-urllib3==2.7.0
+urllib3==2.8.0
 ================================================================================
 
-Source: https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl
-SHA256: sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897
-File: urllib3-2.7.0.dist-info/licenses/LICENSE.txt
+Source: https://files.pythonhosted.org/packages/92/9d/c4e665119135114480843e7ab388fa94d8480650450e6f8e26b70d323a4c/urllib3-2.8.0-py3-none-any.whl
+SHA256: sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3
+File: urllib3-2.8.0.dist-info/licenses/LICENSE.txt
 
 MIT License
 

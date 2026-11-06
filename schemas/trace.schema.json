@@ -389,8 +389,7 @@
       "properties": {
         "agent": {
           "$ref": "#/$defs/AgentInfo",
-          "description": "Agent identity; valid only for an AGENT span.",
-          "title": "Agent"
+          "description": "Agent identity; valid only for an AGENT span."
         },
         "agent_id": {
           "anyOf": [
@@ -471,8 +470,7 @@
         },
         "input": {
           "$ref": "#/$defs/JsonValue",
-          "description": "Raw recorded input. Omit when absent; explicit JSON null remains null.",
-          "title": "Input"
+          "description": "Raw recorded input. Omit when absent; explicit JSON null remains null."
         },
         "kind": {
           "$ref": "#/$defs/SpanKind",
@@ -480,8 +478,7 @@
         },
         "llm_call": {
           "$ref": "#/$defs/LLMCallInfo",
-          "description": "Per-call model detail; valid for an LLM span, or a CHAIN span whose call_count is 0.",
-          "title": "Llm Call"
+          "description": "Per-call model detail; valid for an LLM span, or a CHAIN span whose call_count is 0."
         },
         "llm_params": {
           "anyOf": [
@@ -514,13 +511,11 @@
         },
         "output": {
           "$ref": "#/$defs/JsonValue",
-          "description": "Raw recorded output. Omit when absent; explicit JSON null remains null.",
-          "title": "Output"
+          "description": "Raw recorded output. Omit when absent; explicit JSON null remains null."
         },
         "run": {
           "$ref": "#/$defs/RunInfo",
-          "description": "Source run metadata; valid only for an AGENT span.",
-          "title": "Run"
+          "description": "Source run metadata; valid only for an AGENT span."
         },
         "source_url": {
           "anyOf": [
@@ -1042,8 +1037,7 @@
         },
         "content": {
           "$ref": "#/$defs/JsonValue",
-          "description": "Raw recorded result content. Omit when absent; explicit JSON null remains null.",
-          "title": "Content"
+          "description": "Raw recorded result content. Omit when absent; explicit JSON null remains null."
         },
         "extra": {
           "additionalProperties": {

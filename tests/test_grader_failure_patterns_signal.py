@@ -4,7 +4,7 @@
 import asyncio
 import json
 
-import nooa.unifiedllm.unifiedllm as unifiedllm
+import litellm
 from litellm import ModelResponse
 from nooa.unifiedllm import FakeLLMClient, LLMResponse, ToolCall
 
@@ -17,17 +17,15 @@ from compass.traces import Span, SpanKind, Trace, TraceAggregate, TraceSnapshot
 def _response(name, arguments, call_id):
     return LLMResponse(
         raw_response=None,
-        content="",
-        tool_calls=[ToolCall(id=call_id, name=name, arguments=json.dumps(arguments))],
+        parts=(ToolCall(id=call_id, name=name, arguments=json.dumps(arguments)),),
         finish_reason="tool_calls",
-        assistant_message={},
     )
 
 
 def test_grader_model_request_honors_cli_token_limit(monkeypatch, select_signals):
     requests = []
 
-    async def completion(params):
+    async def completion(**params):
         requests.append(params)
         return ModelResponse(
             choices=[
@@ -52,7 +50,7 @@ def test_grader_model_request_honors_cli_token_limit(monkeypatch, select_signals
             ]
         )
 
-    monkeypatch.setattr(unifiedllm, "_litellm_acompletion", completion)
+    monkeypatch.setattr(litellm, "acompletion", completion)
     config = get_config(
         [
             "--trace.filesystem.path",
