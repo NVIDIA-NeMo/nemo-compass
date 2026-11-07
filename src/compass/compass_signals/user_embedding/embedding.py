@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 from litellm import EmbeddingResponse
+from openinference.instrumentation import suppress_tracing
 from pydantic import BaseModel, ConfigDict, Field
 from tokenizers import Tokenizer
 
@@ -46,15 +47,17 @@ def _request_embeddings(
 ) -> EmbeddingResponse:
     import litellm
 
-    response = litellm.embedding(
-        model=model,
-        api_base=api_base,
-        api_key=api_key,
-        input=input,
-        encoding_format="float",
-        timeout=timeout,
-        max_retries=max_retries if max_retries else _NoRetries(),
-    )
+    # Keep large embedding responses out of execution telemetry.
+    with suppress_tracing():
+        response = litellm.embedding(
+            model=model,
+            api_base=api_base,
+            api_key=api_key,
+            input=input,
+            encoding_format="float",
+            timeout=timeout,
+            max_retries=max_retries if max_retries else _NoRetries(),
+        )
     # LiteLLM types embedding() as possibly returning a coroutine (only when aembedding=True).
     if not isinstance(response, EmbeddingResponse):
         raise TypeError(f"Expected EmbeddingResponse from LiteLLM, got {type(response).__name__}")
