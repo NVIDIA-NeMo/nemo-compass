@@ -4,12 +4,18 @@
 """Present framework operations without changing execution identity."""
 
 import json
+import logging
 from collections.abc import Sequence
 from operator import attrgetter
 
+from opentelemetry.exporter.otlp.proto.common.trace_encoder import encode_spans
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 from opentelemetry.trace import SpanContext
+
+_logger = logging.getLogger(__name__)
+# Intake's default OTLP body limit; requests are sent without compression.
+_MAX_BATCH_BYTES = 5 * 1024 * 1024
 
 _OPERATION_NAMES = {
     "nooa.tracing": {"generation": "agent.execute", "context_snapshot": "agent.context"},
@@ -71,13 +77,32 @@ def _with_operation_name(span: ReadableSpan) -> ReadableSpan:
 
 
 class CompassSpanExporter(SpanExporter):
-    """Forward spans with readable operation names."""
+    """Forward readable operation names in batches within Intake's body limit."""
 
     def __init__(self, delegate: SpanExporter) -> None:
         self._delegate = delegate
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
-        return self._delegate.export(tuple(_with_operation_name(span) for span in spans))
+        return self._export_batch(tuple(_with_operation_name(span) for span in spans))
+
+    def _export_batch(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        size = encode_spans(spans).ByteSize()
+        if size <= _MAX_BATCH_BYTES:
+            return self._delegate.export(spans)
+        if len(spans) == 1:
+            _logger.error(
+                "Cannot export span %s: %d bytes exceeds Intake's %d-byte limit",
+                spans[0].name,
+                size,
+                _MAX_BATCH_BYTES,
+            )
+            return SpanExportResult.FAILURE
+        middle = len(spans) // 2
+        left = self._export_batch(spans[:middle])
+        right = self._export_batch(spans[middle:])
+        if left is SpanExportResult.FAILURE or right is SpanExportResult.FAILURE:
+            return SpanExportResult.FAILURE
+        return SpanExportResult.SUCCESS
 
     def shutdown(self) -> None:
         self._delegate.shutdown()

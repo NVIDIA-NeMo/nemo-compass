@@ -11,6 +11,40 @@ import yaml
 from compass.traces import Trace, TraceAggregate
 
 
+def test_intake_batch_limit_preserves_other_spans(monkeypatch, caplog):
+    from opentelemetry.exporter.otlp.proto.common.trace_encoder import encode_spans
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from compass import telemetry_export
+
+    provider = TracerProvider()
+    captured = InMemorySpanExporter()
+    provider.add_span_processor(SimpleSpanProcessor(captured))
+    tracer = provider.get_tracer("test")
+    for name, size in [("first", 600), ("oversized", 2000), ("last", 600)]:
+        with tracer.start_as_current_span(name, attributes={"input.value": "x" * size}):
+            pass
+    spans = captured.get_finished_spans()
+    monkeypatch.setattr(telemetry_export, "_MAX_BATCH_BYTES", 1024)
+
+    class Receiver(InMemorySpanExporter):
+        def export(self, spans):
+            assert encode_spans(spans).ByteSize() <= 1024
+            return super().export(spans)
+
+    receiver = Receiver()
+    exporter = telemetry_export.CompassSpanExporter(receiver)
+    assert exporter.export([spans[0], spans[2]]) is SpanExportResult.SUCCESS
+    assert [span.name for span in receiver.get_finished_spans()] == ["first", "last"]
+    receiver.clear()
+    assert exporter.export(spans) is SpanExportResult.FAILURE
+    assert [span.name for span in receiver.get_finished_spans()] == ["first", "last"]
+    assert "Cannot export span oversized" in caplog.text
+    provider.shutdown()
+
+
 def test_execution_metadata_tracks_compass_checkout(monkeypatch, tmp_path):
     from compass import telemetry
 
@@ -59,44 +93,20 @@ def test_execution_metadata_tracks_compass_checkout(monkeypatch, tmp_path):
     assert telemetry._execution_metadata() == metadata
 
 
-@pytest.mark.parametrize("same_endpoint", [True, False])
-def test_analyzing_telemetry_project_checks_source_endpoint(monkeypatch, capsys, same_endpoint):
-    from unittest.mock import patch
-
-    from compass.config import RunConfig
-    from compass.telemetry import telemetry_session
-
-    monkeypatch.setenv("COMPASS_TELEMETRY_LANGSMITH_API_KEY", "test-key")
-    monkeypatch.setenv("COMPASS_TELEMETRY_LANGSMITH_PROJECT", "custom-project")
-    monkeypatch.setenv("COMPASS_TELEMETRY_LANGSMITH_ENDPOINT", "https://telemetry.example.com")
-    config = RunConfig(
-        trace={
-            "langsmith": {
-                "project": "custom-project",
-                "api_url": (
-                    "https://telemetry.example.com/"
-                    if same_endpoint
-                    else "https://source.example.com"
-                ),
-            }
-        }
-    )
-    with (
-        patch("compass.telemetry.enable_tracing") as enable,
-        patch("compass.telemetry.OTLPSpanExporter"),
-        patch("compass.telemetry.shutdown_traces"),
-    ):
-        with telemetry_session(config):
-            pass
-    assert enable.called == (not same_endpoint)
-    assert ("analyzing the telemetry project itself" in capsys.readouterr().err) == same_endpoint
-
-
 @pytest.mark.parametrize(
-    "api_key,project", [("", "custom-project"), ("test-key", ""), ("test-key", "custom-project")]
+    "base_url,token,workspace,tags",
+    [
+        ("", "", "", None),
+        ("https://telemetry.example.com/", "", "", " , , "),
+        (
+            "https://telemetry.example.com/",
+            "test-token",
+            "team",
+            " development, experiment-a,development, ,",
+        ),
+    ],
 )
-@pytest.mark.parametrize("tags", [None, "", " , , ", " development, experiment-a,development, ,"])
-def test_cli_telemetry_in_fresh_process(tmp_path, api_key, project, tags):
+def test_cli_telemetry_in_fresh_process(tmp_path, base_url, token, workspace, tags):
     """Exercise CLI opt-in, input provenance, library instrumentation, and YAML stdout."""
     source = tmp_path / "input.jsonl"
     source.write_text(
@@ -108,12 +118,12 @@ def test_cli_telemetry_in_fresh_process(tmp_path, api_key, project, tags):
         + "\n"
     )
     environment = {
-        key: value for key, value in os.environ.items() if key != "COMPASS_TELEMETRY_LANGSMITH_TAGS"
+        key: value for key, value in os.environ.items() if not key.startswith("COMPASS_TELEMETRY_")
     }
     if tags is not None:
-        environment["COMPASS_TELEMETRY_LANGSMITH_TAGS"] = tags
+        environment["COMPASS_TELEMETRY_TAGS"] = tags
     result = subprocess.run(
-        [sys.executable, __file__, str(source), str(bool(api_key and project))],
+        [sys.executable, __file__, str(source), str(bool(base_url))],
         env={
             **environment,
             "COMPASS_API_KEY": "dummy",
@@ -121,10 +131,12 @@ def test_cli_telemetry_in_fresh_process(tmp_path, api_key, project, tags):
             "LANGCHAIN_API_KEY": "legacy-source-key",
             "LANGSMITH_ENDPOINT": "https://source.example.com",
             "LANGSMITH_WORKSPACE_ID": "source-workspace",
-            "COMPASS_TELEMETRY_LANGSMITH_API_KEY": api_key,
-            "COMPASS_TELEMETRY_LANGSMITH_PROJECT": project,
-            "COMPASS_TELEMETRY_LANGSMITH_ENDPOINT": "https://telemetry.example.com/api/v1/",
-            "COMPASS_TELEMETRY_LANGSMITH_WORKSPACE_ID": "telemetry-workspace",
+            "COMPASS_TELEMETRY_INTAKE_BASE_URL": base_url,
+            "COMPASS_TELEMETRY_INTAKE_ACCESS_TOKEN": token,
+            "COMPASS_TELEMETRY_INTAKE_WORKSPACE": workspace,
+            # Old sink credentials and trace-source credentials must not enable export.
+            "COMPASS_TELEMETRY_LANGSMITH_API_KEY": "old-sink-key",
+            "COMPASS_TELEMETRY_LANGSMITH_PROJECT": "old-project",
             "LANGSMITH_TRACING": "true",
         },
         capture_output=True,
@@ -133,8 +145,6 @@ def test_cli_telemetry_in_fresh_process(tmp_path, api_key, project, tags):
     )
     assert result.returncode == 0, result.stderr
     assert yaml.safe_load(result.stdout) == []
-    if api_key and not project:
-        assert "set COMPASS_TELEMETRY_LANGSMITH_PROJECT" in result.stderr
 
 
 # Nooa owns process-wide instrumentation. Each case gets the same lifecycle as the CLI.
@@ -201,25 +211,23 @@ def _run_cli(source, enabled):
     if not enabled:
         assert not records
     else:
+        workspace = os.getenv("COMPASS_TELEMETRY_INTAKE_WORKSPACE") or "default"
+        token = os.getenv("COMPASS_TELEMETRY_INTAKE_ACCESS_TOKEN")
         factory.assert_called_once_with(
-            endpoint="https://telemetry.example.com/api/v1/otel/v1/traces",
-            headers={
-                "x-api-key": "test-key",
-                "Langsmith-Project": "custom-project",
-                "X-Tenant-Id": "telemetry-workspace",
-            },
-            compression=Compression.Gzip,
+            endpoint=f"https://telemetry.example.com/apis/intake/v2/workspaces/{workspace}/ingest/otlp/v1/traces",
+            headers={"Authorization": f"Bearer {token}"} if token else {},
+            compression=Compression.NoCompression,
             timeout=60,
         )
         root = next(r for r in records if r.name == "compass")
         expected_tags = (
-            "development,experiment-a"
-            if "development" in os.getenv("COMPASS_TELEMETRY_LANGSMITH_TAGS", "")
+            ("development", "experiment-a")
+            if "development" in os.getenv("COMPASS_TELEMETRY_TAGS", "")
             else None
         )
-        assert (root.attributes or {}).get("langsmith.span.tags") == expected_tags
+        assert (root.attributes or {}).get("compass.tags") == expected_tags
         assert all(
-            "langsmith.span.tags" not in (record.attributes or {})
+            "compass.tags" not in (record.attributes or {})
             for record in records
             if record is not root
         )
@@ -227,6 +235,9 @@ def _run_cli(source, enabled):
         assert metadata["compass.version"]
         assert metadata["nooa.version"]
         assert metadata["python.version"]
+        assert all(r.resource.attributes["gen_ai.agent.name"] == "compass" for r in records)
+        assert all(r.resource.attributes["service.name"] == "compass" for r in records)
+        assert len({(r.attributes or {})["session.id"] for r in records}) == 1
         assert all(r.context.trace_id == root.context.trace_id for r in records)
         ids = {r.context.span_id for r in records}
         assert all(r.parent.span_id in ids for r in records if r.parent)

@@ -111,3 +111,26 @@ of trace content before analysis; choose inputs and endpoints appropriate for yo
 
 The CLI writes insights to a local YAML file or stdout. With telemetry disabled it
 does not publish findings back to the trace platform. [Output details](results.md#saved-output).
+
+## Execution telemetry
+
+To send Compass's own execution spans to [NeMo Helix Intake](https://github.com/NVIDIA-NeMo/nemo-helix/tree/main/services/intake),
+set the Helix origin in `.env`:
+
+```dotenv
+COMPASS_TELEMETRY_INTAKE_BASE_URL=https://platform.example.com
+COMPASS_TELEMETRY_INTAKE_WORKSPACE=default
+```
+
+For authenticated deployments, set `COMPASS_TELEMETRY_INTAKE_ACCESS_TOKEN` to a bearer
+token. These settings are separate from the credentials used to read input traces.
+Leave the base URL unset to disable export. The former `COMPASS_TELEMETRY_LANGSMITH_*`
+settings no longer enable telemetry.
+
+Spans upload in the background through Intake's OTLP/HTTP endpoint, with a final
+flush at exit. They include model and tool content, findings, and input-source
+provenance. Each span identifies the agent as `compass`; related spans share a
+session ID. Optional comma-separated `COMPASS_TELEMETRY_TAGS` are recorded as
+`compass.tags` on the root span. The CLI prints the OTLP trace ID to stderr.
+Requests are split to fit Intake's default 5 MiB body limit. A single span over
+that limit is logged and skipped; other spans in the batch are still exported.
