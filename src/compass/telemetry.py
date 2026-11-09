@@ -1,11 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Process-wide tracing for one Compass CLI invocation; enabled by dedicated credentials."""
+"""Process-wide tracing for one Compass CLI invocation; opt-in export to Langfuse."""
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import platform
@@ -86,34 +87,33 @@ def _execution_metadata() -> dict[str, str | bool]:
 
 @contextmanager
 def telemetry_session(config: RunConfig) -> Iterator[OpenInferenceSpan]:
-    api_key = os.getenv("COMPASS_TELEMETRY_LANGSMITH_API_KEY", "").strip()
-    project = os.getenv("COMPASS_TELEMETRY_LANGSMITH_PROJECT", "").strip()
-    if api_key and not project:
-        print("Compass telemetry skipped: set COMPASS_TELEMETRY_LANGSMITH_PROJECT", file=sys.stderr)
-        api_key = ""
-    endpoint = (
-        os.getenv("COMPASS_TELEMETRY_LANGSMITH_ENDPOINT") or "https://api.smith.langchain.com"
+    public_key = os.getenv("COMPASS_TELEMETRY_LANGFUSE_PUBLIC_KEY", "").strip()
+    secret_key = os.getenv("COMPASS_TELEMETRY_LANGFUSE_SECRET_KEY", "").strip()
+    enabled = bool(public_key and secret_key)
+    if bool(public_key) != bool(secret_key):
+        print(
+            "Compass telemetry skipped: set both COMPASS_TELEMETRY_LANGFUSE_PUBLIC_KEY "
+            "and COMPASS_TELEMETRY_LANGFUSE_SECRET_KEY",
+            file=sys.stderr,
+        )
+    base_url = (
+        os.getenv("COMPASS_TELEMETRY_LANGFUSE_BASE_URL", "").strip() or "https://cloud.langfuse.com"
     ).rstrip("/")
-    source = config.trace.langsmith
-    if api_key and source and source.project == project:
-        from langsmith.utils import get_api_url
-
-        if get_api_url(source.api_url) == endpoint:
-            print(
-                "Compass telemetry skipped: analyzing the telemetry project itself", file=sys.stderr
-            )
-            api_key = ""
-    if api_key:
-        headers = {"x-api-key": api_key, "Langsmith-Project": project}
-        if workspace := os.getenv("COMPASS_TELEMETRY_LANGSMITH_WORKSPACE_ID"):
-            headers["X-Tenant-Id"] = workspace
+    tags = list(
+        dict.fromkeys(
+            tag.strip() for tag in os.getenv("COMPASS_TELEMETRY_TAGS", "").split(",") if tag.strip()
+        )
+    )
+    if enabled:
+        auth = base64.b64encode(f"{public_key}:{secret_key}".encode()).decode()
+        headers = {"Authorization": f"Basic {auth}", "x-langfuse-ingestion-version": "4"}
         # Nooa prints initialization messages; stdout belongs to the CLI's YAML output.
         with redirect_stdout(sys.stderr):
             enable_tracing(
                 exporters=[
                     CompassSpanExporter(
                         OTLPSpanExporter(
-                            endpoint=f"{endpoint}/otel/v1/traces",
+                            endpoint=f"{base_url}/api/public/otel/v1/traces",
                             headers=headers,
                             compression=Compression.Gzip,
                             timeout=float(
@@ -121,28 +121,23 @@ def telemetry_session(config: RunConfig) -> Iterator[OpenInferenceSpan]:
                                 or os.getenv("OTEL_EXPORTER_OTLP_TIMEOUT")
                                 or "60"
                             ),
-                        )
+                        ),
+                        tags=tags,
                     )
                 ],
+                extra_resource_attrs={"service.name": "compass"},
             )
     try:
         with record_span("compass") as root:
             root.set_input(config.model_dump(mode="json", exclude={"api_base"}))
-            if api_key:
-                # Use OpenInference span metadata for LangSmith compatibility.
+            if enabled:
                 root.set_attribute("metadata", json.dumps(_execution_metadata()))
-                tags = [
-                    tag.strip()
-                    for tag in os.getenv("COMPASS_TELEMETRY_LANGSMITH_TAGS", "").split(",")
-                    if tag.strip()
-                ]
-                if tags:
-                    root.set_attribute("langsmith.span.tags", ",".join(dict.fromkeys(tags)))
                 print(
-                    f"Compass telemetry: execution content and source provenance to {project}; OTLP trace ID {root.get_span_context().trace_id:032x}",
+                    f"Compass telemetry: execution content and source provenance to {base_url}; "
+                    f"OTLP trace ID {root.get_span_context().trace_id:032x}",
                     file=sys.stderr,
                 )
             yield root
     finally:
-        if api_key:
+        if enabled:
             shutdown_traces()

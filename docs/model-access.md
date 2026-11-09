@@ -111,3 +111,26 @@ of trace content before analysis; choose inputs and endpoints appropriate for yo
 
 The CLI writes insights to a local YAML file or stdout. With telemetry disabled it
 does not publish findings back to the trace platform. [Output details](results.md#saved-output).
+
+## Execution telemetry
+
+To send Compass's own execution spans to [Langfuse](https://langfuse.com/integrations/native/opentelemetry),
+set both project API keys in `.env`:
+
+```dotenv
+COMPASS_TELEMETRY_LANGFUSE_PUBLIC_KEY=your-public-key
+COMPASS_TELEMETRY_LANGFUSE_SECRET_KEY=your-secret-key
+COMPASS_TELEMETRY_LANGFUSE_BASE_URL=https://langfuse.example.com
+```
+
+The base URL defaults to `https://cloud.langfuse.com`. These credentials are
+separate from `LANGFUSE_*` used to read input traces. Leave both keys unset to
+disable export. The former `COMPASS_TELEMETRY_LANGSMITH_*` settings no longer
+enable telemetry.
+
+Spans upload in the background through OTLP/HTTP, with a final flush at exit.
+They retain model and tool content, findings, and input-source provenance.
+Optional comma-separated `COMPASS_TELEMETRY_TAGS` become native Langfuse trace
+tags and are attached to every observation. The CLI prints the trace ID to stderr.
+Requests are split to fit a 5 MiB client batch limit before gzip compression.
+A single span over that limit is logged and skipped; its neighbors still export.

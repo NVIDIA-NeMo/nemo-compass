@@ -18,7 +18,8 @@ class InferenceReached(BaseException):
 def test_cli_reaches_compilation(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("COMPASS_API_KEY", "offline-smoke-check")
-    monkeypatch.setenv("COMPASS_TELEMETRY_LANGSMITH_API_KEY", "")
+    monkeypatch.setenv("COMPASS_TELEMETRY_LANGFUSE_PUBLIC_KEY", "")
+    monkeypatch.setenv("COMPASS_TELEMETRY_LANGFUSE_SECRET_KEY", "")
 
     def deny_network(*args, **kwargs):
         raise OSError("Network disabled for the startup check")
