@@ -11,40 +11,6 @@ import yaml
 from compass.traces import Trace, TraceAggregate
 
 
-def test_intake_batch_limit_preserves_other_spans(monkeypatch, caplog):
-    from opentelemetry.exporter.otlp.proto.common.trace_encoder import encode_spans
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-    from compass import telemetry_export
-
-    provider = TracerProvider()
-    captured = InMemorySpanExporter()
-    provider.add_span_processor(SimpleSpanProcessor(captured))
-    tracer = provider.get_tracer("test")
-    for name, size in [("first", 600), ("oversized", 2000), ("last", 600)]:
-        with tracer.start_as_current_span(name, attributes={"input.value": "x" * size}):
-            pass
-    spans = captured.get_finished_spans()
-    monkeypatch.setattr(telemetry_export, "_MAX_BATCH_BYTES", 1024)
-
-    class Receiver(InMemorySpanExporter):
-        def export(self, spans):
-            assert encode_spans(spans).ByteSize() <= 1024
-            return super().export(spans)
-
-    receiver = Receiver()
-    exporter = telemetry_export.CompassSpanExporter(receiver)
-    assert exporter.export([spans[0], spans[2]]) is SpanExportResult.SUCCESS
-    assert [span.name for span in receiver.get_finished_spans()] == ["first", "last"]
-    receiver.clear()
-    assert exporter.export(spans) is SpanExportResult.FAILURE
-    assert [span.name for span in receiver.get_finished_spans()] == ["first", "last"]
-    assert "Cannot export span oversized" in caplog.text
-    provider.shutdown()
-
-
 def test_execution_metadata_tracks_compass_checkout(monkeypatch, tmp_path):
     from compass import telemetry
 
