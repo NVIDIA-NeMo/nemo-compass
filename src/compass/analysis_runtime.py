@@ -3,6 +3,8 @@
 
 """Run-local service ownership and instrumentation for analysis agents."""
 
+from __future__ import annotations
+
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from contextvars import ContextVar
@@ -25,8 +27,13 @@ class BorrowedModelClient(UnifiedLLM):
     """
 
     def __init__(self, client: UnifiedLLM) -> None:
-        super().__init__(client.model, **client.config)
+        # Delegate metadata as well as inference. Reinitializing UnifiedLLM here
+        # would replace the host's reasoning, media and context-window settings.
         self.client = client
+        self._http = None
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401 -- Transparent read-only metadata forwarding.
+        return getattr(self.client, name)
 
     def call(
         self,
@@ -45,6 +52,46 @@ class BorrowedModelClient(UnifiedLLM):
         **kwargs: Any,  # noqa: ANN401 -- Forward provider-specific inference parameters.
     ) -> LLMResponse:
         return await self.client.acall(messages, tools=tools, output_model=output_model, **kwargs)
+
+
+class _OwnedSignalClient(BorrowedModelClient):
+    """Close a created signal client once, including when its signal is skipped."""
+
+    def __init__(self, client: UnifiedLLM) -> None:
+        super().__init__(client)
+        self._closed = False
+
+    async def __aenter__(self) -> _OwnedSignalClient:
+        await self.client.__aenter__()
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        if not self._closed:
+            self._closed = True
+            await self.client.__aexit__(*exc_info)
+
+    async def aclose(self) -> None:
+        if not self._closed:
+            self._closed = True
+            await self.client.aclose()
+
+
+@asynccontextmanager
+async def owned_signal_clients(
+    factory: Callable[[], UnifiedLLM] | None,
+) -> AsyncIterator[Callable[[], UnifiedLLM] | None]:
+    """Track eager construction separately from each signal's execution context."""
+    async with AsyncExitStack() as stack:
+        if factory is None:
+            yield None
+            return
+
+        def create() -> UnifiedLLM:
+            client = _OwnedSignalClient(factory())
+            stack.push_async_callback(client.aclose)
+            return client
+
+        yield create
 
 
 @dataclass

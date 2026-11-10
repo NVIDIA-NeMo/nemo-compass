@@ -26,7 +26,12 @@ from compass.analysis_result import (
     append_run_notes,
     initial_result,
 )
-from compass.analysis_runtime import BorrowedModelClient, agent_scope, analysis_scope
+from compass.analysis_runtime import (
+    BorrowedModelClient,
+    agent_scope,
+    analysis_scope,
+    owned_signal_clients,
+)
 from compass.compass_signals.builtins import registered_builtin_signals
 from compass.compass_signals.compass_signals import CompassSignalResult, Problem
 from compass.compass_signals.user_embedding.embedding import (
@@ -56,45 +61,46 @@ async def _run_compass_signals(
 ) -> list[CompassSignalResult]:
     """Run the configured Compass Signals concurrently in registration order."""
 
-    registry = registered_builtin_signals(
-        anomaly_and_patterns=config.anomaly_and_patterns,
-        tool_issues=config.tool_issues,
-        cost_efficiency=config.cost_efficiency,
-        ethos_divergence=config.ethos_divergence,
-        ethos_path=ethos_path,
-        user_sentiment=config.user_sentiment,
-        grader_failure_patterns=config.grader_failure_patterns,
-        llm_factory=llm_factory,
-        embedding_generator=embedding_generator,
-    )
+    async with owned_signal_clients(llm_factory) as signal_factory:
+        registry = registered_builtin_signals(
+            anomaly_and_patterns=config.anomaly_and_patterns,
+            tool_issues=config.tool_issues,
+            cost_efficiency=config.cost_efficiency,
+            ethos_divergence=config.ethos_divergence,
+            ethos_path=ethos_path,
+            user_sentiment=config.user_sentiment,
+            grader_failure_patterns=config.grader_failure_patterns,
+            llm_factory=signal_factory,
+            embedding_generator=embedding_generator,
+        )
 
-    active: set[str] = set()
+        active: set[str] = set()
 
-    def changed() -> None:
-        if progress is not None:
-            progress(tuple(name for name in registry.names if name in active))
+        def changed() -> None:
+            if progress is not None:
+                progress(tuple(name for name in registry.names if name in active))
 
-    async def analyze(name: str) -> CompassSignalResult:
-        configuration = registry.configuration(name)
+        async def analyze(name: str) -> CompassSignalResult:
+            configuration = registry.configuration(name)
 
-        def started() -> None:
-            active.add(name)
-            changed()
-
-        try:
-            with telemetry.signal(name, configuration, len(snapshot)) as record:
-                result = await registry.analyze(name, snapshot, on_start=started)
-                telemetry.record_signal_result(record, result)
-                return result
-        finally:
-            if name in active:
-                active.remove(name)
+            def started() -> None:
+                active.add(name)
                 changed()
 
-    # Cancel sibling work on failure; no analysis outlives this run.
-    async with asyncio.TaskGroup() as group:
-        tasks = [group.create_task(analyze(name)) for name in registry.names]
-    return [task.result() for task in tasks]
+            try:
+                with telemetry.signal(name, configuration, len(snapshot)) as record:
+                    result = await registry.analyze(name, snapshot, on_start=started)
+                    telemetry.record_signal_result(record, result)
+                    return result
+            finally:
+                if name in active:
+                    active.remove(name)
+                    changed()
+
+        # Cancel sibling work on failure; no analysis outlives this run.
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(analyze(name)) for name in registry.names]
+        return [task.result() for task in tasks]
 
 
 async def _validate_candidate_problems(

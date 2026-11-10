@@ -47,7 +47,7 @@ def test_ethos_cli_runs_registered_detector(tmp_path, monkeypatch, select_signal
             self.llm = llm
 
         async def detect_issues(self, traces, description, **extra):
-            assert self.llm is llm
+            assert self.llm.client is llm
             assert traces is snapshot
             assert description == ethos.ETHOS_DIVERGENCE
             assert extra == {"ethos": "Never issue refunds."}

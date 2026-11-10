@@ -159,3 +159,59 @@ def test_borrowed_client_does_not_enter_or_close_host():
             assert borrowed.client is client
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("outcome", ["skipped", "failure", "cancelled", "construction_failure"])
+def test_signal_clients_close_once_for_every_exit(outcome):
+    from compass.analysis_runtime import owned_signal_clients
+
+    clients = []
+
+    class Client(FakeLLMClient):
+        def __init__(self):
+            super().__init__()
+            self.closes = 0
+            clients.append(self)
+
+        async def aclose(self):
+            self.closes += 1
+
+    def factory():
+        if outcome == "construction_failure" and len(clients) == 2:
+            raise RuntimeError("Cannot construct third client")
+        return Client()
+
+    async def run():
+        async with owned_signal_clients(factory) as create:
+            assert create is not None
+            create()  # A skipped signal never enters its client.
+            active = create()
+            if outcome == "construction_failure":
+                create()
+            if outcome == "skipped":
+                return
+            async with active:
+                if outcome == "cancelled":
+                    raise asyncio.CancelledError()
+                raise RuntimeError("Signal failed")
+
+    if outcome == "skipped":
+        asyncio.run(run())
+    else:
+        with pytest.raises(asyncio.CancelledError if outcome == "cancelled" else RuntimeError):
+            asyncio.run(run())
+    assert len(clients) == 2
+    assert [client.closes for client in clients] == [1, 1]
+
+
+def test_borrowed_client_preserves_host_metadata():
+    client = FakeLLMClient()
+    client._context_window = 12345
+    client.cache_breakpoint = "anthropic"
+    client.reasoning_level = "high"
+    client.config["max_tokens"] = 987
+    borrowed = BorrowedModelClient(client)
+    assert borrowed.context_window == client.context_window == 12345
+    assert borrowed.cache_breakpoint == "anthropic"
+    assert borrowed.reasoning_level == "high"
+    assert borrowed.config["max_tokens"] == 987
