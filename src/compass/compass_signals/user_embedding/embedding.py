@@ -45,7 +45,7 @@ def _request_embeddings(
 ) -> EmbeddingResponse:
     import litellm
 
-    # Keep large embedding responses out of execution telemetry.
+    # We don't need to keep embedding spans, it's a huge amount of data
     with suppress_tracing():
         response = litellm.embedding(
             model=model,
