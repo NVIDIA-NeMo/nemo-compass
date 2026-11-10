@@ -45,6 +45,7 @@ class ReplayClient(Client):
     """Answer the loader's root and hydration queries from the saved API responses."""
 
     api_url = "https://api.smith.langchain.com"
+    _info = SimpleNamespace(version="0.15.13", instance_flags={})  # saved v1 query bodies
 
     def __init__(self) -> None:
         self._raw = [
@@ -338,3 +339,28 @@ def test_interrupted_tool_call_id_survives_only_the_api():
 
     assert fruit_call_id(_api().load()) == "call_ZS8GGudYXD90WW3m7JdGhU7c"
     assert fruit_call_id(_export().load()) == "01a189c9-72d2-70a0-9b79-f2b41a375039"
+
+
+def test_model_calls_carry_their_usage(snapshot):
+    memory = _trace(snapshot, MEMORY)
+    counts = [span.token_counts for span in _named(memory, "ChatAnthropic")]
+    assert [(c.input_total, c.output_tokens) for c in counts if c] == [(548, 51), (627, 40)]
+
+
+def test_api_model_calls_carry_their_tools_and_cache_usage():
+    """The API keeps LangChain's invocation params; the CLI export drops them."""
+    memory = _trace(_api().load(), MEMORY)
+    first, _ = _named(memory, "ChatAnthropic")
+    assert first.tool_definitions is not UNSET
+    assert [definition.name for definition in first.tool_definitions] == ["get_user_info"]
+    assert first.token_counts is not None
+    assert first.token_counts.model_dump(exclude_none=True) == {
+        "input_total": 548,
+        "cached_input_tokens": 0,
+        "output_tokens": 51,
+        "cache_write_tokens": 0,
+        "cache_writes_by_ttl": {300: 0, 3600: 0},
+        "source": "langsmith",
+    }
+    exported = _trace(_export().load(), MEMORY)
+    assert all(span.tool_definitions is UNSET for span in _named(exported, "ChatAnthropic"))

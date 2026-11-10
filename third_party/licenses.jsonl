@@ -47,7 +47,7 @@
 {"name": "jsonschema", "version": "4.26.0", "license": "MIT", "package_url": "https://pypi.org/project/jsonschema/4.26.0/", "license_documents": ["third_party/NOTICES.txt", "third_party/license_texts/MIT.txt"]}
 {"name": "jsonschema-specifications", "version": "2025.9.1", "license": "MIT", "package_url": "https://pypi.org/project/jsonschema-specifications/2025.9.1/", "license_documents": ["third_party/NOTICES.txt", "third_party/license_texts/MIT.txt"]}
 {"name": "langfuse", "version": "4.17.0", "license": "MIT", "package_url": "https://pypi.org/project/langfuse/4.17.0/", "license_documents": ["third_party/NOTICES.txt", "third_party/license_texts/MIT.txt"]}
-{"name": "langsmith", "version": "0.12.2", "license": "MIT", "package_url": "https://pypi.org/project/langsmith/0.12.2/", "license_documents": ["third_party/NOTICES.txt", "third_party/license_texts/MIT.txt"]}
+{"name": "langsmith", "version": "0.14.17", "license": "MIT", "package_url": "https://pypi.org/project/langsmith/0.14.17/", "license_documents": ["third_party/NOTICES.txt", "third_party/license_texts/MIT.txt"]}
 {"name": "litellm", "version": "1.105.7", "license": "MIT", "package_url": "https://pypi.org/project/litellm/1.105.7/", "license_documents": ["third_party/NOTICES.txt", "third_party/license_texts/MIT.txt"]}
 {"name": "markdown-it-py", "version": "4.2.0", "license": "MIT", "package_url": "https://pypi.org/project/markdown-it-py/4.2.0/", "license_documents": ["third_party/NOTICES.txt", "third_party/license_texts/MIT.txt"]}
 {"name": "markupsafe", "version": "3.0.3", "license": "BSD-3-CLAUSE", "package_url": "https://pypi.org/project/markupsafe/3.0.3/", "license_documents": ["third_party/NOTICES.txt", "third_party/license_texts/BSD-3-Clause.txt"]}

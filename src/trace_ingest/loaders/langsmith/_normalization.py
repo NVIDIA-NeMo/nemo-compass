@@ -15,11 +15,15 @@ from typing import Protocol
 
 from pydantic import JsonValue
 
+from trace_ingest.loaders.helper.token_counts import token_counts
+from trace_ingest.loaders.helper.tool_definitions import tool_definitions
 from trace_ingest.models import (
     UNSET,
     Span,
     SpanKind,
+    TokenCounts,
     ToolCall,
+    ToolDefinition,
     ToolResult,
     Trace,
     TraceAggregate,
@@ -145,7 +149,8 @@ def normalize_trace(
                 if normalized.output is UNSET
                 else [
                     ToolResult(
-                        content=normalized.output, is_error=True if normalized.error else None
+                        content=normalized.output,
+                        is_error=True if normalized.error or _tool_message_failed(run) else None,
                     )
                 ]
             )
@@ -162,6 +167,17 @@ def normalize_trace(
             root_spans.append(normalized)
         else:
             normalized_by_id[parent_id].children.append(normalized)
+
+    # Like its cost, a model Run's usage includes model Runs nested in it; keep the innermost.
+    counted = {
+        run_id
+        for run_id, span in normalized_by_id.items()
+        if span.kind is SpanKind.LLM and span.token_counts is not None
+    }
+    for run_id in counted:
+        for ancestor in _ancestors(run_id, effective_parents):
+            if ancestor in counted:
+                normalized_by_id[ancestor].token_counts = None
 
     top_costs = [
         cost
@@ -301,6 +317,8 @@ def _normalize_run(
         output=_optional_json_field(getattr(run, "outputs", None)),
         tool_name=name if kind is SpanKind.TOOL else None,
         cost_usd=cost_usd,
+        token_counts=_llm_token_counts(run) if kind is SpanKind.LLM else None,
+        tool_definitions=_invocation_tools(run) if kind is SpanKind.LLM else UNSET,
         model=model if isinstance(model, str) and model else None,
         error=error,
         attributes={
@@ -411,6 +429,60 @@ def _metadata(run: _LangSmithRun) -> Mapping[str, object]:
     return metadata if isinstance(metadata, Mapping) else {}
 
 
+# Anthropic's cache-write buckets, as LangChain records them in prompt_token_details.
+_CACHE_WRITE_TTLS = {"ephemeral_5m_input_tokens": 300, "ephemeral_1h_input_tokens": 3600}
+
+
+def _llm_token_counts(run: _LangSmithRun) -> TokenCounts | None:
+    """The Run's own usage: LangChain's input tokens include cache reads and writes."""
+
+    prompt_tokens = getattr(run, "prompt_tokens", None)
+    completion_tokens = getattr(run, "completion_tokens", None)
+    if not prompt_tokens and not completion_tokens:
+        # LangSmith stores zeros when no usage was reported.
+        return None
+    details = getattr(run, "prompt_token_details", None)
+    details = details if isinstance(details, Mapping) else {}
+    by_ttl = {ttl: details.get(key) for key, ttl in _CACHE_WRITE_TTLS.items()}
+    writes = details.get("cache_creation", details.get("cache_write"))
+    if not writes:
+        # langchain-anthropic reports 0 here when it splits the writes by TTL.
+        writes = sum(value for value in by_ttl.values() if isinstance(value, int)) or writes
+    return token_counts(
+        # A model call always reads input, so a zero input count was not reported.
+        input_total=prompt_tokens or None,
+        cached_input_tokens=details.get("cache_read"),
+        output_tokens=completion_tokens,
+        cache_write_tokens=writes,
+        cache_writes_by_ttl=by_ttl,
+        source="langsmith",
+    )
+
+
+def _invocation_tools(run: _LangSmithRun) -> list[ToolDefinition] | UNSET:
+    """The tools LangChain bound to the model call, as it sent them."""
+
+    extra = getattr(run, "extra", None)
+    params = extra.get("invocation_params") if isinstance(extra, Mapping) else None
+    definitions = tool_definitions(params.get("tools")) if isinstance(params, Mapping) else None
+    return UNSET if definitions is None else definitions
+
+
+def _tool_message(run: _LangSmithRun) -> Mapping[str, object] | None:
+    """The LangChain ToolMessage a tool Run returned, if it returned one."""
+
+    outputs = getattr(run, "outputs", None)
+    message = outputs.get("output") if isinstance(outputs, Mapping) else None
+    return message if isinstance(message, Mapping) and message.get("type") == "tool" else None
+
+
+def _tool_message_failed(run: _LangSmithRun) -> bool:
+    """Whether the ToolMessage the tool returned has LangChain's error status."""
+
+    message = _tool_message(run)
+    return message is not None and message.get("status") == "error"
+
+
 def _tool_call_id(run: _LangSmithRun) -> str | None:
     """The model's id for this tool call, which LangChain records on the tool Run."""
 
@@ -418,9 +490,8 @@ def _tool_call_id(run: _LangSmithRun) -> str | None:
     value = extra.get("tool_call_id") if isinstance(extra, Mapping) else None
     if value in (None, ""):
         # CLI exports drop extra but keep the ToolMessage the tool returned.
-        outputs = getattr(run, "outputs", None)
-        message = outputs.get("output") if isinstance(outputs, Mapping) else None
-        if isinstance(message, Mapping) and message.get("type") == "tool":
+        message = _tool_message(run)
+        if message is not None:
             value = message.get("tool_call_id")
     return value if isinstance(value, str) and value else None
 

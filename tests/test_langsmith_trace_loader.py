@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
@@ -28,7 +31,7 @@ from compass.trace_loaders.langsmith import (
     LangSmithTraceLoadError,
 )
 from compass.traces import UNSET, SpanKind, Trace
-from trace_ingest.loaders.langsmith._normalization import SESSION_METADATA_KEYS
+from trace_ingest.loaders.langsmith._normalization import SESSION_METADATA_KEYS, walk_spans
 from trace_ingest.models import TurnRole
 
 PROJECT_ID = UUID("10000000-0000-0000-0000-000000000000")
@@ -86,6 +89,7 @@ def langsmith_run(
 
 class FakeLangSmithClient(Client):
     api_url = "https://langsmith.test/api/v1"
+    _info = SimpleNamespace(version="0.15.13", instance_flags={})  # a v1-only server
 
     def __init__(self, roots: list[Run], runs: list[Run], *, project_id: UUID = PROJECT_ID):
         self.roots = roots
@@ -109,6 +113,34 @@ class FakeLangSmithClient(Client):
             return iter(roots[: kwargs.get("limit", len(roots))])
         selected = set(re.findall(r'"([0-9a-f-]{36})"', kwargs["trace_filter"]))
         return iter(item for item in self._fake_runs if str(item.trace_id) in selected)
+
+
+class JSONHandler(BaseHTTPRequestHandler):
+    """A quiet local LangSmith stand-in; tests add do_GET and do_POST."""
+
+    def log_message(self, format, *args):
+        pass
+
+    def send_json(self, payload):
+        contents = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(contents)))
+        self.end_headers()
+        self.wfile.write(contents)
+
+
+@contextmanager
+def serving(handler: type[BaseHTTPRequestHandler]) -> Iterator[str]:
+    """Serve ``handler`` on a free local port and yield its base URL."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        thread.join()
 
 
 def thread_values(extra) -> set[str]:
@@ -272,19 +304,11 @@ def test_loader_uses_langsmith_sdk_query_contract_without_importing_provider_obj
     child_record["outputs"] = None
     requests = []
 
-    class Handler(BaseHTTPRequestHandler):
-        def log_message(self, format, *args):
-            pass
-
-        def send_json(self, payload):
-            contents = json.dumps(payload).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(contents)))
-            self.end_headers()
-            self.wfile.write(contents)
-
+    class Handler(JSONHandler):
         def do_GET(self):
+            if self.path.startswith("/info"):
+                # A self-hosted 0.15 server: v1 queries only.
+                return self.send_json({"version": "0.15.13", "instance_flags": {}})
             requests.append(("GET", self.path, None))
             self.send_json(
                 [
@@ -318,20 +342,13 @@ def test_loader_uses_langsmith_sdk_query_contract_without_importing_provider_obj
                     }
                 )
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    api_url = f"http://127.0.0.1:{server.server_port}"
-    try:
+    with serving(Handler) as api_url:
         client = Client(api_url=api_url, auto_batch_tracing=False)
         loader = LangSmithTraceLoader(
             LangSmithTraceConfig(project_name="glamr-ux"),
             client=client,
         )
         snapshot = loader.load()
-    finally:
-        server.shutdown()
-        thread.join()
 
     assert snapshot.trace_count == 1
     trace = next(iter(snapshot))
@@ -690,3 +707,228 @@ def test_loader_reads_the_model_tool_call_id_of_tool_runs():
     (tool_span,) = trace.root_spans[0].children
     assert tool_span.tool_call is not None
     assert tool_span.tool_call.call_id == "toolu_01Jd7c27FT9pVshw55h7N6JB"
+
+
+WEATHER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "Weather for a city.",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+    },
+}
+
+
+def test_loader_uses_v2_query_api_when_the_server_answers_it():
+    """LangSmith Cloud and SmithDB servers: /api/v2 runs and traces, an explicit window."""
+    root = {
+        "id": str(TRACE_ID),
+        "trace_id": str(TRACE_ID),
+        "name": "agent",
+        "run_type": "CHAIN",
+        "status": "SUCCESS",
+        "start_time": START.isoformat(),
+        "end_time": (START + timedelta(seconds=3)).isoformat(),
+        "app_path": f"/o/t/projects/p/{PROJECT_ID}/r/{TRACE_ID}",
+        "parent_run_ids": [],
+        "inputs": {"messages": [{"role": "user", "content": "Weather in Paris?"}]},
+        "outputs": {"messages": [{"role": "assistant", "content": "Sunny."}]},
+        "extra": {},
+        "metadata": {"thread_id": "t-1"},  # v2 returns metadata apart from extra
+        "feedback_stats": {"quality": {"n": 1, "avg": 0.0, "comments": None}},
+    }
+    llm = {
+        **root,
+        "id": str(LLM_ID),
+        "name": "ChatOpenAI",
+        "run_type": "LLM",
+        "start_time": (START + timedelta(seconds=1)).isoformat(),
+        "parent_run_ids": [str(TRACE_ID)],
+        "extra": {
+            "invocation_params": {"model": "gpt", "tools": [WEATHER_TOOL]},
+            "metadata": {"ls_model_name": "gpt"},
+        },
+        "prompt_tokens": 120,
+        "completion_tokens": 7,
+        "prompt_token_details": {"raw": {"cache_read": 100, "cache_write": 15}},
+        "feedback_stats": None,
+    }
+    tool = {
+        **root,
+        "id": str(TOOL_ID),
+        "name": "get_weather",
+        "run_type": "TOOL",
+        "start_time": (START + timedelta(seconds=2)).isoformat(),
+        "parent_run_ids": [str(TRACE_ID), str(LLM_ID)],
+        "outputs": {"output": {"type": "tool", "status": "error", "content": "unknown city"}},
+        "feedback_stats": None,
+    }
+    requests = []
+
+    class Handler(JSONHandler):
+        def do_GET(self):
+            if self.path.endswith("/info"):
+                flags = {"ch_query_enabled": True, "sdb_query_enabled": True}
+                return self.send_json({"version": "0.18.26", "instance_flags": flags})
+            requests.append(("GET", self.path, None))
+            if self.path.startswith("/api/v1/sessions"):
+                project = {
+                    "id": str(PROJECT_ID),
+                    "tenant_id": str(PROJECT_ID),
+                    "name": "p",
+                    "reference_dataset_id": None,
+                    "start_time": START.isoformat(),
+                }
+                return self.send_json([project])
+            if self.path.startswith("/api/v1/feedback"):
+                # v2 statistics carry no comments; the feedback API has them.
+                return self.send_json(
+                    [
+                        {
+                            "id": str(PROJECT_ID),
+                            "run_id": str(TRACE_ID),
+                            "trace_id": str(TRACE_ID),
+                            "key": "quality",
+                            "score": 0,
+                            "comment": "wrong city",
+                            "created_at": START.isoformat(),
+                            "modified_at": START.isoformat(),
+                        }
+                    ]
+                )
+            self.send_error(404)
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            requests.append(("POST", self.path, body))
+            if not body.get("is_root"):
+                return self.send_json({"items": [root, llm, tool], "next_cursor": None})
+            window = [
+                datetime.fromisoformat(body[key]) for key in ("min_start_time", "max_start_time")
+            ]
+            items = [root] if window[0] <= START <= window[1] else []
+            self.send_json({"items": items, "next_cursor": None})
+
+    with serving(Handler) as url:
+        client = Client(api_url=f"{url}/api/v1", api_key="test", auto_batch_tracing=False)
+        snapshot = LangSmithTraceLoader(
+            LangSmithTraceConfig(project_name="p", filter='eq(status, "success")'),
+            client=client,
+        ).load()
+
+    paths = [path.split("?")[0] for _, path, _ in requests]
+    assert paths[0] == "/api/v1/sessions"
+    assert set(paths[1:-1]) == {"/api/v2/runs/query"}
+    assert paths[-1] == "/api/v1/feedback"
+    *windows, hydration = [body for _, _, body in requests[1:-1]]
+    # Root windows read back from now, newest first, each twice as long, to a day
+    # before the project.
+    bounds = [
+        (datetime.fromisoformat(w["min_start_time"]), datetime.fromisoformat(w["max_start_time"]))
+        for w in windows
+    ]
+    assert bounds[0][1] - bounds[0][0] == timedelta(hours=1)
+    assert all(
+        newer[0] - older[1] == timedelta(microseconds=1)
+        for newer, older in itertools.pairwise(bounds)
+    )
+    assert bounds[-1][0] == START - timedelta(days=1)
+    query = windows[0]
+    assert query["project_ids"] == [str(PROJECT_ID)]
+    assert query["is_root"] is True
+    assert query["filter"] == 'eq(status, "success")'
+    assert "EXTRA" in query["selects"]
+    assert hydration["trace_filter"] == f'eq(id, "{TRACE_ID}")'
+    assert datetime.fromisoformat(hydration["min_start_time"]) == START
+    assert hydration["include_subtree_usage"] is True
+    assert "PROMPT_TOKEN_DETAILS" in hydration["selects"]
+
+    trace = next(iter(snapshot))
+    assert trace.id == "session:t-1"
+    (session,) = trace.root_spans
+    (agent,) = session.children
+    (llm_span,) = agent.children
+    (tool_span,) = llm_span.children
+    # The SDK's host URL for the app, as v1 runs get it.
+    assert str(agent.source_url).endswith(root["app_path"])
+    assert llm_span.kind is SpanKind.LLM
+    assert llm_span.token_counts is not None
+    assert llm_span.token_counts.model_dump(exclude_none=True) == {
+        "input_total": 120,
+        "cached_input_tokens": 100,
+        "output_tokens": 7,
+        "cache_write_tokens": 15,
+        "source": "langsmith",
+    }
+    assert llm_span.tool_definitions is not UNSET
+    assert [definition.name for definition in llm_span.tool_definitions] == ["get_weather"]
+    assert tool_span.tool_call is not None
+    assert tool_span.tool_call.results is not UNSET
+    assert tool_span.tool_call.results[0].is_error is True
+    assert trace.evaluator_results == {
+        "langsmith.feedback_stats.quality": [
+            {
+                "trace_id": str(TRACE_ID),
+                "value": {str(TRACE_ID): {"n": 1, "avg": 0.0, "comments": ["wrong city"]}},
+            }
+        ]
+    }
+
+
+def test_llm_runs_without_reported_usage_have_no_token_counts():
+    """LangSmith stores zero tokens when a model call reported no usage."""
+    root = langsmith_run(TRACE_ID)
+    llm = langsmith_run(LLM_ID, parent_id=TRACE_ID, run_type="llm", offset=1)
+    llm.prompt_tokens = 0
+    llm.completion_tokens = 0
+    loader = LangSmithTraceLoader(
+        LangSmithTraceConfig(project_name="p"), client=FakeLangSmithClient([root], [root, llm])
+    )
+    (llm_span,) = next(iter(loader.load())).root_spans[0].children
+    assert llm_span.token_counts is None
+    assert llm_span.tool_definitions is UNSET
+
+
+def _load_llm_runs(*llm_runs: Run) -> list:
+    root = langsmith_run(TRACE_ID)
+    client = FakeLangSmithClient([root], [root, *llm_runs])
+    trace = next(iter(LangSmithTraceLoader(LangSmithTraceConfig(project_name="p"), client).load()))
+    return [span for span in walk_spans(trace.root_spans) if span.kind is SpanKind.LLM]
+
+
+def test_anthropic_cache_writes_split_by_ttl_count_as_cache_writes():
+    """langchain-anthropic zeroes cache_creation when it reports writes per TTL."""
+    llm = langsmith_run(LLM_ID, parent_id=TRACE_ID, run_type="llm", offset=1)
+    llm.prompt_tokens = 2_100
+    llm.completion_tokens = 9
+    llm.prompt_token_details = {
+        "cache_read": 0,
+        "cache_creation": 0,
+        "ephemeral_5m_input_tokens": 2_000,
+        "ephemeral_1h_input_tokens": 0,
+    }
+    (span,) = _load_llm_runs(llm)
+    assert span.token_counts is not None
+    assert span.token_counts.cache_write_tokens == 2_000
+    assert span.token_counts.cache_writes_by_ttl == {300: 2_000, 3600: 0}
+
+
+def test_nested_model_calls_count_their_usage_once():
+    """A model Run's usage includes model Runs nested in it, as its cost does."""
+    outer = langsmith_run(LLM_ID, parent_id=TRACE_ID, run_type="llm", offset=1, duration=3)
+    inner = langsmith_run(TOOL_ID, parent_id=LLM_ID, run_type="llm", offset=2)
+    outer.prompt_tokens, outer.completion_tokens = 120, 7
+    inner.prompt_tokens, inner.completion_tokens = 120, 7
+    outer_span, inner_span = _load_llm_runs(outer, inner)
+    assert outer_span.token_counts is None
+    assert inner_span.token_counts is not None
+    assert inner_span.token_counts.input_total == 120
+
+
+def test_unreadable_server_info_is_an_error_not_a_silent_v1_load():
+    root = langsmith_run(TRACE_ID)
+    client = FakeLangSmithClient([root], [root])
+    client._info = SimpleNamespace(version="", instance_flags={})  # the SDK's failed /info
+    loader = LangSmithTraceLoader(LangSmithTraceConfig(project_name="p"), client)
+    with pytest.raises(LangSmithTraceLoadError, match="Could not read LangSmith server info"):
+        loader.load()

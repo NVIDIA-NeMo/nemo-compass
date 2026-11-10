@@ -2,9 +2,3 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Only packages whose published archives omit necessary license material need an entry.
-# LangSmith 0.12.2's wheel and sdist omit LICENSE; preserve its release license.
-langsmith:
-  version: 0.12.2
-  documents:
-    - url: https://raw.githubusercontent.com/langchain-ai/langsmith-sdk/aadfe00ed2cf31808d14a32646e73030a9eeb0b5/LICENSE
-      hash: sha256:34e0b9842c7a31d34e53bc7eb224e81e07a34996106e029bbc72dea2d449f496
