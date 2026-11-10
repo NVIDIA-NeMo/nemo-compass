@@ -12,6 +12,7 @@ import pytest
 from langfuse import Langfuse
 from langfuse.api.core.api_error import ApiError
 
+import compass.analysis as analysis
 from compass.cli.main import _configured_trace_loader
 from compass.config import LangfuseConfig, TraceConfig
 from trace_ingest.loaders.langfuse import (
@@ -320,7 +321,7 @@ def test_v4_cli_runs_evidence(tmp_path, monkeypatch, select_signals, offline):
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
     monkeypatch.setattr(cli, "_build_llm", lambda *a: FakeLLMClient())
-    monkeypatch.setattr(cli, "InsightCompilation", lambda llm: compilation)
+    monkeypatch.setattr(analysis, "InsightCompilation", lambda llm: compilation)
     source_args = [
         "--trace.langfuse.base-url",
         "https://langfuse.test",
@@ -918,7 +919,7 @@ def test_v4_without_score_file_skips_requested_evaluation(tmp_path, select_signa
 
     from nooa.unifiedllm import FakeLLMClient
 
-    from compass.cli.main import _run_compass_signals
+    from compass.analysis import _run_compass_signals
     from compass.config import CompassSignalsConfig
     from trace_ingest.loaders.langfuse import LangfuseV4FileTraceLoader
 

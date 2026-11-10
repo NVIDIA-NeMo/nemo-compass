@@ -31,6 +31,7 @@ from compass.compass_signals.tool_issues.signal import (
     ToolIssueCompassSignal,
     ToolIssueConfig,
 )
+from compass.compass_signals.user_embedding.embedding import UserEmbeddingGenerator
 from compass.compass_signals.user_sentiment.signal import (
     UserSentimentCompassSignal,
     UserSentimentConfig,
@@ -61,6 +62,7 @@ def registered_builtin_signals(
     grader_failure_patterns: GraderFailurePatternsConfig | None = None,
     user_sentiment: UserSentimentConfig | None = None,
     ethos_path: Path | None = None,
+    embedding_generator: UserEmbeddingGenerator | None = None,
     llm_factory: Callable[[], UnifiedLLM] | None = None,
 ) -> CompassSignalRegistry:
     """Construct and register the built-ins with supplied typed configuration."""
@@ -91,7 +93,11 @@ def registered_builtin_signals(
     if user_sentiment is not None:
         if llm_factory is None:
             raise ValueError("user-sentiment requires an LLM client factory")
-        registry.register(UserSentimentCompassSignal(config=user_sentiment, llm=llm_factory()))
+        registry.register(
+            UserSentimentCompassSignal(
+                config=user_sentiment, llm=llm_factory(), embedding_generator=embedding_generator
+            )
+        )
     return registry
 
 

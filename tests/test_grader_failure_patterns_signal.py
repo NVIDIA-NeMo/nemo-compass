@@ -8,7 +8,8 @@ import litellm
 from litellm import ModelResponse
 from nooa.unifiedllm import FakeLLMClient, LLMResponse, ToolCall
 
-from compass.cli.main import _build_llm, _run_compass_signals, get_config
+from compass.analysis import _run_compass_signals
+from compass.cli.main import _build_llm, get_config
 from compass.compass_signals.compass_signals import Problem
 from compass.config import RunConfig
 from compass.traces import Span, SpanKind, Trace, TraceAggregate, TraceSnapshot

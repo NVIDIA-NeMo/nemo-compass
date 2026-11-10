@@ -31,6 +31,8 @@ Learn more about each current Compass Signal: [Architecture](docs/architecture.m
 
 We are sharing the implementation at this stage to encourage feedback and testing by others as we continue to improve on it.
 
+For Python integrations, see the [shared analysis API](docs/library-api.md).
+
 ## Start here
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then choose a guide:

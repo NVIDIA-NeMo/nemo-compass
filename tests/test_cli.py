@@ -11,6 +11,7 @@ import yaml
 from nooa.unifiedllm import FakeLLMClient
 from pydantic import BaseModel
 
+import compass.analysis as analysis
 import compass.cli.main as cli
 from compass.compass_signals.compass_signals import CompassSignalResult, Problem
 from compass.compass_signals.registry import CompassSignalRegistry
@@ -185,7 +186,7 @@ def test_cli_preserves_existing_insights_without_synthesizing_empty_evidence(
     compilation = SimpleNamespace(compile_insights=AsyncMock(return_value=existing))
     monkeypatch.setenv("COMPASS_API_KEY", "test-key-not-real")
     monkeypatch.setattr(cli, "_build_llm", lambda config, api_key: FakeLLMClient())
-    monkeypatch.setattr(cli, "InsightCompilation", lambda llm: compilation)
+    monkeypatch.setattr(analysis, "InsightCompilation", lambda llm: compilation)
 
     result = cli.main(
         [
@@ -238,10 +239,10 @@ def test_confidence_rating_preserves_compiled_severity(tmp_path, monkeypatch) ->
             received.append((insight, supporting_traces))
             return "high"
 
-    monkeypatch.setattr(cli, "InsightConfidence", FakeRater)
+    monkeypatch.setattr(analysis, "InsightConfidence", FakeRater)
 
     result = asyncio.run(
-        cli._rate_confidence_with_code([insight], snapshot, tmp_path, FakeLLMClient())
+        analysis._rate_confidence_with_code([insight], snapshot, tmp_path, FakeLLMClient())
     )
 
     assert received == [(insight, (trace,))]
@@ -276,16 +277,16 @@ def test_final_compilation_severity_does_not_require_code_base(
     monkeypatch.setattr(
         cli, "_configured_trace_loader", lambda config: SimpleNamespace(load=lambda: snapshot)
     )
-    monkeypatch.setattr(cli, "_run_compass_signals", AsyncMock(return_value=evidence))
+    monkeypatch.setattr(analysis, "_run_compass_signals", AsyncMock(return_value=evidence))
     monkeypatch.setattr(
-        cli,
+        analysis,
         "_validate_candidate_problems",
         AsyncMock(
-            return_value=cli.CandidateProblemValidationResult(
+            return_value=analysis.CandidateProblemValidationResult(
                 evidence,
                 [
                     [
-                        cli.CandidateProblemDecision(supported=True, explanation="Supported")
+                        analysis.CandidateProblemDecision(supported=True, explanation="Supported")
                         for _ in item.problems
                     ]
                     for item in evidence
@@ -294,8 +295,8 @@ def test_final_compilation_severity_does_not_require_code_base(
         ),
     )
     monkeypatch.setattr(cli, "_build_llm", lambda *args: FakeLLMClient())
-    monkeypatch.setattr(cli, "InsightCompilation", lambda llm: compilation)
-    monkeypatch.setattr(cli, "_rate_confidence_with_code", review)
+    monkeypatch.setattr(analysis, "InsightCompilation", lambda llm: compilation)
+    monkeypatch.setattr(analysis, "_rate_confidence_with_code", review)
     config = RunConfig(
         trace={"filesystem": {"path": "traces.jsonl"}},
         code_base=tmp_path if with_code_base else None,
@@ -336,9 +337,9 @@ def test_compass_signals_share_cli_loop_and_run_concurrently(monkeypatch):
 
         for signal in (Signal("anomaly-and-patterns"), Signal("tool-issues")):
             registry.register(signal)
-        monkeypatch.setattr(cli, "registered_builtin_signals", lambda **kwargs: registry)
+        monkeypatch.setattr(analysis, "registered_builtin_signals", lambda **kwargs: registry)
         progress = []
-        results = await cli._run_compass_signals(
+        results = await analysis._run_compass_signals(
             CompassSignalsConfig(tool_issues={}),
             TraceSnapshot([Trace(id="trace-1", root_spans=[], aggregate=TraceAggregate())]),
             progress=progress.append,
@@ -358,7 +359,7 @@ def test_no_candidates_skips_synthesis_and_file_creation(
     output = tmp_path / "insights.yml"
     compilation = Mock()
     monkeypatch.setenv("COMPASS_API_KEY", "test-key")
-    monkeypatch.setattr(cli, "InsightCompilation", compilation)
+    monkeypatch.setattr(analysis, "InsightCompilation", compilation)
 
     assert (
         cli.main(
@@ -410,7 +411,7 @@ def test_candidates_share_both_contexts_and_run_concurrently(
             await asyncio.gather(*(event.wait() for event in started.values()))
             calls.append((problem, traces))
             rejected = problem.description == "reject"
-            return cli.CandidateProblemDecision(
+            return analysis.CandidateProblemDecision(
                 supported={"reject": False, "supported": True, "unresolved": None}[
                     problem.description
                 ],
@@ -419,11 +420,11 @@ def test_candidates_share_both_contexts_and_run_concurrently(
                 ethos_passage="Explicit permission." if rejected and ethos_enabled else None,
             )
 
-    monkeypatch.setattr(cli, "CandidateProblemValidator", Validator)
+    monkeypatch.setattr(analysis, "CandidateProblemValidator", Validator)
 
     async def run():
         return await asyncio.wait_for(
-            cli._validate_candidate_problems(
+            analysis._validate_candidate_problems(
                 evidence,
                 TraceSnapshot(list(traces.values())),
                 tmp_path if code_enabled else None,
@@ -445,9 +446,6 @@ def test_candidates_share_both_contexts_and_run_concurrently(
 
 
 def test_ethos_only_validation_filters_with_signal_disabled(tmp_path, monkeypatch):
-    from datetime import datetime, timezone
-
-    from rich.console import Console
 
     from compass.insights_generation.validation import CandidateProblemDecision
 
@@ -480,20 +478,20 @@ def test_ethos_only_validation_filters_with_signal_disabled(tmp_path, monkeypatc
                 explanation="Required behavior.",
             )
 
-    monkeypatch.setattr(cli, "CandidateProblemValidator", Validator)
+    monkeypatch.setattr(analysis, "CandidateProblemValidator", Validator)
     monkeypatch.setattr(cli, "_build_llm", lambda *args: FakeLLMClient())
-    monkeypatch.setattr(cli, "InsightCompilation", compilation)
-    insights = asyncio.run(
-        cli._compile_evidence(
-            config,
-            "key",
+    monkeypatch.setattr(analysis, "InsightCompilation", compilation)
+    asyncio.run(
+        analysis._compile_evidence(
             TraceSnapshot([Trace(id="t", root_spans=[], aggregate=TraceAggregate())]),
             result,
-            cli.RunOutput(Console(quiet=True)),
-            datetime.now(timezone.utc),
+            FakeLLMClient,
+            config.code_base,
+            config.ethos_path.read_text() if config.ethos_path else None,
+            lambda stage: None,
         )
     )
-    assert insights == [existing]
+    assert result.insights == [existing]
     compilation.assert_not_called()
     assert len(result.validation_rejections) == 1
 
@@ -521,9 +519,6 @@ def test_configuration_errors_are_reported_together(tmp_path, monkeypatch, capsy
 
 @pytest.mark.parametrize("ethos", [None, "Prioritize successful delivery."])
 def test_compilation_receives_ethos_with_divergence_disabled(tmp_path, monkeypatch, ethos):
-    from datetime import datetime, timezone
-
-    from rich.console import Console
 
     from compass.insights_generation.validation import (
         CandidateProblemDecision,
@@ -549,18 +544,18 @@ def test_compilation_receives_ethos_with_divergence_disabled(tmp_path, monkeypat
     )
     compilation = SimpleNamespace(compile_insights=AsyncMock(return_value=[]))
     phase = Mock(wraps=cli.telemetry.compilation)
-    monkeypatch.setattr(cli, "_validate_candidate_problems", validation)
+    monkeypatch.setattr(analysis, "_validate_candidate_problems", validation)
     monkeypatch.setattr(cli, "_build_llm", lambda *args: FakeLLMClient())
-    monkeypatch.setattr(cli, "InsightCompilation", lambda **kwargs: compilation)
+    monkeypatch.setattr(analysis, "InsightCompilation", lambda **kwargs: compilation)
     monkeypatch.setattr(cli.telemetry, "compilation", phase)
     asyncio.run(
-        cli._compile_evidence(
-            config,
-            "key",
+        analysis._compile_evidence(
             TraceSnapshot([Trace(id="t", root_spans=[], aggregate=TraceAggregate())]),
             result,
-            cli.RunOutput(Console(quiet=True)),
-            datetime.now(timezone.utc),
+            FakeLLMClient,
+            config.code_base,
+            config.ethos_path.read_text() if config.ethos_path else None,
+            lambda stage: None,
         )
     )
     assert compilation.compile_insights.await_args.kwargs == {"ethos": ethos}

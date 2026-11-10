@@ -12,8 +12,9 @@ from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from pydantic import ValidationError
 
 from compass import telemetry
+from compass.analysis import _run_compass_signals
 from compass.cli import main as cli
-from compass.cli.main import _run_compass_signals, get_config
+from compass.cli.main import get_config
 from compass.compass_signals.builtins import registered_builtin_signals
 from compass.compass_signals.compass_signals import Problem
 from compass.compass_signals.ethos_divergence import ethos_divergence_detector as ethos

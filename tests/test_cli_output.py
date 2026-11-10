@@ -28,8 +28,8 @@ def make_insight(name="Agent calls tools absent from the active catalog"):
 def test_default_report_prioritizes_findings_and_keeps_coverage_visible(width):
     stream = StringIO()
     result = RunResult(
-        200,
-        [
+        trace_count=200,
+        evidence=[
             *[
                 CompassSignalResult(
                     signal_name=name,
@@ -50,7 +50,7 @@ def test_default_report_prioritizes_findings_and_keeps_coverage_visible(width):
                 )
             ],
         ],
-        [
+        insights=[
             make_insight(),
             make_insight("Retries repeat [invalid] requests"),
             make_insight("False success"),
@@ -85,12 +85,12 @@ def test_default_report_prioritizes_findings_and_keeps_coverage_visible(width):
 def test_report_lists_all_insights_in_order_and_omits_irrelevant_guidance():
     insights = [make_insight(f"Issue {i}") for i in range(6)]
     result = RunResult(
-        200,
-        [
+        trace_count=200,
+        evidence=[
             CompassSignalResult(signal_name="tool-issues", problems=(), finding_count=2),
             CompassSignalResult(signal_name="grader-failure-patterns", problems=()),
         ],
-        insights,
+        insights=insights,
     )
     stream = StringIO()
     RunOutput(Console(file=stream, width=120)).report(result, Path("-"))
@@ -113,6 +113,8 @@ def test_report_shows_optional_severity_and_reason():
         }
     )
     stream = StringIO()
-    RunOutput(Console(file=stream, width=120)).report(RunResult(3, [], [insight]), Path("-"))
+    RunOutput(Console(file=stream, width=120)).report(
+        RunResult(trace_count=3, evidence=[], insights=[insight]), Path("-")
+    )
 
     assert "Severity: HIGH — The agent is blocked from completing the task." in stream.getvalue()
