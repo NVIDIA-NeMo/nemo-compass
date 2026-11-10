@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, computed_field
 from compass.compass_signals.compass_signals import CompassSignalResult
 from compass.compass_signals.issue_detector import IssueDetector
 from compass.compass_signals.user_embedding.embedding import (
+    MAX_USER_MESSAGE_CHARS,
     LiteLLMEmbeddingConfig,
     UserEmbeddingGenerator,
     validate_embedding_dependencies,
@@ -115,22 +116,27 @@ def screen_user_messages(
     embedding_generator: UserEmbeddingGenerator,
     classifier: ComplaintClassifier,
 ) -> dict[str, TraceScreeningResult]:
-    """Classify every message separately; later turns cannot clear an earlier flag."""
-    embeddings = iter(
-        embedding_generator.generate_batch(
-            [
-                text
-                for messages in user_messages.values()
-                for text in messages
-                if text[:20000].strip()
-            ]
+    """Reuse identical encoder inputs while preserving every message occurrence."""
+    # The encoder prefix is fixed for this generator. Match its character limit,
+    # but retain whitespace: stripping would change the text sent to the model.
+    unique_texts = list(
+        dict.fromkeys(
+            text[:MAX_USER_MESSAGE_CHARS]
+            for messages in user_messages.values()
+            for text in messages
+            if text[:MAX_USER_MESSAGE_CHARS].strip()
         )
     )
+    embeddings = embedding_generator.generate_batch(unique_texts)
+    classified = {
+        text: classifier.classify(embedding)
+        for text, embedding in zip(unique_texts, embeddings, strict=True)
+    }
     return {
         trace_id: TraceScreeningResult(
             message_results=[
-                classifier.classify(next(embeddings))
-                if text[:20000].strip()
+                classified[text[:MAX_USER_MESSAGE_CHARS]].model_copy(deep=True)
+                if text[:MAX_USER_MESSAGE_CHARS].strip()
                 else ScreeningResult(label="no_user_messages")
                 for text in messages
             ]

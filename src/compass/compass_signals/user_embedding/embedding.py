@@ -21,6 +21,8 @@ from openinference.instrumentation import suppress_tracing
 from pydantic import BaseModel, ConfigDict, Field
 from tokenizers import Tokenizer
 
+MAX_USER_MESSAGE_CHARS = 20_000
+
 
 class _NoRetries(int):
     """Zero retries, including in LiteLLM adapters that use ``value or default``."""
@@ -237,8 +239,8 @@ class UserEmbeddingGenerator:
         """Encode locally, preserving the per-message character limit."""
         return [
             UserEmbedding(
-                data=self.projection.compress(self.embed(text[:20000])),
-                token_count=self.token_count(text[:20000]),
+                data=self.projection.compress(self.embed(text[:MAX_USER_MESSAGE_CHARS])),
+                token_count=self.token_count(text[:MAX_USER_MESSAGE_CHARS]),
             )
             for text in texts
         ]
@@ -247,7 +249,7 @@ class UserEmbeddingGenerator:
         # Prepare only the next batch, on the coordinator thread.
         for start in range(0, len(texts), size):
             inputs = [
-                self.projection.metadata["encoder"]["prefix"] + text[:20000]
+                self.projection.metadata["encoder"]["prefix"] + text[:MAX_USER_MESSAGE_CHARS]
                 for text in texts[start : start + size]
             ]
             counts = [len(tokens.ids) for tokens in self.remote_tokenizer.encode_batch(inputs)]

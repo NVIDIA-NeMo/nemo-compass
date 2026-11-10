@@ -130,10 +130,8 @@ def test_nooa_returns_complete_snapshot_directly(invalid):
     def response(name, arguments):
         return LLMResponse(
             raw_response=None,
-            content="",
-            tool_calls=[ToolCall(id=name, name=name, arguments=json.dumps(arguments))],
+            parts=(ToolCall(id=name, name=name, arguments=json.dumps(arguments)),),
             finish_reason="tool_calls",
-            assistant_message={},
         )
 
     llm = FakeLLMClient(
@@ -179,8 +177,7 @@ def test_cost_extraction_budget_preserves_completed_work_or_skips(completed):
         [
             LLMResponse(
                 raw_response=None,
-                content="",
-                tool_calls=[
+                parts=(
                     ToolCall(
                         id=str(turn),
                         name="execute_python",
@@ -191,10 +188,9 @@ def test_cost_extraction_budget_preserves_completed_work_or_skips(completed):
                                 else "pass"
                             }
                         ),
-                    )
-                ],
+                    ),
+                ),
                 finish_reason="tool_calls",
-                assistant_message={},
             )
             for turn in range(25)
         ]

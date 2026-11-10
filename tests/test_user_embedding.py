@@ -30,7 +30,7 @@ def test_local_batch_preserves_character_limit(monkeypatch):
     assert generator.generate_batch([]) == []
 
 
-def test_remote_batches_preserve_trace_order_and_skip_empty_messages(monkeypatch):
+def test_screening_reuses_exact_inputs_preserving_occurrences(monkeypatch):
     generator = UserEmbeddingGenerator(
         litellm=LiteLLMEmbeddingConfig(model="openai/qwen", batch_size=4)
     )
@@ -50,18 +50,29 @@ def test_remote_batches_preserve_trace_order_and_skip_empty_messages(monkeypatch
     monkeypatch.setattr(
         "compass.compass_signals.user_embedding.embedding._request_embeddings", embed
     )
-    messages = {"a": ["message"] * 8, "b": ["", "last"], "c": []}
+    long = "x" * 20000
+    messages: dict[str, list[str]] = {
+        "a": ["message"] * 8 + [" spaced ", "spaced", long + "a"],
+        "b": ["", "last", long + "b", "message"],
+        "c": [],
+        "d": [" " * 20000 + "ignored"],
+    }
     results = screen_user_messages(messages, generator, ComplaintClassifier(generator.projection))
-    assert sorted(map(len, calls)) == [1, 4, 4]
-    assert all(
-        text.startswith(generator.projection.metadata["encoder"]["prefix"])
-        for call in calls
-        for text in call
-    )
-    assert len(results["a"].message_results) == 8
+    assert sorted(map(len, calls)) == [1, 4]
+    prefix = generator.projection.metadata["encoder"]["prefix"]
+    assert {text for call in calls for text in call} == {
+        prefix + text for text in ["message", " spaced ", "spaced", long, "last"]
+    }
+    assert len(results["a"].message_results) == 11
     assert results["b"].message_results[0].label == "no_user_messages"
     assert results["b"].message_results[1].token_count == 1
     assert results["c"].message_results == []
+    assert results["d"].message_results[0].label == "no_user_messages"
+    assert results["a"].message_results[-1] == results["b"].message_results[2]
+    assert results["a"].message_results[0] == results["b"].message_results[-1]
+    results["a"].message_results[0].scores.clear()
+    assert results["b"].message_results[-1].scores  # Occurrences don't share mutable state.
+    assert messages["a"][-1] == long + "a"  # Evidence remains verbatim.
     assert "model" not in generator.__dict__
 
 

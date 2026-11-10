@@ -163,16 +163,14 @@ def _run_cli(source, enabled):
             [
                 LLMResponse(
                     raw_response=None,
-                    content="",
                     finish_reason="tool_calls",
-                    tool_calls=[
+                    parts=(
                         ToolCall(
                             id="call-1",
                             name="execute_python",
                             arguments='{"code":"return_result(7)"}',
-                        )
-                    ],
-                    assistant_message={"role": "assistant", "content": ""},
+                        ),
+                    ),
                 )
             ]
         )
