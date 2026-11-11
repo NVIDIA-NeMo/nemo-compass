@@ -60,8 +60,8 @@ _RUN_SELECT_FIELDS = [
     "completion_tokens",
     "prompt_token_details",
 ]
-# v2 spells the same fields in upper case and returns only the id unless asked.
-# v2 also returns run metadata apart from `extra`.
+# v2 spells fields in upper case, returns only the id unless asked, and returns metadata apart
+# from `extra`.
 _V2_ROOT_SELECTS = cast(
     "list[RunSelectField]", [*(name.upper() for name in _ROOT_SELECT_FIELDS), "METADATA"]
 )
@@ -270,10 +270,7 @@ class LangSmithTraceLoader:
 def _runs_api(
     client: Client, project_id: str, project: TracerSession, config: LangSmithTraceConfig
 ) -> _V1Runs | _V2Runs:
-    """The v2 query API where the server answers it (LangSmith Cloud, SmithDB), else v1.
-
-    LangSmith removes the v1 run queries on Cloud on 2027-01-31 and on self-hosted in v0.19.
-    """
+    """The v2 query API where the server answers it (LangSmith Cloud, SmithDB), else v1."""
     info = client.info
     if not info.version:
         # The SDK logs a failed /info and answers an empty one, which would pick v1 silently.

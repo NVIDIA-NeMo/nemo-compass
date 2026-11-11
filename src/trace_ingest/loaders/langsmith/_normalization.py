@@ -429,7 +429,8 @@ def _metadata(run: _LangSmithRun) -> Mapping[str, object]:
     return metadata if isinstance(metadata, Mapping) else {}
 
 
-# Anthropic's cache-write buckets, as LangChain records them in prompt_token_details.
+# Cache writes per TTL, as LangChain records them in prompt_token_details for providers that
+# report them.
 _CACHE_WRITE_TTLS = {"ephemeral_5m_input_tokens": 300, "ephemeral_1h_input_tokens": 3600}
 
 
@@ -446,7 +447,7 @@ def _llm_token_counts(run: _LangSmithRun) -> TokenCounts | None:
     by_ttl = {ttl: details.get(key) for key, ttl in _CACHE_WRITE_TTLS.items()}
     writes = details.get("cache_creation", details.get("cache_write"))
     if not writes:
-        # langchain-anthropic reports 0 here when it splits the writes by TTL.
+        # LangChain reports 0 here when the provider splits the writes by TTL.
         writes = sum(value for value in by_ttl.values() if isinstance(value, int)) or writes
     return token_counts(
         # A model call always reads input, so a zero input count was not reported.

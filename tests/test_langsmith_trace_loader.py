@@ -875,25 +875,21 @@ def test_loader_uses_v2_query_api_when_the_server_answers_it():
     }
 
 
-def test_llm_runs_without_reported_usage_have_no_token_counts():
-    """LangSmith stores zero tokens when a model call reported no usage."""
-    root = langsmith_run(TRACE_ID)
-    llm = langsmith_run(LLM_ID, parent_id=TRACE_ID, run_type="llm", offset=1)
-    llm.prompt_tokens = 0
-    llm.completion_tokens = 0
-    loader = LangSmithTraceLoader(
-        LangSmithTraceConfig(project_name="p"), client=FakeLangSmithClient([root], [root, llm])
-    )
-    (llm_span,) = next(iter(loader.load())).root_spans[0].children
-    assert llm_span.token_counts is None
-    assert llm_span.tool_definitions is UNSET
-
-
 def _load_llm_runs(*llm_runs: Run) -> list:
     root = langsmith_run(TRACE_ID)
     client = FakeLangSmithClient([root], [root, *llm_runs])
     trace = next(iter(LangSmithTraceLoader(LangSmithTraceConfig(project_name="p"), client).load()))
     return [span for span in walk_spans(trace.root_spans) if span.kind is SpanKind.LLM]
+
+
+def test_llm_runs_without_reported_usage_have_no_token_counts():
+    """LangSmith stores zero tokens when a model call reported no usage."""
+    llm = langsmith_run(LLM_ID, parent_id=TRACE_ID, run_type="llm", offset=1)
+    llm.prompt_tokens = 0
+    llm.completion_tokens = 0
+    (llm_span,) = _load_llm_runs(llm)
+    assert llm_span.token_counts is None
+    assert llm_span.tool_definitions is UNSET
 
 
 def test_anthropic_cache_writes_split_by_ttl_count_as_cache_writes():

@@ -87,7 +87,7 @@ is marked `merge_incomplete`.
 With the separate LangSmith CLI installed and authenticated, export complete traces:
 
 ```bash
-langsmith traces export exports/langsmith --project my-agent --limit 100 --full
+langsmith trace export exports/langsmith --project my-agent --limit 100 --full
 ```
 
 Replace the `trace` section with:
