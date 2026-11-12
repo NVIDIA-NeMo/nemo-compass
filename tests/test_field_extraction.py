@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from functools import partial
 
 import pytest
@@ -13,6 +14,7 @@ from compass.compass_signals.cost_efficiency.evidence import CacheEvidence, enri
 from compass.compass_signals.cost_efficiency.signal import CostEfficiencyCompassSignal
 from compass.field_extraction import _build_snapshot
 from compass.traces import UNSET, Span, SpanKind, Trace, TraceAggregate, TraceSnapshot
+from tests.test_atif_trace_loader import load_record, with_agent_step
 
 
 class DurationEvidence(BaseModel):
@@ -288,3 +290,37 @@ def test_native_context_is_shared_once_per_trace_and_output_is_disk_backed():
     assert isinstance(result, TraceSnapshot)
     assert sum(len(trace.root_spans) for trace in result) == 160
     assert sum(len(trace.root_spans) for trace in result) == 160
+
+
+# A Relay ATIF agent step: its timestamp is the model call's end in microseconds, and the call's
+# own window is recorded in milliseconds.
+WINDOW = {"start_timestamp": 1794274227.658, "end_timestamp": 1794274228.984}
+RELAY_STEP = {
+    "timestamp": "2026-11-10T01:30:28.984285+00:00",
+    "metrics": {"prompt_tokens": 100, "completion_tokens": 10},
+    "extra": {"invocation": WINDOW},
+}
+RECORDED = datetime.fromisoformat(RELAY_STEP["timestamp"])
+START, END = (datetime.fromtimestamp(WINDOW[k], UTC) for k in ("start_timestamp", "end_timestamp"))
+
+
+@pytest.mark.parametrize(
+    ("extracted", "timing"),
+    [
+        ({"start_time": START, "end_time": END}, (START, END)),  # the call's own window
+        ({"end_time": END}, (RECORDED, None)),  # would end before the recorded time
+        (
+            {"end_time": RECORDED + timedelta(seconds=1)},
+            (RECORDED, RECORDED + timedelta(seconds=1)),
+        ),
+    ],
+)
+def test_enrichment_keeps_span_timing_ordered(tmp_path, extracted, timing):
+    snapshot = TraceSnapshot([load_record(tmp_path, with_agent_step(RELAY_STEP))])
+
+    def extract(context, span):
+        return {"kind": "LLM", **extracted} if span["kind"] == "LLM" else None
+
+    (trace,) = _build_snapshot(snapshot, CacheEvidence, enrich_trace, extract)
+    (step,) = [visit.span for visit in walk_spans(trace) if visit.span.kind is SpanKind.LLM]
+    assert (step.start_time, step.end_time) == timing
