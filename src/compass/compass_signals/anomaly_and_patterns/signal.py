@@ -849,11 +849,11 @@ def build_evidence_digest(
             "",
             "## Insight authoring rules",
             "",
-            "1. File only recurring, operationally useful, evidence-backed Insights.",
+            "1. Report every distinct evidence-backed problem, without a target insight count.",
             "2. Cite exact trace IDs and call IDs, then open raw evidence when needed.",
             "3. Distinguish observed tool/runtime failure from inferred agent misuse.",
             "4. Do not infer root cause or quality from anomaly or cluster membership.",
-            "5. Withhold weak or duplicate claims and state what remains unproven.",
+            "5. Merge true duplicate claims and state what remains unproven; do not omit supported problems because of rarity, low impact, uncertain fixes, or recovery.",
             "",
         ]
     )
