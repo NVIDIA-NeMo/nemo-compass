@@ -9,8 +9,8 @@ import json
 from collections import defaultdict
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any, cast
 
 from trace_ingest.loaders.helper.merge import Record, assemble, select_sessions
 from trace_ingest.loaders.langsmith._normalization import (
@@ -29,10 +29,14 @@ from trace_ingest.models import SpanKind, TraceSnapshot, case_key
 from trace_ingest.source_links import http_source_url
 
 if TYPE_CHECKING:
-    from langsmith import Client
-    from langsmith.schemas import Run
+    from langsmith import Client, Langsmith
+    from langsmith.schemas import Run, TracerSession
+    from langsmith.types.run import Run as V2Run
+    from langsmith.types.run_select_field import RunSelectField
 
 _HYDRATION_BATCH_SIZE = 50
+# Run ids per feedback request, which sends them in the URL.
+_FEEDBACK_BATCH_SIZE = 100
 _ROOT_SELECT_FIELDS = ["id", "name", "run_type", "trace_id", "start_time", "extra"]
 _RUN_SELECT_FIELDS = [
     "id",
@@ -52,7 +56,28 @@ _RUN_SELECT_FIELDS = [
     "total_cost",
     "app_path",
     "feedback_stats",
+    "prompt_tokens",
+    "completion_tokens",
+    "prompt_token_details",
 ]
+# v2 spells fields in upper case, returns only the id unless asked, and returns metadata apart
+# from `extra`.
+_V2_ROOT_SELECTS = cast(
+    "list[RunSelectField]", [*(name.upper() for name in _ROOT_SELECT_FIELDS), "METADATA"]
+)
+_V2_RUN_SELECTS = cast(
+    "list[RunSelectField]",
+    [
+        *(name.upper().replace("PARENT_RUN_ID", "PARENT_RUN_IDS") for name in _RUN_SELECT_FIELDS),
+        "METADATA",
+    ],
+)
+# The first window the v2 root query reads back from now; each next window is twice as long.
+_V2_FIRST_WINDOW = timedelta(hours=1)
+# v2 needs time bounds: these cover runs that start during the load or on a clock ahead of
+# ours, and a project's first run, which LangSmith receives before creating the project.
+_V2_CLOCK_MARGIN = timedelta(hours=1)
+_V2_PROJECT_MARGIN = timedelta(days=1)
 
 __all__ = [
     "LANGSMITH_DEFAULT_MAX_TRACES",
@@ -129,28 +154,19 @@ class LangSmithTraceLoader:
         api_url = self.config.api_url or _client_api_url(client)
         project = client.read_project(project_name=self.config.project_name)
         project_id = required_id(project, "id", "LangSmith project")
-        root_query = {
-            "project_id": project_id,
-            "is_root": True,
-            "filter": self.config.filter,
-            "tree_filter": self.config.tree_filter,
-            "start_time": self.config.start_time,
-            "select": list(_ROOT_SELECT_FIELDS),
-        }
+        queries = _runs_api(client, project_id, project, self.config)
         roots, partial = select_sessions(
-            client.list_runs(**root_query),
+            queries.roots(),
             key=_root_group_key,
             item_id=_root_trace_id,
             limit=self.config.max_traces,
-            reread=lambda session_id: client.list_runs(
-                **{**root_query, "filter": _session_filter(session_id, self.config.filter)}
-            ),
+            reread=queries.thread_roots,
         )
         selected = _selected_roots(roots)
         unresolved_parent_count = 0
         run_count = 0
         records: list[Record] = []
-        for trace_id, runs in self._hydrate_selected_runs(client, project_id, selected):
+        for trace_id, runs in self._hydrate_selected_runs(queries, selected):
             trace, unresolved = normalize_trace(
                 trace_id,
                 selected[trace_id],
@@ -203,20 +219,14 @@ class LangSmithTraceLoader:
 
     def _hydrate_selected_runs(
         self,
-        client: Client,
-        project_id: str,
+        queries: _V1Runs | _V2Runs,
         selected: Mapping[str, Run],
     ) -> Iterator[tuple[str, list[Run]]]:
         seen_run_ids: set[str] = set()
         trace_ids = list(selected)
         for batch in _batches(trace_ids, _HYDRATION_BATCH_SIZE):
             grouped: dict[str, list[Run]] = defaultdict(list)
-            runs = client.list_runs(
-                project_id=project_id,
-                trace_filter=_root_id_filter(batch),
-                select=list(_RUN_SELECT_FIELDS),
-            )
-            for run in runs:
+            for run in queries.trace_runs([selected[trace_id] for trace_id in batch]):
                 run_id = required_id(run, "id", "LangSmith Run")
                 if run_id in seen_run_ids:
                     raise LangSmithTraceLoadError(f"LangSmith returned duplicate Run id {run_id!r}")
@@ -255,6 +265,175 @@ class LangSmithTraceLoader:
             "start_time": self.config.start_time.isoformat() if self.config.start_time else None,
             "max_traces": self.config.max_traces,
         }
+
+
+def _runs_api(
+    client: Client, project_id: str, project: TracerSession, config: LangSmithTraceConfig
+) -> _V1Runs | _V2Runs:
+    """The v2 query API where the server answers it (LangSmith Cloud, SmithDB), else v1."""
+    info = client.info
+    if not info.version:
+        # The SDK logs a failed /info and answers an empty one, which would pick v1 silently.
+        raise LangSmithTraceLoadError(
+            f"Could not read LangSmith server info from {client.api_url}/info; "
+            "check LANGSMITH_ENDPOINT and the API key"
+        )
+    if (info.instance_flags or {}).get("sdb_query_enabled"):
+        start_time = config.start_time or project.start_time - _V2_PROJECT_MARGIN
+        return _V2Runs(client, project_id, config.filter, config.tree_filter, start_time)
+    return _V1Runs(client, project_id, config.filter, config.tree_filter, config.start_time)
+
+
+@dataclass(frozen=True)
+class _V1Runs:
+    client: Client
+    project_id: str
+    filter: str | None
+    tree_filter: str | None
+    start_time: datetime | None
+
+    def roots(self) -> Iterator[Run]:
+        return self._roots(self.filter)
+
+    def thread_roots(self, session_id: str) -> Iterator[Run]:
+        return self._roots(_session_filter(session_id, self.filter))
+
+    def _roots(self, filter: str | None) -> Iterator[Run]:
+        # LangSmith returns root runs newest first.
+        return self._list_runs(
+            project_id=self.project_id,
+            is_root=True,
+            filter=filter,
+            tree_filter=self.tree_filter,
+            start_time=self.start_time,
+            select=list(_ROOT_SELECT_FIELDS),
+        )
+
+    def trace_runs(self, roots: Sequence[Run]) -> Iterator[Run]:
+        return self._list_runs(
+            project_id=self.project_id,
+            trace_filter=_root_id_filter([_root_trace_id(root) for root in roots]),
+            select=list(_RUN_SELECT_FIELDS),
+        )
+
+    def _list_runs(self, **query: object) -> Iterator[Run]:
+        from langsmith._internal._beta_decorator import suppress_deprecation_warning
+
+        # Only servers without the v2 API get here, so the SDK's advice to move does not apply.
+        with suppress_deprecation_warning():
+            return self.client.list_runs(**query)
+
+
+@dataclass(frozen=True)
+class _V2Runs:
+    client: Client
+    project_id: str
+    filter: str | None
+    tree_filter: str | None
+    start_time: datetime
+    end_time: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc) + _V2_CLOCK_MARGIN
+    )
+
+    def roots(self) -> Iterator[Run]:
+        # v2 has no result order, so read windows back from now, each sorted newest first,
+        # and the selection stops reading once it has its conversations, as with v1.
+        end, window = self.end_time, _V2_FIRST_WINDOW
+        while end >= self.start_time:
+            start = max(end - window, self.start_time)
+            yield from self._roots(start, end, self.filter)
+            end, window = start - timedelta(microseconds=1), window * 2
+
+    def thread_roots(self, session_id: str) -> Iterator[Run]:
+        filter = _session_filter(session_id, self.filter)
+        return iter(self._roots(self.start_time, self.end_time, filter))
+
+    def trace_runs(self, roots: Sequence[Run]) -> Iterator[Run]:
+        # Subtree usage keeps v1's totals: a Run's cost includes its descendants'.
+        runs = list(
+            self._query(
+                min_start_time=min(root.start_time for root in roots),
+                max_start_time=self.end_time,
+                trace_filter=_root_id_filter([_root_trace_id(root) for root in roots]),
+                selects=_V2_RUN_SELECTS,
+                include_subtree_usage=True,
+            )
+        )
+        self._add_feedback_comments(runs)
+        return iter(runs)
+
+    def _add_feedback_comments(self, runs: Sequence[Run]) -> None:
+        """Fill the comments v2 feedback statistics leave out, as v1 returns them."""
+        rated = {str(run.id): run.feedback_stats for run in runs if run.feedback_stats}
+        if not rated:
+            return
+        comments: dict[tuple[str, str], list[str]] = defaultdict(list)
+        for batch in _batches(list(rated), _FEEDBACK_BATCH_SIZE):
+            for feedback in self.client.list_feedback(run_ids=batch):
+                comments[str(feedback.run_id), feedback.key].append(feedback.comment or "")
+        for run_id, statistics in rated.items():
+            for key, stats in statistics.items():
+                if stats.get("comments") is None:
+                    stats["comments"] = comments.get((run_id, key), [])
+
+    def _roots(self, start: datetime, end: datetime, filter: str | None) -> list[Run]:
+        query: dict[str, Any] = {"is_root": True, "selects": _V2_ROOT_SELECTS}
+        if filter is not None:
+            query["filter"] = filter
+        if self.tree_filter is not None:
+            query["tree_filter"] = self.tree_filter
+        roots = list(self._query(min_start_time=start, max_start_time=end, **query))
+        return sorted(roots, key=lambda run: (run.start_time, str(run.id)), reverse=True)
+
+    def _query(self, **query: Any) -> Iterator[Run]:  # noqa: ANN401
+        # The SDK's own v2 client, with the session, headers and timeouts of `client`.
+        api: Langsmith = self.client._get_langsmith_api_sync()
+        runs = api.runs.query(project_ids=[self.project_id], page_size=1000, **query)
+        return (self._run(run) for run in runs)
+
+    def _run(self, run: V2Run) -> Run:
+        """The v1 Run shape the normalization reads, with its LangSmith URL."""
+        from langsmith.schemas import Run
+
+        parents = run.parent_run_ids or []
+        # v2 returns metadata apart from `extra`; the normalization reads extra.metadata.
+        extra = run.extra or {}
+        metadata = extra.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        feedback = run.feedback_stats or {}
+        fields = {
+            "id": run.id,
+            "name": run.name,
+            "run_type": run.run_type.lower() if run.run_type else None,
+            "start_time": run.start_time,
+            "end_time": run.end_time,
+            "trace_id": run.trace_id,
+            "session_id": self.project_id,
+            "parent_run_id": parents[-1] if parents else None,
+            "dotted_order": run.dotted_order,
+            "inputs": run.inputs or {},
+            # v2 answers {} for a run that recorded no outputs, where v1 answers null.
+            "outputs": run.outputs or None,
+            "error": run.error,
+            "status": run.status.lower() if run.status else None,
+            "tags": run.tags,
+            "extra": {**extra, "metadata": {**metadata, **run.metadata}} if run.metadata else extra,
+            "app_path": run.app_path,
+            "total_cost": run.total_cost,
+            "feedback_stats": {
+                name: stats.model_dump(exclude_none=True) for name, stats in feedback.items()
+            }
+            or None,
+            "prompt_tokens": run.prompt_tokens,
+            "completion_tokens": run.completion_tokens,
+            "prompt_token_details": (
+                run.prompt_token_details.raw if run.prompt_token_details else None
+            ),
+        }
+        return Run(
+            **{key: value for key, value in fields.items() if value is not None},
+            _host_url=self.client._host_url,
+        )
 
 
 def _new_langsmith_client(api_url: str | None) -> Client:
