@@ -15,6 +15,7 @@ import pytest
 from nooa.unifiedllm import FakeLLMClient
 from pydantic import ValidationError
 
+import compass.analysis as analysis
 import compass.cli.main as cli
 from compass.compass_signals.tool_issues.signal import to_tool_issue_trace
 from compass.config import RunConfig, TraceConfig
@@ -292,7 +293,7 @@ def test_complete_cli_runs_real_tool_evidence(tmp_path, monkeypatch, capsys, sel
     compilation = SimpleNamespace(compile_insights=AsyncMock(return_value=[]))
     monkeypatch.setenv("COMPASS_API_KEY", "not-real")
     monkeypatch.setattr(cli, "_build_llm", lambda config, api_key: FakeLLMClient())
-    monkeypatch.setattr(cli, "InsightCompilation", lambda llm: compilation)
+    monkeypatch.setattr(analysis, "InsightCompilation", lambda llm: compilation)
     output = tmp_path / "insights.yml"
     assert (
         cli.main(

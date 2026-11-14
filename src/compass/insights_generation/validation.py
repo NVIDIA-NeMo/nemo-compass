@@ -17,6 +17,7 @@ from nooa.strategies import CodeActStrategy
 from nooa.unifiedllm import UnifiedLLM
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from compass.analysis_runtime import agent_scope
 from compass.compass_signals.compass_signals import CompassSignalResult, Problem
 from compass.insights_generation.codebase import CodebaseTools
 from compass.traces import Trace
@@ -191,14 +192,17 @@ class CandidateProblemValidator:
         self, problem: Problem, supporting_traces: tuple[Trace, ...]
     ) -> CandidateProblemDecision:
         agent = _ValidationAgent(self._codebase, self._llm)
-        try:
-            decision = await agent.decide(problem, _trace_context(supporting_traces), self._ethos)
-        except GenerationAborted:
-            raise
-        except GenerationError:
-            return CandidateProblemDecision(
-                supported=None, explanation="Candidate problem validation was inconclusive."
-            )
+        async with agent_scope(agent):
+            try:
+                decision = await agent.decide(
+                    problem, _trace_context(supporting_traces), self._ethos
+                )
+            except GenerationAborted:
+                raise
+            except GenerationError:
+                return CandidateProblemDecision(
+                    supported=None, explanation="Candidate problem validation was inconclusive."
+                )
         if decision.supported is False:
             if decision.rejection_basis in ("ethos", "code_and_ethos") and (
                 self._ethos is None

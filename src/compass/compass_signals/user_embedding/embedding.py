@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from functools import cached_property
@@ -159,8 +159,17 @@ class UserEmbeddingGenerator:
     """Encode locally or through LiteLLM using the pinned Qwen instruction."""
 
     def __init__(
-        self, device: str | None = None, litellm: LiteLLMEmbeddingConfig | None = None
+        self,
+        device: str | None = None,
+        litellm: LiteLLMEmbeddingConfig | None = None,
+        *,
+        embed_batch: Callable[[list[str]], list[list[float]]] | None = None,
     ) -> None:
+        if embed_batch is not None and litellm is None:
+            raise ValueError(
+                "An injected embedding transport requires remote batching configuration"
+            )
+        self.embed_batch = embed_batch
         self.device = device
         self.litellm = litellm
         self.projection = UserEmbeddingProjection()
@@ -266,7 +275,11 @@ class UserEmbeddingGenerator:
             raise ValueError("Remote embeddings require LiteLLM configuration")
         if not texts:
             return []
-        api_key = os.environ[config.api_key_env] if config.api_key_env else None
+        api_key = (
+            os.environ[config.api_key_env]
+            if config.api_key_env and self.embed_batch is None
+            else None
+        )
         batches = self._remote_batches(texts, config.batch_size)
         active: dict[Future[list[UserEmbedding]], int] = {}
         completed: dict[int, list[UserEmbedding]] = {}
@@ -286,20 +299,26 @@ class UserEmbeddingGenerator:
     def _remote_batch(
         self, batch: _RemoteBatch, config: LiteLLMEmbeddingConfig, api_key: str | None
     ) -> list[UserEmbedding]:
-        response = _request_embeddings(
-            model=config.model,
-            api_base=config.api_base,
-            api_key=api_key,
-            input=batch.inputs,
-            timeout=config.request_timeout,
-            max_retries=config.max_retries,
-        )
-        rows = sorted(response.data, key=lambda row: row["index"])
-        if [row["index"] for row in rows] != list(range(len(batch.inputs))):
-            raise ValueError("Embedding response must contain one vector per input")
+        if self.embed_batch is not None:
+            vectors = self.embed_batch(batch.inputs)
+            if len(vectors) != len(batch.inputs):
+                raise ValueError("Embedding response must contain one vector per input")
+        else:
+            response = _request_embeddings(
+                model=config.model,
+                api_base=config.api_base,
+                api_key=api_key,
+                input=batch.inputs,
+                timeout=config.request_timeout,
+                max_retries=config.max_retries,
+            )
+            rows = sorted(response.data, key=lambda row: row["index"])
+            if [row["index"] for row in rows] != list(range(len(batch.inputs))):
+                raise ValueError("Embedding response must contain one vector per input")
+            vectors = [row["embedding"] for row in rows]
         results = []
-        for row, count in zip(rows, batch.counts, strict=True):
-            vector = np.asarray(row["embedding"], dtype="float32")
+        for embedding, count in zip(vectors, batch.counts, strict=True):
+            vector = np.asarray(embedding, dtype="float32")
             norm = np.linalg.norm(vector)
             if not np.isfinite(norm) or norm == 0:
                 raise ValueError("Embedding response must contain finite, nonzero vectors")

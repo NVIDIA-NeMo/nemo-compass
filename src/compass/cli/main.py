@@ -22,27 +22,21 @@ import os
 import re
 import sys
 from argparse import SUPPRESS, Action, ArgumentParser
-from collections.abc import Callable, Sequence
-from datetime import datetime, timezone
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import yaml
-from nooa.unifiedllm import CompletionClient, UnifiedLLM
+from nooa.unifiedllm import CompletionClient
 from pydantic import ValidationError
 from pydantic_settings import CliSettingsSource
 from rich.console import Console
 
 from compass import telemetry_phases as telemetry
-from compass.cli.output import RunOutput, RunResult, display_name, signal_limitations
-from compass.compass_signals.builtins import registered_builtin_signals
-from compass.compass_signals.compass_signals import (
-    CompassSignalResult,
-    Problem,
-)
-from compass.config import CompassSignalsConfig, RunConfig, TraceConfig
-from compass.insight import Insight, load_insights, resolve_trace_links
-from compass.insights_generation.confidence import InsightConfidence
+from compass.analysis import AnalysisOptions, AnalysisProgress, analyze
+from compass.cli.output import RunOutput, RunResult, display_name
+from compass.config import RunConfig, TraceConfig
+from compass.insight import Insight, load_insights
 from compass.insights_generation.config import (
     ENV_API_BASE,
     ENV_API_KEY,
@@ -51,12 +45,6 @@ from compass.insights_generation.config import (
     resolve,
 )
 from compass.insights_generation.defaults import DEFAULT_MAX_TOKENS, DEFAULT_MODEL
-from compass.insights_generation.insight_compilation import InsightCompilation
-from compass.insights_generation.validation import (
-    CandidateProblemDecision,
-    CandidateProblemValidationResult,
-    CandidateProblemValidator,
-)
 from compass.telemetry import record_input_metadata, record_span, telemetry_session
 from compass.trace_loaders.atif import ATIFTraceLoader
 from compass.trace_loaders.braintrust import (
@@ -90,7 +78,6 @@ from compass.trace_loaders.mlflow import (
     MLflowTraceLoader,
 )
 from compass.trace_loaders.trace_loaders import TraceLoader
-from compass.traces import Trace, TraceSnapshot
 from trace_ingest.loaders.gym import GymTraceLoader
 
 EXIT_OK = 0
@@ -238,120 +225,6 @@ def _configured_trace_loader(config: TraceConfig) -> TraceLoader:
     )
 
 
-async def _run_compass_signals(
-    config: CompassSignalsConfig,
-    snapshot: TraceSnapshot,
-    llm_factory: Callable[[], UnifiedLLM] | None = None,
-    progress: Callable[[Sequence[str]], None] | None = None,
-    *,
-    ethos_path: Path | None = None,
-) -> list[CompassSignalResult]:
-    """Run the configured Compass Signals concurrently in registration order."""
-
-    registry = registered_builtin_signals(
-        anomaly_and_patterns=config.anomaly_and_patterns,
-        tool_issues=config.tool_issues,
-        cost_efficiency=config.cost_efficiency,
-        ethos_divergence=config.ethos_divergence,
-        ethos_path=ethos_path,
-        user_sentiment=config.user_sentiment,
-        grader_failure_patterns=config.grader_failure_patterns,
-        llm_factory=llm_factory,
-    )
-
-    active: set[str] = set()
-
-    def changed() -> None:
-        if progress is not None:
-            progress(tuple(name for name in registry.names if name in active))
-
-    async def analyze(name: str) -> CompassSignalResult:
-        configuration = registry.configuration(name)
-
-        def started() -> None:
-            active.add(name)
-            changed()
-
-        try:
-            with telemetry.signal(name, configuration, len(snapshot)) as record:
-                result = await registry.analyze(name, snapshot, on_start=started)
-                telemetry.record_signal_result(record, result)
-                return result
-        finally:
-            if name in active:
-                active.remove(name)
-                changed()
-
-    # Cancel sibling work on failure; no analysis outlives this run.
-    async with asyncio.TaskGroup() as group:
-        tasks = [group.create_task(analyze(name)) for name in registry.names]
-    return [task.result() for task in tasks]
-
-
-async def _validate_candidate_problems(
-    signal_results: list[CompassSignalResult],
-    snapshot: TraceSnapshot,
-    code_base_path: Path | None,
-    llm: UnifiedLLM,
-    ethos: str | None = None,
-) -> CandidateProblemValidationResult:
-    """Review the candidate problems in each signal result, preserving their order."""
-    validator = CandidateProblemValidator(code_base_path, llm, ethos)
-
-    async def validate_problem(problem: Problem) -> CandidateProblemDecision:
-        traces = tuple(snapshot.get_trace_by_id(tid) for tid in problem.supporting_trace_ids)
-        with telemetry.problem_validation(problem, code_base_path, ethos) as record:
-            decision = await validator.validate(problem, traces)
-            telemetry.record_problem_decision(record, decision)
-            return decision
-
-    async def validate_signal_problems(
-        result: CompassSignalResult,
-    ) -> list[CandidateProblemDecision]:
-        async with asyncio.TaskGroup() as group:
-            tasks = [group.create_task(validate_problem(problem)) for problem in result.problems]
-        return [task.result() for task in tasks]
-
-    async with asyncio.TaskGroup() as group:
-        tasks = [group.create_task(validate_signal_problems(result)) for result in signal_results]
-    return CandidateProblemValidationResult(signal_results, [task.result() for task in tasks])
-
-
-async def _rate_confidence_with_code(
-    insights: list[Insight],
-    snapshot: TraceSnapshot,
-    code_base_path: Path,
-    llm: UnifiedLLM,
-) -> list[Insight]:
-    """Rate each insight's confidence against the supplied codebase."""
-
-    code_base_path = code_base_path.expanduser().resolve()
-    if not code_base_path.is_dir():
-        raise ValueError(f"code_base must be an existing directory: {code_base_path}")
-    rater = InsightConfidence(code_base_path, llm)
-
-    def supporting_trace(ref: str) -> Trace | None:
-        try:
-            return snapshot.get_trace_by_id(ref)
-        except KeyError:
-            return None
-
-    async def rate_insight(insight: Insight) -> Insight:
-        supporting_traces = tuple(
-            trace
-            for trace in (supporting_trace(item.trace_id) for item in insight.evidence)
-            if trace is not None
-        )
-        with telemetry.insight_confidence(insight, code_base_path) as record:
-            rating = await rater.rate(insight, supporting_traces)
-            telemetry.record_rating(record, insight, rating)
-            return insight.model_copy(update={"confidence": rating})
-
-    async with asyncio.TaskGroup() as group:
-        tasks = [group.create_task(rate_insight(insight)) for insight in insights]
-    return [task.result() for task in tasks]
-
-
 def _configured_model(config: RunConfig) -> str:
     return config.model or resolve(ENV_MODEL) or DEFAULT_MODEL
 
@@ -391,85 +264,32 @@ async def _generate_insights(config: RunConfig, output: RunOutput) -> RunResult:
         output.trace_count = len(snapshot)
         output.activity = "Checking prerequisites"
 
-        def progress(active: Sequence[str]) -> None:
+        def progress(event: AnalysisProgress) -> None:
             output.activity = (
-                "Analyzing: " + ", ".join(display_name(name).lower() for name in active)
-                if active
-                else "Checking prerequisites"
+                "Analyzing: "
+                + ", ".join(display_name(name).lower() for name in event.active_signals)
+                if event.active_signals
+                else {
+                    "signals": "Checking prerequisites",
+                    "validation": "Validating candidate problems",
+                    "compilation": "Compiling candidate problems into insights",
+                    "confidence": "Investigating insight confidence against the codebase",
+                    "complete": "Analysis complete",
+                }[event.stage]
             )
 
-        evidence = await _run_compass_signals(
-            config.compass_signals,
-            snapshot,
-            lambda: _build_llm(config, api_key),
-            progress,
-            ethos_path=config.ethos_path,
-        )
         existing = load_insights(config.existing_insights) if config.existing_insights else []
-        result = RunResult(
-            trace_count=len(snapshot),
-            evidence=evidence,
-            insights=list(existing),
+        return await analyze(
+            snapshot,
+            options=AnalysisOptions.model_validate(
+                config.model_dump(include=set(AnalysisOptions.model_fields))
+            ),
+            llm_factory=lambda: _build_llm(config, api_key),
             existing_insights=existing,
-            limitations=signal_limitations(evidence),
+            ethos_path=config.ethos_path,
+            code_base=config.code_base,
+            progress=progress,
         )
-        if any(item.problems for item in evidence):
-            run_timestamp = datetime.now(timezone.utc)
-            result.insights = await _compile_evidence(
-                config, api_key, snapshot, result, output, run_timestamp
-            )
-        result.insights = resolve_trace_links(result.insights, snapshot, existing)
-        if config.code_base is not None and result.insights:
-            output.activity = "Investigating insight confidence against the codebase"
-            with telemetry.confidence(result.insights, config.code_base) as record:
-                async with _build_llm(config, api_key) as llm:
-                    result.insights = await _rate_confidence_with_code(
-                        result.insights, snapshot, config.code_base, llm
-                    )
-                telemetry.record_confidence(record, result.insights)
-        return result
-
-
-async def _compile_evidence(
-    config: RunConfig,
-    api_key: str,
-    snapshot: TraceSnapshot,
-    result: RunResult,
-    output: RunOutput,
-    run_timestamp: datetime,
-) -> list[Insight]:
-    signal_results = result.evidence
-    async with _build_llm(config, api_key) as llm:
-        ethos_path = config.ethos_path
-        ethos = ethos_path.read_text(encoding="utf-8") if ethos_path is not None else None
-        if config.code_base is not None or ethos is not None:
-            output.activity = "Validating candidate problems"
-            with telemetry.candidate_problem_validation(
-                signal_results, config.code_base, ethos
-            ) as record:
-                validation = await _validate_candidate_problems(
-                    signal_results, snapshot, config.code_base, llm, ethos
-                )
-                telemetry.record_candidate_problem_validation(record, validation)
-            signal_results = validation.retained_signal_results()
-            result.validation_rejections = validation.rejections
-            if validation.unresolved_count:
-                result.limitations.append(
-                    f"Candidate problem validation was inconclusive for {validation.unresolved_count} problem(s); these were retained for compilation."
-                )
-        if not any(item.problems for item in signal_results):
-            return result.existing_insights
-        output.activity = "Compiling candidate problems into insights"
-        with telemetry.compilation(signal_results, result.existing_insights, ethos=ethos) as record:
-            insights = await InsightCompilation(llm=llm).compile_insights(
-                signal_results,
-                snapshot,
-                result.existing_insights,
-                run_timestamp,
-                ethos=ethos,
-            )
-            telemetry.record_insights(record, insights)
-            return insights
 
 
 def _render_insights(insights: Sequence[Insight]) -> str:

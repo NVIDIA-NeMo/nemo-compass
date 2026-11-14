@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ import yaml
 from nooa.unifiedllm import FakeLLMClient
 from pydantic import ValidationError
 
+import compass.analysis as analysis
 from compass.compass_signals.compass_signals import CompassSignalResult, Problem
 from compass.insight import Insight, load_insights, resolve_trace_links
 from compass.trace_loaders.fs import FSDataLoader
@@ -140,7 +142,7 @@ def test_cli_saves_and_prints_loader_links_after_compilation(
     monkeypatch.setattr(cli, "_check_environment", lambda config: "test-key")
     monkeypatch.setattr(cli, "_build_llm", lambda *args: FakeLLMClient())
     monkeypatch.setattr(
-        cli,
+        analysis,
         "_run_compass_signals",
         AsyncMock(
             return_value=[
@@ -152,7 +154,7 @@ def test_cli_saves_and_prints_loader_links_after_compilation(
         ),
     )
     monkeypatch.setattr(
-        cli,
+        analysis,
         "InsightCompilation",
         lambda **kwargs: SimpleNamespace(compile_insights=AsyncMock(return_value=[insight])),
     )
@@ -317,7 +319,7 @@ def test_cli_emits_resolved_span_links(tmp_path, monkeypatch, capsys, select_sig
         lambda config: SimpleNamespace(load=lambda: snapshot, describe=lambda: {"source": "test"}),
     )
     monkeypatch.setattr(
-        cli,
+        analysis,
         "_run_compass_signals",
         AsyncMock(
             return_value=[
@@ -329,7 +331,7 @@ def test_cli_emits_resolved_span_links(tmp_path, monkeypatch, capsys, select_sig
         ),
     )
     monkeypatch.setattr(
-        cli,
+        analysis,
         "InsightCompilation",
         lambda **kwargs: SimpleNamespace(compile_insights=AsyncMock(return_value=[insight])),
     )

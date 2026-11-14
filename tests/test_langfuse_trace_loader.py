@@ -18,6 +18,7 @@ from langfuse.api.commons.types.trace_with_full_details import TraceWithFullDeta
 from langfuse.api.commons.types.usage import Usage
 from langfuse.api.core.pydantic_utilities import parse_obj_as
 
+import compass.analysis as analysis
 from compass.compass_signals.tool_issues.signal import (
     detect_trace,
     to_tool_issue_trace,
@@ -186,7 +187,7 @@ def test_export_cli_runs_evidence_without_langfuse_client(tmp_path, monkeypatch,
     monkeypatch.setenv("COMPASS_API_KEY", "test-key")
     monkeypatch.setattr(Langfuse, "__init__", lambda *a, **kw: pytest.fail("offline client"))
     monkeypatch.setattr(cli, "_build_llm", lambda *a: FakeLLMClient())
-    monkeypatch.setattr(cli, "InsightCompilation", lambda llm: compilation)
+    monkeypatch.setattr(analysis, "InsightCompilation", lambda llm: compilation)
     assert (
         cli.main(
             [

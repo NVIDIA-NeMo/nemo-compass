@@ -7,11 +7,13 @@ from typing import Any, Protocol
 
 from nooa import Agent, strategy
 from nooa.config import CodeActConfig
+from nooa.runtime.event_manager import EventManager
 from nooa.strategies import CodeActStrategy
 from nooa.strategy_validation import InvariantError
 from nooa.unifiedllm import UnifiedLLM
 from pydantic import BaseModel, ConfigDict, Field
 
+from compass.analysis_runtime import agent_scope
 from compass.compass_signals._trace import walk_spans
 from compass.compass_signals.compass_signals import (
     CompassSignalResult,
@@ -45,6 +47,8 @@ class _GraderFailureReport(BaseModel):
 
 
 class _GraderFailureAgent(Protocol):
+    event_manager: EventManager
+
     async def find_problems(self, index: list[dict[str, object]]) -> _GraderFailureReport: ...
 
 
@@ -128,7 +132,8 @@ class GraderFailurePatternsCompassSignal:
         )
         async with self.llm:
             agent = _build_agent(snapshot, self.llm, self.config)
-            report = await agent.find_problems(await asyncio.to_thread(_trace_index, snapshot))
+            async with agent_scope(agent):
+                report = await agent.find_problems(await asyncio.to_thread(_trace_index, snapshot))
         return CompassSignalResult(
             signal_name=self.name,
             problems=report.problems,

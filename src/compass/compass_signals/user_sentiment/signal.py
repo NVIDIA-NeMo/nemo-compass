@@ -12,6 +12,7 @@ from nooa import Agent
 from nooa.unifiedllm import UnifiedLLM
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, computed_field
 
+from compass.analysis_runtime import agent_scope
 from compass.compass_signals.compass_signals import CompassSignalResult
 from compass.compass_signals.issue_detector import IssueDetector
 from compass.compass_signals.user_embedding.embedding import (
@@ -162,11 +163,20 @@ class UserSentimentConfig(BaseModel):
 class UserSentimentCompassSignal:
     name = "user-sentiment"
 
-    def __init__(self, config: UserSentimentConfig, llm: UnifiedLLM) -> None:
+    def __init__(
+        self,
+        config: UserSentimentConfig,
+        llm: UnifiedLLM,
+        *,
+        embedding_generator: UserEmbeddingGenerator | None = None,
+    ) -> None:
         self.config = config
         self.llm = llm
+        self._embedding_generator = embedding_generator
 
     def check_prerequisites(self, snapshot: TraceSnapshot) -> str | None:
+        if self._embedding_generator is not None:
+            return None
         if self.config.litellm is None:
             if not self.config.local_embeddings:
                 return "No embedding backend configured"
@@ -175,7 +185,9 @@ class UserSentimentCompassSignal:
 
     @cached_property
     def embedding_generator(self) -> UserEmbeddingGenerator:
-        return UserEmbeddingGenerator(self.config.device, self.config.litellm)
+        return self._embedding_generator or UserEmbeddingGenerator(
+            self.config.device, self.config.litellm
+        )
 
     @cached_property
     def classifier(self) -> ComplaintClassifier:
@@ -188,7 +200,9 @@ class UserSentimentCompassSignal:
     async def _analyze(self, snapshot: TraceSnapshot) -> CompassSignalResult:
         messages = {}
         if len(snapshot):
-            messages = await UserMessageExtractor(llm=self.llm).extract(snapshot)
+            extractor = UserMessageExtractor(llm=self.llm)
+            async with agent_scope(extractor):
+                messages = await extractor.extract(snapshot)
         messages = TypeAdapter(dict[str, list[str]]).validate_python(messages, strict=True)
         if messages.keys() != snapshot.traces_by_id.keys():
             raise ValueError("User message extraction must cover exactly the supplied trace IDs")
@@ -204,12 +218,14 @@ class UserSentimentCompassSignal:
         }
         problems = []
         if candidates:
-            problems = await IssueDetector(llm=self.llm).detect_issues(
-                TraceSnapshot(snapshot.get_trace_by_id(trace_id) for trace_id in candidates),
-                USER_SENTIMENT,
-                user_messages=candidates,
-                screening={trace_id: screening[trace_id] for trace_id in candidates},
-            )
+            detector = IssueDetector(llm=self.llm)
+            async with agent_scope(detector):
+                problems = await detector.detect_issues(
+                    TraceSnapshot(snapshot.get_trace_by_id(trace_id) for trace_id in candidates),
+                    USER_SENTIMENT,
+                    user_messages=candidates,
+                    screening={trace_id: screening[trace_id] for trace_id in candidates},
+                )
             if any(set(problem.supporting_trace_ids) - candidates.keys() for problem in problems):
                 raise ValueError("User sentiment findings must cite only supplied candidate traces")
         return CompassSignalResult(
