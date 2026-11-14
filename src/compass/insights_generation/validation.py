@@ -110,9 +110,10 @@ class CandidateProblemValidationResult:
 
 
 def _trace_context(supporting_traces: tuple[Trace, ...]) -> str:
-    # Text, not live objects: the model should inspect the code, not mine the traces.
+    # Format recorded values, not live classes: NOOA's class inspection can fail
+    # while lazy metadata changes. The model still receives bounded trace text.
     return truncating_pformat(
-        supporting_traces,
+        [trace.model_dump(mode="json") for trace in supporting_traces],
         max_chars=_MAX_TRACE_CONTEXT_CHARS,
         max_depth=12,
         max_length=200,
