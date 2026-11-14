@@ -142,8 +142,8 @@ class _ValidationAgent(Agent):
         read_file tools to inspect relevant implementation, prompts, guards, and
         configuration. Code-based conclusions require inspection and a matching
         execution path. Missing code, version mismatches, and externally managed
-        deployment issues leave uncertainty. Batch reads and searches; aim for eight
-        steps, with a maximum of 25 iterations.
+        deployment issues leave uncertainty. Batch related list_files, search_code, and read_file
+        calls in one Python step; aim for eight steps, with a maximum of 25 iterations.
 
         Return supported=true when evidence establishes the problem, false only when
         concrete evidence invalidates its actual claim, and null when evidence is
