@@ -84,9 +84,18 @@ def enrich_trace(trace: Trace, evidence: list[tuple[Span, CacheEvidence]]) -> No
             span.agent_id = value.agent_id
         if span.kind is not SpanKind.LLM:
             continue
-        for name in ("start_time", "end_time", "error", "model"):
+        for name in ("error", "model"):
             if getattr(span, name) is None:
                 setattr(span, name, getattr(value, name))
+        # Timing is one pair. A recorded time can be another moment of the call (Relay ATIF
+        # stamps a step with the call's end), so when the filled pair would end before it
+        # starts, use the extracted pair if it is complete and ordered; else keep the record.
+        start = span.start_time or value.start_time
+        end = span.end_time or value.end_time
+        if start is None or end is None or start <= end:
+            span.start_time, span.end_time = start, end
+        elif value.start_time and value.end_time and value.start_time <= value.end_time:
+            span.start_time, span.end_time = value.start_time, value.end_time
         if value.token_counts is not None:
             counts = span.token_counts.model_dump() if span.token_counts else {}
             for name, count in value.token_counts.model_dump().items():
