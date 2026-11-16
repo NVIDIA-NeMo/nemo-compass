@@ -4,10 +4,14 @@
 # Analyze LangSmith traces
 
 Choose a project whose agent behavior you want to understand. Recorded feedback on
-root and child runs is included automatically in grader failure analysis.
+root and child runs is included automatically in grader failure analysis. Each model
+call keeps the tools it was offered and its token usage, including cache reads and
+writes, so tool-argument and prompt-caching checks can run.
 
-The live adapter supports the v1 query API, tested with self-hosted LangSmith 0.15.
-The SmithDB-backed v2 query API is not yet supported.
+Compass reads with the v2 query API where the server offers it (LangSmith Cloud, and
+self-hosted servers with SmithDB queries enabled), else with the v1 query API, which
+LangSmith removes on Cloud on 2027-01-31 and on self-hosted in v0.19.
+Tested with LangSmith Cloud 0.18 (v1 and v2 give the same traces) and self-hosted 0.15 (v1).
 
 ## Connect and run
 
@@ -56,8 +60,14 @@ Add fields under `trace.langsmith` as needed:
 | `tree_filter` | `'eq(run_type, "tool")'` | Complete traces with a matching run anywhere in the tree. |
 | `api_url` | `https://langsmith.example.com` | A regional or self-hosted API endpoint. |
 
-`api_url` overrides `LANGSMITH_ENDPOINT`. Set `LANGSMITH_WORKSPACE_ID` in `.env`
+`api_url` overrides `LANGSMITH_ENDPOINT`. For a self-hosted server, set either to its
+API base URL, `https://<your-langsmith-host>/api/v1`; Compass still uses the v2 query
+API when the server offers it. Set `LANGSMITH_WORKSPACE_ID` in `.env`
 if your key needs an explicit workspace.
+
+On the v2 API, Compass reads root runs back from now, a window at a time, until it
+has `max_traces` conversations, and goes back no further than a day before the
+project was created. Set `start_time` to load runs imported with older timestamps.
 
 Compass loads one trace per conversation: root runs whose metadata shares a
 `thread_id` (else `session_id`, else `conversation_id`) become one trace, in start
@@ -90,8 +100,10 @@ trace:
 ```
 
 Rerun the same analysis command. Local exports need inference credentials only.
-Use `--full` to include child runs. The loader accepts one `.jsonl` file or a directory
+Use `--full` to include child runs. Exports keep token totals but not cache reads
+and writes or the tools offered to each model call; load from the API for
+tool-argument and prompt-caching checks. The loader accepts one `.jsonl` file or a directory
 of immediate `.jsonl` files, validates and merges the complete export, then keeps the
 `max_traces` conversations with the newest root runs, the ones a live load selects,
 so a thread is never split.
-Both paths use Python SDK `>=0.12,<0.13`, installed by the extra.
+The API path uses Python SDK `>=0.14.10,<0.15`, installed by the extra.
