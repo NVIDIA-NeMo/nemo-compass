@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[project]
+name = "nvidia-compass-hermes-plugin"
+version = "0.1.0"
+description = "NeMo Compass plugin for Hermes Agent"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+dependencies = [
+    # Compass supports Python 3.14 (the version Hermes installs) from 0.3.0.
+    "nemo-compass>=0.3.0,<0.4",
+]

@@ -1,0 +1,72 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: nvidia-compass
+version: 0.1.0
+description: >-
+  NVIDIA NeMo Compass for Hermes. Analyzes your Hermes sessions (NeMo Relay ATIF
+  traces) for recurring problems and writes a local insights report.
+author: NVIDIA
+license: Apache-2.0
+homepage: https://github.com/NVIDIA-NeMo/nemo-compass/tree/main/integrations/hermes
+tags: [observability, traces, evaluation, nvidia]
+manifest_version: 2
+api_version: 1
+requires_hermes: ">=0.22.0"
+
+provides_tools:
+  - compass_analyze
+  - compass_latest_report
+provides_hooks:
+  - pre_tool_call  # asks for approval before compass_analyze starts a run
+requires_env:
+  - name: COMPASS_API_KEY
+    description: "Key for the Compass model endpoint. The model needs tool calling."
+    secret: true
+
+config_schema:
+  atif_dir:
+    type: str
+    default: ""
+    label: "Relay ATIF folder"
+    description: "Where NeMo Relay writes ATIF trajectories. Empty = <HERMES_HOME>/telemetry/nemo-relay/atif"
+  compass_model:
+    type: str
+    default: ""
+    label: "Compass model (LiteLLM string)"
+    description: "Empty = derived from Hermes's main model, e.g. openai/<model> on its base_url"
+  api_base:
+    type: str
+    default: ""
+    label: "Compass API base"
+    description: "Empty = Hermes's main model base_url"
+  api_key:
+    type: secret
+    env: COMPASS_API_KEY
+    label: "Compass API key"
+    description: "Key for the Compass model endpoint (stored in Hermes's .env). Needs a model with tool calling."
+  max_sessions:
+    type: int
+    default: 128
+    label: "Sessions per run"
+    description: "Analyze at most N Relay trajectories per run"
+  sample:
+    type: str
+    choices: [newest, random]
+    default: newest
+    label: "Which sessions"
+    description: "newest = the N most recent; random = a seeded random N from all of them"
+  max_tokens:
+    type: int
+    default: 16384
+    label: "Max tokens per model response"
+  ethos_path:
+    type: str
+    default: ""
+    label: "ETHOS.md path (optional)"
+    description: "Your agent's stated rules and goals. Enables the ETHOS divergence signal."
+  timeout_minutes:
+    type: int
+    default: 0
+    label: "Run timeout (minutes)"
+    description: "0 = automatic: 2x the measured time per session times the session count, plus 5 minutes (60 minutes before the first timed run)"

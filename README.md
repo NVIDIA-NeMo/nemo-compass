@@ -61,6 +61,7 @@ on `PATH`. Install it separately with `brew install ripgrep` on macOS or
 - [Compass Signals](docs/compass-signals.md) — supply business rules, configure sentiment, or check findings against code.
 - [Data and model access](docs/model-access.md) — configure your inference endpoint and understand where data goes.
 - [Configuration reference](docs/configuration.md) — overrides, limits, and repeatable runs.
+- [Hermes Agent plugin](integrations/hermes/README.md) — run Compass on your Hermes sessions from inside Hermes.
 
 [Purpose and expectations](ETHOS.md) · [Development](DEVELOPMENT.md) ·
 [Releasing](RELEASING.md) · [Architecture](docs/architecture.md) ·
