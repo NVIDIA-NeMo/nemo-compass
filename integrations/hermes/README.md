@@ -43,7 +43,7 @@ Each run writes `traces.jsonl`, `insights.yaml` and `report.html` to
 - **Asks first.** Every `compass_analyze` call goes through Hermes's approval prompt (a
   `pre_tool_call` hook). Unattended runs follow your `approvals` settings, and are blocked by default.
 - **Runs** Compass as a child process (`python -m compass.cli.main`) only when you or the agent
-  ask. When the agent asks, the run happens in the background (usually 10 to 30 minutes) and keeps
+  ask. When the agent asks, the run happens in the background (usually 5 to 15 minutes) and keeps
   going if Hermes exits; the next status check writes its report. A small watchdog process
   enforces the run's time limit even if Hermes exits. One run at a time.
 - **Keeps your keys out.** The child gets only `COMPASS_API_KEY`, `COMPASS_MODEL`,

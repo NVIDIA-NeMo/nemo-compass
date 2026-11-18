@@ -27,7 +27,7 @@ COMPASS_ANALYZE = {
         "properties": {
             "max_sessions": {
                 "type": "integer",
-                "description": "Analyze at most N sessions. Omit to use the plugin setting (128).",
+                "description": "Analyze at most N sessions. Omit to use the plugin setting (64).",
                 "minimum": 2,
             }
         },
@@ -100,7 +100,7 @@ def make_approval_hook(get_config: Callable[..., Any]) -> Callable[..., dict | N
             "rule_key": APPROVAL_RULE_KEY,
             "message": (
                 f"Start NeMo Compass in the background on up to {n} sessions? It sends their "
-                f"content to the Compass model endpoint{where} and usually runs 10 to 30 minutes."
+                f"content to the Compass model endpoint{where} and usually runs 5 to 15 minutes."
             ),
         }
 

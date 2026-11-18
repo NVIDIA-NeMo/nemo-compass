@@ -331,8 +331,8 @@ def test_random_sample_is_seeded_and_capped(relay_dir, tmp_path):
     assert (tmp_path / "a.jsonl").read_text() == (tmp_path / "b.jsonl").read_text()
 
 
-def test_default_cap_is_128(hermes):
-    assert settings.load(FakeCtx().get_config).max_sessions == 128
+def test_default_cap_is_64(hermes):
+    assert settings.load(FakeCtx().get_config).max_sessions == 64
 
 
 def test_each_run_logs_timing(hermes, relay_dir, fake_compass):

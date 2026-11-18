@@ -84,9 +84,9 @@ def load(get_config: Callable[..., Any]) -> Settings:
         model=model,
         api_base=api_base,
         api_key=hermes_api.secret(API_KEY_ENV),
-        max_sessions=max(1, int(opt("max_sessions", 128))),
+        max_sessions=max(1, int(opt("max_sessions", 64))),
         sample="random" if str(opt("sample", "newest")).lower() == "random" else "newest",
-        max_tokens=max(1024, int(opt("max_tokens", 16384))),
+        max_tokens=max(1024, int(opt("max_tokens", 32768))),
         ethos_path=Path(ethos).expanduser() if ethos else None,
         # 0 = automatic: scaled from measured seconds per trace (see runner.plan).
         timeout_s=max(60, int(opt("timeout_minutes", 0)) * 60)

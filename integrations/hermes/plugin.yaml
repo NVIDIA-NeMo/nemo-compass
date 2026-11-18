@@ -47,7 +47,7 @@ config_schema:
     description: "Key for the Compass model endpoint (stored in Hermes's .env). Needs a model with tool calling."
   max_sessions:
     type: int
-    default: 128
+    default: 64
     label: "Sessions per run"
     description: "Analyze at most N Relay trajectories per run"
   sample:
@@ -58,7 +58,7 @@ config_schema:
     description: "newest = the N most recent; random = a seeded random N from all of them"
   max_tokens:
     type: int
-    default: 16384
+    default: 32768
     label: "Max tokens per model response"
   ethos_path:
     type: str
