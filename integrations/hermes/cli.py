@@ -47,43 +47,22 @@ def _status(s: settings.Settings) -> None:
     base = hermes_api.data_dir()
     current = runner.status(base)
     if current is not None and current.state == "running":
-        eta = f", ETA {round(current.eta_s / 60)} min" if current.eta_s else ""
         print(
-            f"Running now       : {round(current.seconds / 60)} min elapsed{eta}, {current.progress or 'starting'}"
+            f"Running now       : {round(current.seconds / 60)} min elapsed, {current.progress or 'starting'}"
         )
     last = runner.latest(base)
     print(f"Last report       : {last.report_html if last else '(none)'}")
-    rows = runner.timings(base)
-    if rows:
-        print("Recent runs       :")
-        for r in rows:
-            per = f", {r['s_per_trace']} s/trace" if r.get("s_per_trace") else ""
-            print(
-                f"  {r.get('run')}: {'ok' if r.get('ok') else 'failed'}, {r.get('traces')} traces, "
-                f"{r.get('total_s')} s total, Compass {r.get('compass_s', '-')} s{per}"
-            )
-        print(f"Estimate          : {_estimate(rows, s.max_sessions)}")
     for p in s.problems():
         print(f"! {p}")
     if not files:
         print("! No Relay trajectories yet. Run `hermes compass setup`.")
 
 
-def _estimate(rows: list[dict], n: int) -> str:
-    rates = [r["s_per_trace"] for r in rows if r.get("ok") and r.get("s_per_trace")]
-    if not rates:
-        return "no successful run yet"
-    rate = sum(rates) / len(rates)
-    return (
-        f"~{rate * n / 60:.1f} min for {n} traces (avg {rate:.2f} s/trace over {len(rates)} runs)"
-    )
-
-
 def _run(s: settings.Settings) -> None:
     base = hermes_api.data_dir()
     print(
-        f"Running Compass on up to {s.max_sessions} sessions ({s.sample}). "
-        f"Estimate: {_estimate(runner.timings(base), s.max_sessions)}"
+        f"Running Compass on up to {s.max_sessions} sessions ({s.sample}), "
+        f"stopping after {s.timeout_s // 60} minutes."
     )
     print(f"Progress is written to {base / 'runs'}/<newest>/compass.log")
     result = runner.run(s, base)
@@ -91,8 +70,7 @@ def _run(s: settings.Settings) -> None:
         print(f"Compass did not finish: {result.error}")
         return
     print(
-        f"{len(result.insights)} insights from {result.trace_count} sessions in "
-        f"{result.seconds} s (Compass {result.timing.get('compass_s')} s)."
+        f"{len(result.insights)} insights from {result.trace_count} sessions in {result.seconds} s."
     )
     for i in result.insights:
         print(f"  [{i.get('severity') or '-'}] {i.get('name')}")

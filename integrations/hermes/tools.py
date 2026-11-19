@@ -64,14 +64,6 @@ def _summary(result: runner.RunResult, message: str | None = None) -> str:
     return json.dumps(data, ensure_ascii=False)
 
 
-def _minutes(seconds: float | None) -> str:
-    return (
-        "unknown (first timed run)"
-        if seconds is None
-        else f"about {max(1, round(seconds / 60))} min"
-    )
-
-
 APPROVAL_RULE_KEY = "nvidia-compass:compass_analyze"
 
 
@@ -119,7 +111,7 @@ def make_analyze(get_config: Callable[..., Any]) -> Callable[..., str]:
                 return _summary(
                     result,
                     f"Compass started on {result.trace_count} sessions. "
-                    f"Estimated time: {_minutes(result.eta_s)}.",
+                    "It usually takes 5 to 15 minutes.",
                 )
             return _summary(result)
         except Exception as exc:  # noqa: BLE001 - a tool must return JSON, never raise
@@ -135,11 +127,7 @@ def compass_latest_report(args: dict, **kwargs: object) -> str:
         if current is None:
             return json.dumps({"ok": False, "error": "No Compass run yet. Use compass_analyze."})
         if current.state == "running":
-            left = None if current.eta_s is None else current.eta_s - current.seconds
-            msg = (
-                f"Still running: {round(current.seconds / 60)} min elapsed, "
-                f"{'time left unknown' if left is None else _minutes(max(left, 60)) + ' left'}."
-            )
+            msg = f"Still running: {round(current.seconds / 60)} min elapsed."
             previous = runner.latest(base)
             if previous is not None:
                 msg += " Results from the previous run are included."

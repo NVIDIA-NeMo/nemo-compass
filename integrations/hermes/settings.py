@@ -88,8 +88,5 @@ def load(get_config: Callable[..., Any]) -> Settings:
         sample="random" if str(opt("sample", "newest")).lower() == "random" else "newest",
         max_tokens=max(1024, int(opt("max_tokens", 32768))),
         ethos_path=Path(ethos).expanduser() if ethos else None,
-        # 0 = automatic: scaled from measured seconds per trace (see runner.plan).
-        timeout_s=max(60, int(opt("timeout_minutes", 0)) * 60)
-        if int(opt("timeout_minutes", 0)) > 0
-        else 0,
+        timeout_s=max(1, int(opt("timeout_minutes", 30))) * 60,
     )

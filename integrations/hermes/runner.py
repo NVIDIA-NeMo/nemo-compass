@@ -9,9 +9,8 @@ process. It runs the `compass` module from the same interpreter Hermes installed
 Each run lives in <data dir>/runs/<UTC stamp>/:
   traces.jsonl   what Compass analyzes
   compass.log    Compass's progress output, written live
-  status.json    running | done | failed, start time, ETA, timeout
+  status.json    running | done | failed, start time, timeout
   insights.yaml  Compass's findings      report.html  the rendered report
-  timing.json    phase timings (also appended to <data dir>/timings.jsonl)
   exit.json      how Compass ended, written by watchdog.py
 
 The run's detached process is watchdog.py, which enforces the timeout itself, so the limit holds
@@ -39,7 +38,6 @@ from .settings import API_KEY_ENV, Settings
 
 # Only these parent variables reach Compass. Provider keys from Hermes's environment never do.
 _PASS_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SYSTEMROOT", "SSL_CERT_FILE")
-FALLBACK_TIMEOUT_S = 3600
 # Extra time past the watchdog's deadline before the plugin itself steps in (see _overdue).
 GRACE_S = 120
 WATCHDOG = Path(__file__).with_name("watchdog.py")
@@ -58,9 +56,7 @@ class RunResult:
     error: str | None = None
     skipped_files: list[str] = field(default_factory=list)
     seconds: float = 0.0
-    eta_s: int | None = None
     progress: str | None = None
-    timing: dict = field(default_factory=dict)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False)
@@ -135,55 +131,6 @@ def _write_json(path: Path, data: dict) -> None:
     tmp.replace(path)
 
 
-# --- timing and estimates -------------------------------------------------------------
-
-
-def timings(base: Path, last: int = 5) -> list[dict]:
-    path = base / "timings.jsonl"
-    if not path.is_file():
-        return []
-    rows = [
-        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
-    ]
-    return rows[-last:]
-
-
-def seconds_per_trace(base: Path, model: str | None = None) -> float | None:
-    """Average over recent successful runs, preferring runs with the same model."""
-    ok = [r for r in timings(base, last=20) if r.get("ok") and r.get("s_per_trace")]
-    same = [r for r in ok if model and r.get("model") == model]
-    rows = (same or ok)[-5:]
-    return sum(r["s_per_trace"] for r in rows) / len(rows) if rows else None
-
-
-def plan(settings: Settings, base: Path, n: int) -> tuple[int | None, int]:
-    """(ETA seconds or None, timeout seconds) for a run over n traces."""
-    rate = seconds_per_trace(base, settings.model)
-    eta = round(rate * n) if rate else None
-    if settings.timeout_s:  # explicit setting wins
-        return eta, settings.timeout_s
-    return eta, (max(600, 2 * eta + 300) if eta else FALLBACK_TIMEOUT_S)
-
-
-def _log_timing(base: Path, run_dir: Path, status: dict) -> None:
-    record = {
-        "run": run_dir.name,
-        "ok": status["state"] == "done",
-        "traces": status.get("traces", 0),
-        "model": status.get("model"),
-        "sample": status.get("sample"),
-        "available": status.get("available"),
-        "collect_s": status.get("collect_s"),
-        "compass_s": status.get("compass_s"),
-        "total_s": status.get("total_s"),
-    }
-    if record["ok"] and record["traces"] and record["compass_s"] is not None:
-        record["s_per_trace"] = round(record["compass_s"] / record["traces"], 2)
-    _write_json(run_dir / "timing.json", record)
-    with (base / "timings.jsonl").open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record) + "\n")
-
-
 # --- the lock -------------------------------------------------------------------------
 
 
@@ -228,21 +175,15 @@ def _prepare(settings: Settings, base: Path) -> tuple[RunResult, Path | None, di
             {},
         )
     run_dir = new_run_dir(base)
-    t0 = time.monotonic()
     collected = traces.collect(
         settings.atif_dir, run_dir / "traces.jsonl", settings.max_sessions, settings.sample
     )
-    eta, timeout = plan(settings, base, collected.count)
     st = {
         "state": "running",
         "started_at": time.time(),
         "traces": collected.count,
-        "available": collected.available,
-        "sample": settings.sample,
         "model": settings.model,
-        "collect_s": round(time.monotonic() - t0, 2),
-        "eta_s": eta,
-        "timeout_s": timeout,
+        "timeout_s": settings.timeout_s,
         "skipped_files": collected.skipped,
     }
     result = RunResult(
@@ -251,7 +192,6 @@ def _prepare(settings: Settings, base: Path) -> tuple[RunResult, Path | None, di
         state="running",
         trace_count=collected.count,
         skipped_files=collected.skipped,
-        eta_s=eta,
     )
     if collected.count < 2:
         error = (
@@ -314,7 +254,6 @@ def _exit_code(run_dir: Path) -> int | None:
 def _wait_and_finish(
     proc: subprocess.Popen, run_dir: Path, base: Path, lock: Path, st: dict
 ) -> None:
-    started = time.monotonic()
     try:
         try:
             proc.wait(timeout=st["timeout_s"] + GRACE_S)
@@ -323,14 +262,13 @@ def _wait_and_finish(
             _kill_tree(proc.pid)
             proc.wait()
             rc = None
-        st["compass_s"] = round(time.monotonic() - started, 1)
-        _finish(run_dir, base, st, rc)
+        _finish(run_dir, st, rc)
     finally:
         lock.unlink(missing_ok=True)
 
 
-def _finish(run_dir: Path, base: Path, st: dict, rc: int | None) -> None:
-    """Turn a finished child into report + status + timing. Safe to call once per run."""
+def _finish(run_dir: Path, st: dict, rc: int | None) -> None:
+    """Turn a finished child into report + status. Safe to call once per run."""
     st["total_s"] = round(time.time() - st["started_at"], 1)
     if rc is None:
         st.update(state="failed", error=f"Compass timed out after {st['timeout_s'] // 60} minutes.")
@@ -343,7 +281,6 @@ def _finish(run_dir: Path, base: Path, st: dict, rc: int | None) -> None:
         report.write(run_dir / "report.html", insights, st.get("traces", 0), st.get("model") or "")
         st.update(state="done", insights=len(insights))
     _write_json(run_dir / "status.json", st)
-    _log_timing(base, run_dir, st)
 
 
 def _launched(settings: Settings, run_dir: Path, lock: Path, st: dict) -> subprocess.Popen:
@@ -407,14 +344,11 @@ def load(run_dir: Path, base: Path) -> RunResult:
     if st.get("state") == "running":
         if not _alive(st.get("pid")):
             # The watcher thread died with its Hermes process; the run ended on its own.
-            _finish(run_dir, base, st, _exit_code(run_dir))
-        elif (
-            time.time()
-            > st.get("started_at", 0) + st.get("timeout_s", FALLBACK_TIMEOUT_S) + GRACE_S
-        ):
+            _finish(run_dir, st, _exit_code(run_dir))
+        elif time.time() > st.get("started_at", 0) + st.get("timeout_s", 0) + GRACE_S:
             # Backstop in case the watchdog itself is stuck.
             _kill_tree(st["pid"])
-            _finish(run_dir, base, st, None)
+            _finish(run_dir, st, None)
     state = st.get("state", "failed")
     out, html = run_dir / "insights.yaml", run_dir / "report.html"
     insights = (yaml.safe_load(out.read_text(encoding="utf-8")) or []) if out.is_file() else []
@@ -430,9 +364,7 @@ def load(run_dir: Path, base: Path) -> RunResult:
         error=st.get("error"),
         skipped_files=st.get("skipped_files", []),
         seconds=st.get("total_s", elapsed),
-        eta_s=st.get("eta_s"),
         progress=_progress(run_dir) if state == "running" else None,
-        timing=_read_json(run_dir / "timing.json"),
     )
 
 

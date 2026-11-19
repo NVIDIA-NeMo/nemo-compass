@@ -335,26 +335,9 @@ def test_default_cap_is_64(hermes):
     assert settings.load(FakeCtx().get_config).max_sessions == 64
 
 
-def test_each_run_logs_timing(hermes, relay_dir, fake_compass):
-    runner.run(settings.load(FakeCtx().get_config), BASE(hermes))
-    rows = runner.timings(BASE(hermes))
-    assert len(rows) == 1 and rows[0]["traces"] == 3 and "s_per_trace" in rows[0]
-    rate = rows[0]["s_per_trace"]
-    # A 0.0 rate (instant stub run) is useless for estimates, so the estimator ignores it.
-    assert runner.seconds_per_trace(BASE(hermes)) == (rate or None)
-
-
-def test_timeout_scales_with_measured_rate(hermes):
-    s = settings.load(FakeCtx().get_config)
-    base = BASE(hermes)
-    base.mkdir(parents=True)
-    assert runner.plan(s, base, 128) == (None, 3600)  # nothing measured yet
-    (base / "timings.jsonl").write_text(
-        json.dumps({"ok": True, "model": s.model, "s_per_trace": 13.5, "traces": 128}) + "\n"
-    )
-    eta, timeout = runner.plan(s, base, 128)
-    assert eta == 1728 and timeout == 2 * 1728 + 300
-    assert runner.plan(dataclasses.replace(s, timeout_s=900), base, 128)[1] == 900
+def test_timeout_is_30_minutes_unless_set(hermes):
+    assert settings.load(FakeCtx().get_config).timeout_s == 30 * 60
+    assert settings.load(FakeCtx({"timeout_minutes": 10}).get_config).timeout_s == 10 * 60
 
 
 # --- trimming Relay bulk --------------------------------------------------------------

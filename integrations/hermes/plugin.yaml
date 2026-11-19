@@ -67,6 +67,6 @@ config_schema:
     description: "Your agent's stated rules and goals. Enables the ETHOS divergence signal."
   timeout_minutes:
     type: int
-    default: 0
+    default: 30
     label: "Run timeout (minutes)"
-    description: "0 = automatic: 2x the measured time per session times the session count, plus 5 minutes (60 minutes before the first timed run)"
+    description: "Stop a run that takes longer than this"
