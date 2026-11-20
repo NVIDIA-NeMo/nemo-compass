@@ -8,6 +8,7 @@ import dataclasses
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -402,3 +403,22 @@ def test_slimmed_relay_doc_passes_compass_loader_with_tool_schemas(tmp_path):
     assert len(loaded) == 2
     agent_span = loaded[0].root_spans[0]
     assert [t.name for t in agent_span.tool_definitions] == ["web_search", "read_file"]
+
+
+def test_status_can_be_written_from_two_threads_at_once(tmp_path):
+    # The watcher thread and a status poll both finish a run whose process was killed.
+    target, errors = tmp_path / "status.json", []
+
+    def write():
+        try:
+            for _ in range(300):
+                runner._write_json(target, {"state": "failed"})
+        except OSError as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=write) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors and json.loads(target.read_text()) == {"state": "failed"}

@@ -8,6 +8,6 @@ description = "NeMo Compass plugin for Hermes Agent"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 dependencies = [
-    # Compass supports Python 3.14 (the version Hermes installs) from 0.3.0.
-    "nemo-compass>=0.3.0,<0.4",
+    # Compass supports Python 3.14 (the version Hermes installs) from 0.2.2.
+    "nemo-compass>=0.2.2,<0.3",
 ]
