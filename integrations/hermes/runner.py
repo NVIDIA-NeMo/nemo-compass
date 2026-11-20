@@ -137,7 +137,9 @@ def _read_json(path: Path) -> dict:
 
 
 def _write_json(path: Path, data: dict) -> None:
-    tmp = path.with_suffix(".tmp")
+    # The watcher thread and a status poll can both finish the same run, so each writer
+    # needs its own temporary file.
+    tmp = path.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
     tmp.replace(path)
 
