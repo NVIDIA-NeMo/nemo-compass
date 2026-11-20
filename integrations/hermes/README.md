@@ -19,6 +19,8 @@ Compass is an NVIDIA research preview. Check each finding against its sessions b
 3. Give Compass a model. By default it reuses your Hermes main model and endpoint; you
    only add `COMPASS_API_KEY` (Desktop: Settings > Plugins > nvidia-compass). The model
    must support tool calling. Override `compass_model` / `api_base` in the same settings page.
+   If Hermes's provider is `auto` (or another one it resolves at runtime) with no `base_url`, the
+   plugin can't see which endpoint Hermes picked, so it asks you to set `api_base`.
 4. `hermes compass status` checks everything.
 
 ## Use
@@ -44,8 +46,8 @@ Each run writes `traces.jsonl`, `insights.yaml` and `report.html` to
   `pre_tool_call` hook). Unattended runs follow your `approvals` settings, and are blocked by default.
 - **Runs** Compass as a child process (`python -m compass.cli.main`) only when you or the agent
   ask. When the agent asks, the run happens in the background (usually 5 to 15 minutes) and keeps
-  going if Hermes exits; the next status check writes its report. A small watchdog process
-  enforces the run's time limit even if Hermes exits. One run at a time.
+  going if Hermes exits; the next status check writes its report. Compass stops itself at the
+  run's time limit (`timeout_minutes`, 30 by default), even if Hermes exits. One run at a time.
 - **Keeps your keys out.** The child gets only `COMPASS_API_KEY`, `COMPASS_MODEL`,
   `COMPASS_API_BASE` and basic system variables. Compass looks for a `.env` file starting in its
   working folder, so the plugin writes an empty `.env` into each run folder; that stops the search

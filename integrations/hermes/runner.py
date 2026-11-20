@@ -11,10 +11,9 @@ Each run lives in <data dir>/runs/<UTC stamp>/:
   compass.log    Compass's progress output, written live
   status.json    running | done | failed, start time, timeout
   insights.yaml  Compass's findings      report.html  the rendered report
-  exit.json      how Compass ended, written by watchdog.py
+  exit.json      how Compass ended, written by Compass itself (--status-path)
 
-The run's detached process is watchdog.py, which enforces the timeout itself, so the limit holds
-even if Hermes exits mid-run.
+Compass enforces the time limit itself (--timeout), so the limit holds even if Hermes exits mid-run.
 """
 
 from __future__ import annotations
@@ -22,7 +21,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import signal
 import subprocess
 import sys
 import threading
@@ -38,9 +36,6 @@ from .settings import API_KEY_ENV, Settings
 
 # Only these parent variables reach Compass. Provider keys from Hermes's environment never do.
 _PASS_ENV = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "SYSTEMROOT", "SSL_CERT_FILE")
-# Extra time past the watchdog's deadline before the plugin itself steps in (see _overdue).
-GRACE_S = 120
-WATCHDOG = Path(__file__).with_name("watchdog.py")
 _PROGRESS = re.compile(r"^(.+?) · (\d+)s\s*$")
 
 
@@ -79,17 +74,21 @@ def child_env(settings: Settings) -> dict[str, str]:
     return env
 
 
-def command(settings: Settings, traces_path: Path, out_path: Path) -> list[str]:
+def command(settings: Settings, run_dir: Path) -> list[str]:
     cmd = [
         sys.executable,
         "-m",
         "compass.cli.main",
         "--trace.atif.path",
-        str(traces_path),
+        str(run_dir / "traces.jsonl"),
         "--output-path",
-        str(out_path),
+        str(run_dir / "insights.yaml"),
         "--max-tokens",
         str(settings.max_tokens),
+        "--timeout",
+        str(settings.timeout_s),
+        "--status-path",
+        str(run_dir / "exit.json"),
     ]
     if settings.ethos_path is not None:
         cmd += ["--ethos-path", str(settings.ethos_path)]
@@ -99,7 +98,11 @@ def command(settings: Settings, traces_path: Path, out_path: Path) -> list[str]:
 def new_run_dir(base: Path) -> Path:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_dir = base / "runs" / stamp
-    run_dir.mkdir(parents=True, exist_ok=False)
+    n = 1
+    while run_dir.exists():  # two runs in the same second; suffixed names still sort after it
+        n += 1
+        run_dir = base / "runs" / f"{stamp}-{n}"
+    run_dir.mkdir(parents=True)
     # Compass looks for a .env starting at its working directory and walking up.
     # An empty one here stops that walk before it can reach Hermes's own .env.
     (run_dir / ".env").write_text("# intentionally empty: see runner.py\n", encoding="utf-8")
@@ -116,6 +119,14 @@ def _alive(pid: int | None) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _read_insights(path: Path) -> list[dict]:
+    if not path.is_file():
+        return []
+    insights = yaml.safe_load(path.read_text(encoding="utf-8")) or []
+    # YAML turns dates such as updated_date into datetime objects, which JSON can't encode.
+    return json.loads(json.dumps(insights, default=str))
 
 
 def _read_json(path: Path) -> dict:
@@ -208,20 +219,10 @@ def _prepare(settings: Settings, base: Path) -> tuple[RunResult, Path | None, di
     return result, lock, st
 
 
-def _launch(settings: Settings, run_dir: Path, timeout_s: int) -> subprocess.Popen:
+def _launch(settings: Settings, run_dir: Path) -> subprocess.Popen:
     log = (run_dir / "compass.log").open("w", encoding="utf-8")
-    compass = command(settings, run_dir / "traces.jsonl", run_dir / "insights.yaml")
     return subprocess.Popen(
-        # -I: the watchdog needs only the standard library, and keeps the plugin folder off its path.
-        [
-            sys.executable,
-            "-I",
-            str(WATCHDOG),
-            str(timeout_s),
-            str(run_dir / "exit.json"),
-            "--",
-            *compass,
-        ],
+        command(settings, run_dir),
         cwd=run_dir,
         env=child_env(settings),
         stdin=subprocess.DEVNULL,
@@ -232,37 +233,20 @@ def _launch(settings: Settings, run_dir: Path, timeout_s: int) -> subprocess.Pop
     )
 
 
-def _kill_tree(pid: int) -> None:
-    """Stop the watchdog and Compass. They share a process group on macOS and Linux."""
-    try:
-        if hasattr(os, "killpg"):
-            os.killpg(pid, signal.SIGKILL)
-        else:
-            os.kill(pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError):
-        pass
-
-
 def _exit_code(run_dir: Path) -> int | None:
-    """Compass's exit code from exit.json; None if it timed out. 1 if the watchdog itself died."""
+    """Compass's exit code from exit.json; None if it timed out. 1 if Compass was killed."""
     ended = _read_json(run_dir / "exit.json")
     if not ended:
         return 1
-    return None if ended.get("timed_out") else int(ended.get("rc", 1))
+    return None if ended.get("timed_out") else int(ended.get("exit_code", 1))
 
 
 def _wait_and_finish(
     proc: subprocess.Popen, run_dir: Path, base: Path, lock: Path, st: dict
 ) -> None:
     try:
-        try:
-            proc.wait(timeout=st["timeout_s"] + GRACE_S)
-            rc = _exit_code(run_dir)
-        except subprocess.TimeoutExpired:  # the watchdog should have ended it by now
-            _kill_tree(proc.pid)
-            proc.wait()
-            rc = None
-        _finish(run_dir, st, rc)
+        proc.wait()
+        _finish(run_dir, st, _exit_code(run_dir))
     finally:
         lock.unlink(missing_ok=True)
 
@@ -277,14 +261,14 @@ def _finish(run_dir: Path, st: dict, rc: int | None) -> None:
         st.update(state="failed", error=f"Compass exited with {rc}.\n{tail}")
     else:
         out = run_dir / "insights.yaml"
-        insights = (yaml.safe_load(out.read_text(encoding="utf-8")) or []) if out.is_file() else []
+        insights = _read_insights(out)
         report.write(run_dir / "report.html", insights, st.get("traces", 0), st.get("model") or "")
         st.update(state="done", insights=len(insights))
     _write_json(run_dir / "status.json", st)
 
 
 def _launched(settings: Settings, run_dir: Path, lock: Path, st: dict) -> subprocess.Popen:
-    proc = _launch(settings, run_dir, st["timeout_s"])
+    proc = _launch(settings, run_dir)
     st["pid"] = proc.pid
     _write_json(run_dir / "status.json", st)
     # The lock now follows the Compass process, so it stays held if Hermes exits mid-run.
@@ -341,17 +325,12 @@ def _progress(run_dir: Path) -> str | None:
 
 def load(run_dir: Path, base: Path) -> RunResult:
     st = _read_json(run_dir / "status.json")
-    if st.get("state") == "running":
-        if not _alive(st.get("pid")):
-            # The watcher thread died with its Hermes process; the run ended on its own.
-            _finish(run_dir, st, _exit_code(run_dir))
-        elif time.time() > st.get("started_at", 0) + st.get("timeout_s", 0) + GRACE_S:
-            # Backstop in case the watchdog itself is stuck.
-            _kill_tree(st["pid"])
-            _finish(run_dir, st, None)
+    if st.get("state") == "running" and not _alive(st.get("pid")):
+        # The watcher thread died with its Hermes process; the run ended on its own.
+        _finish(run_dir, st, _exit_code(run_dir))
     state = st.get("state", "failed")
     out, html = run_dir / "insights.yaml", run_dir / "report.html"
-    insights = (yaml.safe_load(out.read_text(encoding="utf-8")) or []) if out.is_file() else []
+    insights = _read_insights(out)
     elapsed = round(time.time() - st.get("started_at", time.time()), 1)
     return RunResult(
         ok=state != "failed",

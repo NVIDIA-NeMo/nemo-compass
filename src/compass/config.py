@@ -349,6 +349,15 @@ class RunConfig(BaseSettings):
         default=None,
         description="Existing insights.json to reconcile with newly generated Insights",
     )
+    timeout: int | None = Field(
+        default=None,
+        ge=1,
+        description="Stop the run after this many seconds and exit with code 124",
+    )
+    status_path: Path | None = Field(
+        default=None,
+        description="When the run ends, write its exit code as JSON to this file",
+    )
 
     @field_validator("ethos_path", mode="before")
     @classmethod

@@ -58,7 +58,7 @@ def _status(s: settings.Settings) -> None:
         print("! No Relay trajectories yet. Run `hermes compass setup`.")
 
 
-def _run(s: settings.Settings) -> None:
+def _run(s: settings.Settings) -> int:
     base = hermes_api.data_dir()
     print(
         f"Running Compass on up to {s.max_sessions} sessions ({s.sample}), "
@@ -68,13 +68,14 @@ def _run(s: settings.Settings) -> None:
     result = runner.run(s, base)
     if result.state != "done":
         print(f"Compass did not finish: {result.error}")
-        return
+        return 1
     print(
         f"{len(result.insights)} insights from {result.trace_count} sessions in {result.seconds} s."
     )
     for i in result.insights:
         print(f"  [{i.get('severity') or '-'}] {i.get('name')}")
     print(f"Report: {result.report_html}")
+    return 0
 
 
 def _report(_: settings.Settings) -> None:
@@ -99,8 +100,9 @@ def setup_argparse(subparser: argparse.ArgumentParser) -> None:
     subs.add_parser("report", help="Open the latest HTML report")
 
 
-def make_handler(get_config: Callable[..., Any]) -> Callable[[argparse.Namespace], None]:
-    def handle(args: argparse.Namespace) -> None:
+def make_handler(get_config: Callable[..., Any]) -> Callable[[argparse.Namespace], int | None]:
+    def handle(args: argparse.Namespace) -> int | None:
+        """Hermes exits with a nonzero int returned here (None counts as success)."""
         name = getattr(args, "compass_command", None) or "status"
         s = settings.load(get_config)
         overrides = {}
@@ -108,6 +110,6 @@ def make_handler(get_config: Callable[..., Any]) -> Callable[[argparse.Namespace
             overrides["max_sessions"] = max(2, args.max_sessions)
         if getattr(args, "sample", None):
             overrides["sample"] = args.sample
-        _COMMANDS[name](dataclasses.replace(s, **overrides) if overrides else s)
+        return _COMMANDS[name](dataclasses.replace(s, **overrides) if overrides else s)
 
     return handle

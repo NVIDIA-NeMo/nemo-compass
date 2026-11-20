@@ -31,6 +31,8 @@ class Settings:
     max_tokens: int
     ethos_path: Path | None
     timeout_s: int
+    # Set when the model comes from Hermes but its endpoint can't be told from config.yaml.
+    unknown_endpoint_provider: str = ""
 
     def problems(self) -> list[str]:
         out = []
@@ -43,9 +45,31 @@ class Settings:
             out.append(
                 "No Compass model. Set the plugin's `compass_model` setting (a LiteLLM string)."
             )
+        if self.unknown_endpoint_provider:
+            out.append(
+                f"Hermes's main model uses provider '{self.unknown_endpoint_provider}' with no "
+                "base_url, so the plugin can't tell which endpoint Compass should call. Set "
+                "`api_base` in the nvidia-compass plugin settings (and `compass_model` if needed)."
+            )
         if self.ethos_path is not None and not self.ethos_path.is_file():
             out.append(f"ethos_path {self.ethos_path} does not exist.")
         return out
+
+
+def _hermes_provider(cfg: dict[str, Any]) -> str:
+    section = cfg.get("model") or {}
+    if isinstance(section, str):
+        return "auto"
+    return str(section.get("provider") or "auto").strip().lower()
+
+
+def endpoint_unknown(model: str, api_base: str, provider: str) -> bool:
+    """True if LiteLLM would fall back to api.openai.com though Hermes isn't using OpenAI.
+
+    Hermes resolves `auto` and similar providers at runtime from the credentials it finds, and
+    plugins have no public way to read that result, so the plugin asks for `api_base` instead.
+    """
+    return model.startswith("openai/") and not api_base and provider != "openai"
 
 
 def model_from_hermes(cfg: dict[str, Any]) -> tuple[str, str]:
@@ -54,7 +78,7 @@ def model_from_hermes(cfg: dict[str, Any]) -> tuple[str, str]:
     if isinstance(section, str):
         section = {"default": section}
     name = str(section.get("default") or section.get("model") or "").strip()
-    provider = str(section.get("provider") or "auto").strip().lower()
+    provider = _hermes_provider(cfg)
     base_url = str(section.get("base_url") or "").strip()
     if not name:
         return "", ""
@@ -70,11 +94,15 @@ def load(get_config: Callable[..., Any]) -> Settings:
         value = get_config(key, default=default)
         return default if value in (None, "") else value
 
-    derived_model, derived_base = model_from_hermes(hermes_api.hermes_config())
+    cfg = hermes_api.hermes_config()
+    derived_model, derived_base = model_from_hermes(cfg)
     model = str(opt("compass_model", "")).strip()
     api_base = str(opt("api_base", "")).strip()
+    unknown = ""
     if not model:
         model, api_base = derived_model, api_base or derived_base
+        if endpoint_unknown(model, api_base, _hermes_provider(cfg)):
+            unknown = _hermes_provider(cfg)
     atif = str(opt("atif_dir", "")).strip()
     ethos = str(opt("ethos_path", "")).strip()
     return Settings(
@@ -89,4 +117,5 @@ def load(get_config: Callable[..., Any]) -> Settings:
         max_tokens=max(1024, int(opt("max_tokens", 32768))),
         ethos_path=Path(ethos).expanduser() if ethos else None,
         timeout_s=max(1, int(opt("timeout_minutes", 30))) * 60,
+        unknown_endpoint_provider=unknown,
     )

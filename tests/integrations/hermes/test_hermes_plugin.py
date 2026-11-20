@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import dataclasses
 import json
 import os
@@ -94,6 +95,28 @@ def test_settings_prefill_from_hermes_and_override(hermes):
     assert s2.model == "anthropic/claude-sonnet-5.5" and s2.api_base == ""
 
 
+@pytest.mark.parametrize(
+    "section,unknown",
+    [
+        (
+            {"default": "gpt-5", "provider": "auto"},
+            True,
+        ),  # Patrick's case: would hit api.openai.com
+        ({"default": "gpt-5"}, True),
+        ({"default": "gpt-5", "provider": "openai"}, False),
+        ({"default": "nemotron", "provider": "auto", "base_url": "http://x/v1"}, False),
+        ({"default": "claude-sonnet-5.5", "provider": "anthropic"}, False),
+    ],
+)
+def test_unknown_endpoint_asks_for_api_base(hermes, section, unknown):
+    hermes["config"]["model"] = section
+    s = settings.load(FakeCtx().get_config)
+    assert any("api_base" in p for p in s.problems()) is unknown
+    # Setting api_base in the plugin settings resolves it.
+    s2 = settings.load(FakeCtx({"api_base": "http://y/v1"}).get_config)
+    assert not any("api_base" in p for p in s2.problems())
+
+
 def test_missing_key_is_reported_not_raised(hermes):
     hermes["secrets"].clear()
     out = json.loads(FakeCtx_tool("compass_analyze")({}))
@@ -159,19 +182,26 @@ def test_too_few_traces_explains_relay_setup(hermes):
 
 # A stand-in for `python -m compass.cli.main`: prints progress like Compass, writes insights.
 FAKE_COMPASS = r"""
-import sys, time, yaml, os
+import datetime, json, sys, time, yaml, os
 args = sys.argv[1:]
-out = args[args.index("--output-path") + 1]
+arg = lambda name: args[args.index(name) + 1]
+out, timeout, status = arg("--output-path"), int(arg("--timeout")), arg("--status-path")
+def end(code):
+    json.dump({"exit_code": code, "timed_out": code == 124}, open(status, "w")); sys.exit(code)
 mode = os.environ.get("FAKE_MODE", "ok")
 print("Compiling candidate problems into insights · 10s", file=sys.stderr, flush=True)
 if mode == "slow":
-    time.sleep(30)
+    time.sleep(min(30, timeout))
+    if timeout < 30:
+        end(124)
 if mode == "fail":
-    print("Missing required environment settings", file=sys.stderr); sys.exit(2)
+    print("Missing required environment settings", file=sys.stderr); end(2)
 yaml.safe_dump([{"name": "web_search hits rate limits", "severity": "high",
                  "description": "Search returns HTTP 429 in most sessions.",
+                 "updated_date": datetime.datetime(2026, 11, 19, tzinfo=datetime.timezone.utc),
                  "evidence": [{"trace_id": "traj-s0"}, {"trace_id": "traj-s1"}]}], open(out, "w"))
 print("Saved: insights.yaml", file=sys.stderr)
+end(0)
 """
 
 
@@ -180,8 +210,8 @@ def fake_compass(monkeypatch, tmp_path):
     captured = {}
     real_command = runner.command
 
-    def cmd(settings_, traces_path, out_path):
-        captured["real"] = real_command(settings_, traces_path, out_path)
+    def cmd(settings_, run_dir):
+        captured["real"] = real_command(settings_, run_dir)
         return [sys.executable, "-c", FAKE_COMPASS, *captured["real"][3:]]
 
     real_env = runner.child_env
@@ -245,6 +275,14 @@ def test_compass_failure_is_reported(hermes, relay_dir, fake_compass):
     assert "failed" in out["message"]
 
 
+def test_cli_run_exits_nonzero_when_compass_fails(hermes, relay_dir, fake_compass):
+    handle = plugin.cli.make_handler(FakeCtx().get_config)
+    fake_compass["mode"] = "fail"
+    assert handle(argparse.Namespace(compass_command="run")) == 1
+    fake_compass["mode"] = "ok"
+    assert handle(argparse.Namespace(compass_command="run")) == 0
+
+
 def test_blocking_run_for_cli(hermes, relay_dir, fake_compass):
     r = runner.run(settings.load(FakeCtx().get_config), BASE(hermes))
     assert r.state == "done" and r.insights[0]["severity"] == "high"
@@ -262,37 +300,15 @@ def test_finishes_run_whose_watcher_died(hermes, relay_dir, fake_compass):
     assert r.state == "done" and Path(r.report_html).is_file()
 
 
-def test_watchdog_enforces_timeout_without_hermes(hermes, relay_dir, fake_compass):
-    """Hermes gone (no watcher thread): the watchdog alone stops Compass at the deadline."""
+def test_timeout_is_passed_to_compass_and_reported(hermes, relay_dir, fake_compass):
+    """Compass stops itself at --timeout and says so in exit.json; the plugin reports it."""
     fake_compass["mode"] = "slow"
     s = dataclasses.replace(settings.load(FakeCtx().get_config), timeout_s=1)
-    result, lock, st = runner._prepare(s, BASE(hermes))
-    run_dir = Path(result.run_dir)
-    proc = runner._launched(s, run_dir, lock, st)
-    t0 = time.monotonic()
-    proc.wait(timeout=15)
-    assert time.monotonic() - t0 < 10  # the fake sleeps 30 s
-    assert json.loads((run_dir / "exit.json").read_text())["timed_out"] is True
-    lock.unlink()
-    r = runner.status(BASE(hermes))
+    r = runner.run(s, BASE(hermes))
+    real = fake_compass["real"]
+    assert real[real.index("--timeout") + 1] == "1"
+    assert real[real.index("--status-path") + 1] == str(Path(r.run_dir) / "exit.json")
     assert r.state == "failed" and "timed out" in r.error
-
-
-def test_overdue_run_is_killed_on_status_check(hermes, relay_dir, fake_compass, monkeypatch):
-    """Backstop if the watchdog itself hangs: a status check past deadline + grace kills the run."""
-    fake_compass["mode"] = "slow"
-    s = settings.load(FakeCtx().get_config)
-    result, lock, st = runner._prepare(s, BASE(hermes))
-    run_dir = Path(result.run_dir)
-    proc = runner._launched(s, run_dir, lock, st)
-    st_file = run_dir / "status.json"
-    data = json.loads(st_file.read_text())
-    data["started_at"] -= data["timeout_s"] + runner.GRACE_S + 1
-    st_file.write_text(json.dumps(data))
-    r = runner.status(BASE(hermes))
-    assert r.state == "failed" and "timed out" in r.error
-    proc.wait(timeout=10)
-    lock.unlink()
 
 
 def test_report_escapes_html():

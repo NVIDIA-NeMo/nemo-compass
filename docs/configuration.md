@@ -21,6 +21,8 @@ in the environment or `.env`.
 | `compass_signals` | [Compass Signals and their prerequisites](compass-signals.md). All signals are enabled by default. |
 | `code_base` | [Local agent source](#candidate-problem-validation) to consult during candidate problem validation and confidence review. |
 | `existing_insights` | Previous JSON or YAML insight collection to reconcile with this run. |
+| `timeout` | Stop the run after this many seconds; Compass exits with code 124. Unset by default. |
+| `status_path` | When the run ends, write `{"exit_code": ..., "timed_out": ...}` to this file, so a program that launched Compass in the background can read the outcome. |
 
 Relative paths resolve from the directory where you run the command.
 
