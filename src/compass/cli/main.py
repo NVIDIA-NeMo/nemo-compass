@@ -18,9 +18,11 @@ Use --help-all for every setting. CLI options override individual YAML values.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import sys
+import threading
 from argparse import SUPPRESS, Action, ArgumentParser
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
@@ -95,6 +97,9 @@ from trace_ingest.loaders.gym import GymTraceLoader
 
 EXIT_OK = 0
 EXIT_SETUP = 2
+EXIT_TIMEOUT = 124  # the same code as coreutils `timeout`
+# Past --timeout, how long a graceful stop may take before the process exits regardless.
+HARD_STOP_GRACE_S = 30
 DEFAULT_REASONING_EFFORT = "high"
 
 
@@ -526,15 +531,32 @@ def _print_help(*, full: bool) -> None:
     parser.print_help()
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
-    if not argv or any(arg in argv for arg in ("-h", "--help", "--help-all")):
-        _print_help(full="--help-all" in argv)
-        return EXIT_OK
+def _write_status(path: Path | None, exit_code: int) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    status = {"exit_code": exit_code, "timed_out": exit_code == EXIT_TIMEOUT}
+    path.write_text(json.dumps(status) + "\n", encoding="utf-8")
 
-    output = RunOutput(Console(stderr=True, markup=False, highlight=False))
+
+def _start_hard_stop(config: RunConfig) -> threading.Timer | None:
+    """Exit even if the graceful timeout can't land, e.g. while a worker thread is stuck."""
+
+    if config.timeout is None:
+        return None
+
+    def stop() -> None:
+        _write_status(config.status_path, EXIT_TIMEOUT)
+        os._exit(EXIT_TIMEOUT)
+
+    timer = threading.Timer(config.timeout + HARD_STOP_GRACE_S, stop)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+def _run(config: RunConfig, output: RunOutput) -> int:
     try:
-        config = get_config(argv)
         _check_environment(config)
         model = _configured_model(config)
         if re.search(r"(?:^|/)nvidia/nemotron-3\.5-lightning-30b$", model, re.IGNORECASE):
@@ -551,7 +573,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 soft_wrap=True,
             )
         with telemetry_session(config) as record:
-            result = asyncio.run(_generate_insights(config, output))
+            generate = _generate_insights(config, output)
+            result = asyncio.run(asyncio.wait_for(generate, config.timeout))
             rendered = _render_insights(result.insights)
             if result.insights:
                 _write_insights(config.output_path, rendered)
@@ -563,6 +586,34 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SetupError as error:
         output.console.print(str(error), soft_wrap=True)
         return EXIT_SETUP
+    except TimeoutError:
+        output.console.print(
+            f"Stopped: the run took longer than --timeout ({config.timeout} s).", soft_wrap=True
+        )
+        return EXIT_TIMEOUT
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or any(arg in argv for arg in ("-h", "--help", "--help-all")):
+        _print_help(full="--help-all" in argv)
+        return EXIT_OK
+
+    output = RunOutput(Console(stderr=True, markup=False, highlight=False))
+    try:
+        config = get_config(argv)
+    except SetupError as error:
+        output.console.print(str(error), soft_wrap=True)
+        return EXIT_SETUP
+    exit_code = 1  # what an unexpected exception exits with
+    hard_stop = _start_hard_stop(config)
+    try:
+        exit_code = _run(config, output)
+        return exit_code
+    finally:
+        if hard_stop is not None:
+            hard_stop.cancel()
+        _write_status(config.status_path, exit_code)
 
 
 if __name__ == "__main__":

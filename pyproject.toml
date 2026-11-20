@@ -114,6 +114,8 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN"]
+# Hermes loads a plugin folder as a package under its own name, so the plugin must use relative imports.
+"integrations/hermes/**" = ["TID252"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"

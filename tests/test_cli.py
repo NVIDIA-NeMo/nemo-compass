@@ -614,3 +614,71 @@ def test_model_warning_is_nonblocking_and_uses_effective_model(
     monkeypatch.setattr(cli, "_generate_insights", generate)
     assert cli.main(["--config", "unused.yaml"]) == 0
     assert yaml.safe_load(capsys.readouterr().out) == []
+
+
+def _status_args(tmp_path, *extra):
+    return [
+        "--trace.filesystem.path",
+        "unused.jsonl",
+        "--output-path",
+        str(tmp_path / "insights.yaml"),
+        "--status-path",
+        str(tmp_path / "status.json"),
+        *extra,
+    ]
+
+
+def test_timeout_stops_the_run_and_records_it(clean_environment, monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("COMPASS_API_KEY", "test-key")
+
+    async def slow(config, output):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(cli, "_generate_insights", slow)
+    assert cli.main(_status_args(tmp_path, "--timeout", "1")) == cli.EXIT_TIMEOUT
+    assert "--timeout (1 s)" in capsys.readouterr().err
+    status = json.loads((tmp_path / "status.json").read_text())
+    assert status == {"exit_code": cli.EXIT_TIMEOUT, "timed_out": True}
+
+
+def test_status_records_success_and_setup_errors(clean_environment, monkeypatch, tmp_path):
+    async def done(config, output):
+        return cli.RunResult(trace_count=0, evidence=[], insights=[])
+
+    monkeypatch.setattr(cli, "_generate_insights", done)
+    # No COMPASS_API_KEY yet: a setup error, still recorded.
+    assert cli.main(_status_args(tmp_path)) == cli.EXIT_SETUP
+    assert json.loads((tmp_path / "status.json").read_text())["exit_code"] == cli.EXIT_SETUP
+    monkeypatch.setenv("COMPASS_API_KEY", "test-key")
+    assert cli.main(_status_args(tmp_path)) == cli.EXIT_OK
+    status = json.loads((tmp_path / "status.json").read_text())
+    assert status == {"exit_code": cli.EXIT_OK, "timed_out": False}
+
+
+def test_status_records_an_unexpected_crash(clean_environment, monkeypatch, tmp_path):
+    monkeypatch.setenv("COMPASS_API_KEY", "test-key")
+
+    async def crash(config, output):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(cli, "_generate_insights", crash)
+    with pytest.raises(RuntimeError):
+        cli.main(_status_args(tmp_path))
+    assert json.loads((tmp_path / "status.json").read_text())["exit_code"] == 1
+
+
+def test_hard_stop_exits_when_the_graceful_timeout_cannot(monkeypatch, tmp_path):
+    exits = []
+    monkeypatch.setattr(cli.os, "_exit", exits.append)
+    monkeypatch.setattr(cli, "HARD_STOP_GRACE_S", 0)
+    config = RunConfig(
+        trace={"filesystem": {"path": "unused.jsonl"}},
+        timeout=1,
+        status_path=tmp_path / "status.json",
+    )
+    timer = cli._start_hard_stop(config)
+    assert timer is not None
+    timer.join(5)
+    assert exits == [cli.EXIT_TIMEOUT]
+    assert json.loads((tmp_path / "status.json").read_text())["timed_out"] is True
+    assert cli._start_hard_stop(config.model_copy(update={"timeout": None})) is None
