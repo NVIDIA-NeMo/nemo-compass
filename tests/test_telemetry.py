@@ -194,7 +194,7 @@ def _run_cli(source, enabled):
     exporter = InMemorySpanExporter()
     args = ["--trace.filesystem.path", str(source)]
     with patch("compass.telemetry.OTLPSpanExporter", return_value=exporter) as factory:
-        with patch("compass.cli.main._run_compass_signals", analyze):
+        with patch("compass.analysis._run_compass_signals", analyze):
             assert main(args) == 0
         assert factory.called == enabled
     records = exporter.get_finished_spans()

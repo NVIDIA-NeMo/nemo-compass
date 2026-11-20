@@ -9,7 +9,6 @@ import asyncio
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from rich.console import Console, Group
@@ -17,9 +16,8 @@ from rich.live import Live
 from rich.table import Table
 from rich.text import Text
 
+from compass.analysis_result import AnalysisResult as RunResult
 from compass.compass_signals.compass_signals import CompassSignalResult
-from compass.insight import Insight
-from compass.insights_generation.validation import CandidateProblemRejection
 
 _SIGNAL_LABELS = {
     "anomaly-and-patterns": "Anomalies and patterns",
@@ -45,26 +43,6 @@ def display_name(name: str) -> str:
 
 def count(value: int, singular: str) -> str:
     return f"{value:,} {singular}{'' if value == 1 else 's'}"
-
-
-@dataclass
-class RunResult:
-    trace_count: int
-    evidence: list[CompassSignalResult]
-    insights: list[Insight]
-    existing_insights: list[Insight] = field(default_factory=list)
-    validation_rejections: list[CandidateProblemRejection] = field(default_factory=list)
-    limitations: list[str] = field(default_factory=list)
-
-
-def signal_limitations(evidence: list[CompassSignalResult]) -> list[str]:
-    """Collect run limitations using the signal's canonical identifier."""
-    limitations = []
-    for result in evidence:
-        if result.skip_reason:
-            limitations.append(f"{result.signal_name}: {result.skip_reason}")
-        limitations.extend(f"{result.signal_name}: {reason}" for reason in result.limitations)
-    return limitations
 
 
 class RunOutput:

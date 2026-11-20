@@ -12,8 +12,9 @@ from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from pydantic import ValidationError
 
 from compass import telemetry
+from compass.analysis import _run_compass_signals
 from compass.cli import main as cli
-from compass.cli.main import _run_compass_signals, get_config
+from compass.cli.main import get_config
 from compass.compass_signals.builtins import registered_builtin_signals
 from compass.compass_signals.compass_signals import Problem
 from compass.compass_signals.ethos_divergence import ethos_divergence_detector as ethos
@@ -46,7 +47,7 @@ def test_ethos_cli_runs_registered_detector(tmp_path, monkeypatch, select_signal
             self.llm = llm
 
         async def detect_issues(self, traces, description, **extra):
-            assert self.llm is llm
+            assert self.llm.client is llm
             assert traces is snapshot
             assert description == ethos.ETHOS_DIVERGENCE
             assert extra == {"ethos": "Never issue refunds."}

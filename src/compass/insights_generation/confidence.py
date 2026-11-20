@@ -15,6 +15,7 @@ from nooa.strategies import CodeActStrategy
 from nooa.unifiedllm import UnifiedLLM
 from pydantic import BaseModel, ConfigDict
 
+from compass.analysis_runtime import agent_scope
 from compass.insight import Insight, Rating
 from compass.insights_generation.codebase import CodebaseTools
 from compass.traces import Trace
@@ -87,13 +88,14 @@ class InsightConfidence:
     async def rate(self, insight: Insight, supporting_traces: tuple[Trace, ...]) -> Rating | None:
         # One agent per call: concurrent ratings must not share a REPL session.
         agent = _ConfidenceAgent(self._codebase, self._llm)
-        try:
-            return (await agent.rate(insight, _trace_context(supporting_traces))).confidence
-        except GenerationAborted:
-            raise
-        except GenerationError:
-            # Undecided inside the step budget: leave confidence unset rather than abort the run.
-            return None
+        async with agent_scope(agent):
+            try:
+                return (await agent.rate(insight, _trace_context(supporting_traces))).confidence
+            except GenerationAborted:
+                raise
+            except GenerationError:
+                # Undecided inside the step budget: leave confidence unset rather than abort the run.
+                return None
 
 
 __all__ = ["InsightConfidence"]

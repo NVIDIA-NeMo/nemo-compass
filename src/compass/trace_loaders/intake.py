@@ -10,10 +10,12 @@ from trace_ingest.loaders.intake import (
     IntakeTraceLoader,
     IntakeTraceLoaderConfig,
     IntakeTraceQuery,
+    normalize_intake_trace,
 )
 
 __all__ = [
     "IntakeLoadError",
+    "normalize_intake_trace",
     "IntakeStatus",
     "IntakeTraceDescription",
     "IntakeTraceLoader",

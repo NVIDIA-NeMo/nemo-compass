@@ -15,6 +15,7 @@ import pytest
 from nooa.unifiedllm import FakeLLMClient
 from pydantic import ValidationError
 
+import compass.analysis as analysis
 from compass.config import RunConfig, TraceConfig
 from compass.trace_loaders.braintrust import (
     BraintrustTraceConfig,
@@ -302,7 +303,7 @@ def test_cli_runs_compass_signals(rows, tmp_path, monkeypatch, select_signals):
     monkeypatch.setenv("COMPASS_API_KEY", "test-key")
     monkeypatch.setenv("BRAINTRUST_API_KEY", "test-key")
     monkeypatch.setattr(cli, "_build_llm", lambda *a: FakeLLMClient())
-    monkeypatch.setattr(cli, "InsightCompilation", lambda llm: compilation)
+    monkeypatch.setattr(analysis, "InsightCompilation", lambda llm: compilation)
     with client_for(rows) as client:
         monkeypatch.setattr(
             cli, "BraintrustTraceLoader", lambda cfg: BraintrustTraceLoader(cfg, client)

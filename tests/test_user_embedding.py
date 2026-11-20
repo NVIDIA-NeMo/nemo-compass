@@ -93,3 +93,26 @@ def test_remote_rejects_oversized_input_before_request_and_propagates_failures(m
         generator.generate_batch(["a " * 9000])
     with pytest.raises(RuntimeError, match="Provider unavailable"):
         screen_user_messages({"a": ["hello"]}, generator, ComplaintClassifier(generator.projection))
+
+
+def test_injected_transport_preserves_preprocessing_and_checks_vector_contract(monkeypatch):
+    calls = []
+
+    def embed(inputs):
+        calls.append(inputs)
+        return [(np.eye(1, 4096)[0] * 2).tolist() for _ in inputs]
+
+    generator = UserEmbeddingGenerator(
+        litellm=LiteLLMEmbeddingConfig(
+            model="host/qwen", api_key_env="UNSET_HOST_SECRET", batch_size=1
+        ),
+        embed_batch=embed,
+    )
+    generator.remote_tokenizer = Tokenizer(models.WordLevel({"[UNK]": 0}, unk_token="[UNK]"))
+    results = generator.generate_batch(["hello", "world"])
+    prefix = generator.projection.metadata["encoder"]["prefix"]
+    assert sorted(calls) == sorted([[prefix + "hello"], [prefix + "world"]])
+    assert len(results) == 2 and all(len(result.data) == 132 for result in results)
+    generator.embed_batch = lambda inputs: [[1.0] * 16 for _ in inputs]
+    with pytest.raises(ValueError, match="4096-dimensional"):
+        generator.generate_batch(["hello"])

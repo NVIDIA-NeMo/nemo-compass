@@ -20,6 +20,7 @@ from nooa.strategy_validation import InvariantError
 from nooa.unifiedllm import UnifiedLLM
 from pydantic import BaseModel
 
+from compass.analysis_runtime import agent_scope
 from compass.traces import Span, Trace, TraceSnapshot
 
 T = TypeVar("T", bound=BaseModel)
@@ -109,7 +110,9 @@ async def extract_evidence(
             ...
 
     async with llm:
-        return await Extractor(llm=llm).collect(schema.model_json_schema(), instructions)
+        extractor = Extractor(llm=llm)
+        async with agent_scope(extractor):
+            return await extractor.collect(schema.model_json_schema(), instructions)
 
 
 __all__ = ["extract_evidence"]
