@@ -5,6 +5,8 @@
 
 ![Status: Research Preview](https://img.shields.io/badge/Status-Research%20Preview-orange)
 
+[Introducing NeMo Compass](https://nvidia-nemo.github.io/Applied-Research/dev-notes/posts/2026-10-23-token-efficient-analysis-of-production-traces/) · [What's new](#whats-new)
+
 The goal of NeMo Compass is to efficiently find signals in agent traces that lead to meaningful improvements in quality, cost, safety, privacy, and/or user satisfaction. 
 
 A critical input to improving any agent is understanding what it’s doing, especially once you turn it on in production. Evals often capture only a small subset of the tasks an agent actually needs to be good at. Agent developers have discovered that production trace analysis is an essential part of improving an agent, but today there's no standard for how this type of analysis gets validated and measured.
@@ -15,6 +17,7 @@ NeMo Compass is an applied research project with a goal of improving the tools a
 | --- | --- | --- |
 | Anomaly Detection | What outlier behaviors exist in a set of agent traces? | Scores outliers with an Isolation Forest and reports feature-level deviations |
 | Tool Issues	| What recurring problems occur when the agent uses tools?	| Checks tool calls and results for invalid arguments, failures, missing results, and unproductive retries |
+| Cost Efficiency | Where is the agent wasting tokens? | Checks recorded cache usage, call timing, and tool definitions for cache misses after tools are added, removed, changed, or reordered |
 | User Sentiment | What recurring complaints do users have about the agent? | Screens recorded human messages with a classifier, then reviews recurring complaints in context |
 | ETHOS.md Divergence | Where does the agent’s behavior conflict with its stated rules and goals? | Compares traces with the agent’s [ETHOS.md](https://github.com/NVIDIA/skills/blob/main/skills/ethos-orchestrate/README.md#how-to-use) document and investigates possible gaps |
 | Grader failures | What behaviors recur in traces with poor evaluation results? | Uses recorded scores and feedback to select traces, then investigates shared failure patterns |
@@ -64,8 +67,7 @@ on `PATH`. Install it separately with `brew install ripgrep` on macOS or
 - [Hermes Agent plugin](integrations/hermes/README.md) — run Compass on your Hermes sessions from inside Hermes.
 
 [Purpose and expectations](ETHOS.md) · [Development](DEVELOPMENT.md) ·
-[Releasing](RELEASING.md) · [Architecture](docs/architecture.md) ·
-[Dev Notes](docs/dev-notes/index.md)
+[Releasing](RELEASING.md) · [Architecture](docs/architecture.md)
 
 # Research Topics 
 
@@ -120,3 +122,20 @@ This project is licensed under the [Apache License, Version 2.0](LICENSE). See
 [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for human-readable dependency license
 disclosures, and [third_party/licenses.jsonl](third_party/licenses.jsonl) for the machine-readable
 inventory.
+
+## What's new
+
+Features and significant behavior changes recently merged into `main`.
+See [GitHub Releases](https://github.com/NVIDIA-NeMo/nemo-compass/releases) for release notes.
+
+- **2026-11-18 · Run Compass on Python 3.14**\
+  Compass now supports Python 3.12 through 3.14. [Installation example →](examples/README.md)
+
+- **2026-11-12 · Report all evidence-backed findings**\
+  Insight compilation now retains supported problems even when they are rare, low impact, recovered, or have no known fix. [Change details →](https://github.com/NVIDIA-NeMo/nemo-compass/pull/149)
+
+- **2026-11-02 · Analyze complete conversations**\
+  Intake, MLflow, Langfuse, and LangSmith loaders now combine records from the same session into one trace, preserving conversation turns for analysis. [Source guides →](#start-here)
+
+- **2026-10-29 · Add the Cost Efficiency signal**\
+  Identify wasted tokens, starting with recurring prompt-cache misses after tool changes. [Signal guide →](docs/compass-signals.md#cost-efficiency) · [#84](https://github.com/NVIDIA-NeMo/nemo-compass/pull/84)
