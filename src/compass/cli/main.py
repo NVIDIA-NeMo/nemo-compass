@@ -501,10 +501,10 @@ def get_config(argv: Sequence[str] | None = None) -> RunConfig:
         for problem in error.errors():
             field = ".".join(str(part) for part in problem["loc"]) or "configuration"
             message = problem["msg"]
-            if field == "compass_signals.anomaly_and_patterns":
+            if problem["type"] == "extra_forbidden":
                 message = (
-                    "This signal has been removed.\n"
-                    "    Remove this entry from your YAML configuration, even if set to false."
+                    "Unknown setting.\n"
+                    "    Remove this entry from your configuration or correct its name."
                 )
             messages.append(f"  {field}: {message}")
         raise SetupError("\n".join(messages)) from error

@@ -5,23 +5,31 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+import yaml
 
 from compass.cli.main import SetupError, get_config
 from compass.config import CompassSignalsConfig, RunConfig
 
 
-def test_removed_anomaly_signal_explains_how_to_update_yaml(tmp_path):
+@pytest.mark.parametrize(
+    "settings, field",
+    [
+        (
+            {"compass_signals": {"anomaly_and_patterns": False}},
+            "compass_signals.anomaly_and_patterns",
+        ),
+        ({"max_token": 100}, "max_token"),
+    ],
+)
+def test_unknown_settings_explain_how_to_update_yaml(tmp_path, settings, field):
     path = tmp_path / "config.yaml"
-    path.write_text(
-        "trace:\n  filesystem:\n    path: traces.jsonl\n"
-        "compass_signals:\n  anomaly_and_patterns: false\n"
-    )
+    path.write_text(yaml.safe_dump({"trace": {"filesystem": {"path": "traces.jsonl"}}, **settings}))
     with pytest.raises(SetupError) as error:
         get_config(["--config", str(path)])
     assert str(error.value) == (
         "Invalid configuration:\n"
-        "  compass_signals.anomaly_and_patterns: This signal has been removed.\n"
-        "    Remove this entry from your YAML configuration, even if set to false."
+        f"  {field}: Unknown setting.\n"
+        "    Remove this entry from your configuration or correct its name."
     )
 
 
