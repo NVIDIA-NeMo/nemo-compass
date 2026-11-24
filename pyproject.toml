@@ -22,12 +22,11 @@ license-files = [
     "third_party/license_texts/*.txt",
 ]
 authors = [{ name = "Compass contributors" }]
-keywords = ["agent-traces", "evaluation", "anomaly-detection", "tool-use"]
+keywords = ["agent-traces", "evaluation", "tool-use"]
 
 dependencies = [
     "httpx>=0.28,<1",
     "numpy>=1.26,<3",
-    "scikit-learn>=1.4,<2",
     "jsonschema>=4.18,<5",
     "pydantic>=2.12,<3",
     "pydantic-settings[yaml]>=2.12,<3",

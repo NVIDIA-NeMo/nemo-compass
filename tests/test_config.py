@@ -5,8 +5,32 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+import yaml
 
+from compass.cli.main import SetupError, get_config
 from compass.config import CompassSignalsConfig, RunConfig
+
+
+@pytest.mark.parametrize(
+    "settings, field",
+    [
+        (
+            {"compass_signals": {"anomaly_and_patterns": False}},
+            "compass_signals.anomaly_and_patterns",
+        ),
+        ({"max_token": 100}, "max_token"),
+    ],
+)
+def test_unknown_settings_explain_how_to_update_yaml(tmp_path, settings, field):
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({"trace": {"filesystem": {"path": "traces.jsonl"}}, **settings}))
+    with pytest.raises(SetupError) as error:
+        get_config(["--config", str(path)])
+    assert str(error.value) == (
+        "Invalid configuration:\n"
+        f"  {field}: Unknown setting.\n"
+        "    Remove this entry from your configuration or correct its name."
+    )
 
 
 def test_cli_nested_override_preserves_yaml_siblings(tmp_path: Path) -> None:
@@ -19,7 +43,7 @@ trace:
     experiment: deep_research
     tracking_uri: https://example.test
 compass_signals:
-  anomaly_and_patterns: {}
+  tool_issues: {}
 """.lstrip(),
         encoding="utf-8",
     )
@@ -44,8 +68,6 @@ def test_config_file_is_optional_when_cli_provides_trace_input() -> None:
         _cli_parse_args=[
             "--trace.filesystem.path",
             "traces.jsonl",
-            "--compass-signals.anomaly-and-patterns.contamination",
-            "0.02",
             "--compass-signals.grader-failure-patterns.max-tool-rounds",
             "72",
         ]
@@ -63,8 +85,6 @@ def test_cli_accepts_optional_code_base() -> None:
         _cli_parse_args=[
             "--trace.filesystem.path",
             "traces.jsonl",
-            "--compass-signals.anomaly-and-patterns.contamination",
-            "0.02",
             "--code-base",
             "../agent-source",
         ]
@@ -147,7 +167,6 @@ def test_signals_default_on_and_false_disables_only_that_signal(tmp_path):
     assert config.compass_signals.user_sentiment is None
     assert config.compass_signals.tool_issues is not None
     assert config.compass_signals.tool_issues.retry_threshold == 5
-    assert config.compass_signals.anomaly_and_patterns is not None
     assert config.compass_signals.grader_failure_patterns is not None
 
 

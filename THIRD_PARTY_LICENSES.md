@@ -65,7 +65,6 @@ See DEVELOPMENT.md for collection scope and exception handling.
 | [`jinja2 3.1.6`](https://pypi.org/project/jinja2/3.1.6/) | `BSD-3-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt) |
 | [`jiter 0.16.0`](https://pypi.org/project/jiter/0.16.0/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`jmespath 1.1.0`](https://pypi.org/project/jmespath/1.1.0/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
-| [`joblib 1.5.3`](https://pypi.org/project/joblib/1.5.3/) | `BSD-3-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt) |
 | [`jsonschema 4.26.0`](https://pypi.org/project/jsonschema/4.26.0/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`jsonschema-specifications 2025.9.1`](https://pypi.org/project/jsonschema-specifications/2025.9.1/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`langfuse 4.17.0`](https://pypi.org/project/langfuse/4.17.0/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
@@ -78,7 +77,6 @@ See DEVELOPMENT.md for collection scope and exception handling.
 | [`mpmath 1.3.0`](https://pypi.org/project/mpmath/1.3.0/) | `BSD-3-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt) |
 | [`msgpack 1.2.4`](https://pypi.org/project/msgpack/1.2.4/) | `APACHE-2.0` | [NOTICES.txt](third_party/NOTICES.txt), [Apache-2.0.txt](third_party/license_texts/Apache-2.0.txt) |
 | [`multidict 7.2.1`](https://pypi.org/project/multidict/7.2.1/) | `APACHE-2.0` | [NOTICES.txt](third_party/NOTICES.txt), [Apache-2.0.txt](third_party/license_texts/Apache-2.0.txt) |
-| [`narwhals 2.25.0`](https://pypi.org/project/narwhals/2.25.0/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`networkx 3.6.1`](https://pypi.org/project/networkx/3.6.1/) | `BSD-3-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt) |
 | [`nooa 0.0.12`](https://pypi.org/project/nooa/0.0.12/) | `APACHE-2.0` | [NOTICES.txt](third_party/NOTICES.txt), [Apache-2.0.txt](third_party/license_texts/Apache-2.0.txt) |
 | [`numpy 2.5.2`](https://pypi.org/project/numpy/2.5.2/) | `BSD-3-CLAUSE AND 0BSD AND MIT AND ZLIB AND CC0-1.0` | [NOTICES.txt](third_party/NOTICES.txt), [0BSD.txt](third_party/license_texts/0BSD.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt), [CC0-1.0.txt](third_party/license_texts/CC0-1.0.txt), [MIT.txt](third_party/license_texts/MIT.txt), [Zlib.txt](third_party/license_texts/Zlib.txt) |
@@ -117,8 +115,6 @@ See DEVELOPMENT.md for collection scope and exception handling.
 | [`rpds-py 2026.6.3`](https://pypi.org/project/rpds-py/2026.6.3/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`s3transfer 0.19.2`](https://pypi.org/project/s3transfer/0.19.2/) | `APACHE-2.0` | [NOTICES.txt](third_party/NOTICES.txt), [Apache-2.0.txt](third_party/license_texts/Apache-2.0.txt) |
 | [`safetensors 0.8.0`](https://pypi.org/project/safetensors/0.8.0/) | `APACHE-2.0` | [NOTICES.txt](third_party/NOTICES.txt), [Apache-2.0.txt](third_party/license_texts/Apache-2.0.txt) |
-| [`scikit-learn 1.9.0`](https://pypi.org/project/scikit-learn/1.9.0/) | `BSD-3-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt) |
-| [`scipy 1.18.1`](https://pypi.org/project/scipy/1.18.1/) | `BSD-3-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt) |
 | [`setuptools 84.2.1`](https://pypi.org/project/setuptools/84.2.1/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`shellingham 1.5.4`](https://pypi.org/project/shellingham/1.5.4/) | `ISC` | [NOTICES.txt](third_party/NOTICES.txt), [ISC.txt](third_party/license_texts/ISC.txt) |
 | [`six 1.17.0`](https://pypi.org/project/six/1.17.0/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
@@ -127,7 +123,6 @@ See DEVELOPMENT.md for collection scope and exception handling.
 | [`sqlparse 0.6.0`](https://pypi.org/project/sqlparse/0.6.0/) | `BSD-3-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt) |
 | [`starlette 1.6.0`](https://pypi.org/project/starlette/1.6.0/) | `BSD-3-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt) |
 | [`sympy 1.14.0`](https://pypi.org/project/sympy/1.14.0/) | `BSD-3-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt) |
-| [`threadpoolctl 3.6.0`](https://pypi.org/project/threadpoolctl/3.6.0/) | `BSD-3-CLAUSE` | [NOTICES.txt](third_party/NOTICES.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt) |
 | [`tiktoken 0.14.0`](https://pypi.org/project/tiktoken/0.14.0/) | `MIT` | [NOTICES.txt](third_party/NOTICES.txt), [MIT.txt](third_party/license_texts/MIT.txt) |
 | [`tokenizers 0.23.1`](https://pypi.org/project/tokenizers/0.23.1/) | `APACHE-2.0` | [NOTICES.txt](third_party/NOTICES.txt), [Apache-2.0.txt](third_party/license_texts/Apache-2.0.txt) |
 | [`torch 2.13.0`](https://pypi.org/project/torch/2.13.0/) | `APACHE-2.0 AND APACHE-2.0 WITH LLVM-EXCEPTION AND BSD-2-CLAUSE AND BSD-3-CLAUSE AND BSL-1.0 AND MIT` | [NOTICES.txt](third_party/NOTICES.txt), [Apache-2.0.txt](third_party/license_texts/Apache-2.0.txt), [BSD-2-Clause.txt](third_party/license_texts/BSD-2-Clause.txt), [BSD-3-Clause.txt](third_party/license_texts/BSD-3-Clause.txt), [BSL-1.0.txt](third_party/license_texts/BSL-1.0.txt), [LLVM-exception.txt](third_party/license_texts/LLVM-exception.txt), [MIT.txt](third_party/license_texts/MIT.txt) |

@@ -10,10 +10,6 @@ from pathlib import Path
 
 from nooa.unifiedllm import UnifiedLLM
 
-from compass.compass_signals.anomaly_and_patterns.signal import (
-    AnomalyAndPatternsCompassSignal,
-    AnomalyAndPatternsConfig,
-)
 from compass.compass_signals.cost_efficiency.signal import (
     CostEfficiencyCompassSignal,
     CostEfficiencyConfig,
@@ -37,13 +33,11 @@ from compass.compass_signals.user_sentiment.signal import (
 )
 
 USER_SENTIMENT = UserSentimentCompassSignal.name
-ANOMALY_AND_PATTERNS = AnomalyAndPatternsCompassSignal.name
 TOOL_ISSUES = ToolIssueCompassSignal.name
 ETHOS_DIVERGENCE = EthosDivergenceCompassSignal.name
 GRADER_FAILURE_PATTERNS = GraderFailurePatternsCompassSignal.name
 COST_EFFICIENCY = CostEfficiencyCompassSignal.name
 BUILTIN_SIGNAL_NAMES = (
-    ANOMALY_AND_PATTERNS,
     TOOL_ISSUES,
     COST_EFFICIENCY,
     ETHOS_DIVERGENCE,
@@ -54,7 +48,6 @@ BUILTIN_SIGNAL_NAMES = (
 
 def registered_builtin_signals(
     *,
-    anomaly_and_patterns: AnomalyAndPatternsConfig | None = None,
     tool_issues: ToolIssueConfig | None = None,
     cost_efficiency: CostEfficiencyConfig | None = None,
     ethos_divergence: EthosDivergenceConfig | None = None,
@@ -66,8 +59,6 @@ def registered_builtin_signals(
     """Construct and register the built-ins with supplied typed configuration."""
 
     registry = CompassSignalRegistry()
-    if anomaly_and_patterns is not None:
-        registry.register(AnomalyAndPatternsCompassSignal(config=anomaly_and_patterns))
     if tool_issues is not None:
         registry.register(ToolIssueCompassSignal(config=tool_issues))
     if cost_efficiency is not None:
@@ -96,7 +87,6 @@ def registered_builtin_signals(
 
 
 __all__ = [
-    "ANOMALY_AND_PATTERNS",
     "BUILTIN_SIGNAL_NAMES",
     "COST_EFFICIENCY",
     "ETHOS_DIVERGENCE",

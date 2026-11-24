@@ -67,7 +67,7 @@ Open the saved YAML for descriptions and complete trace/span IDs and links.
 3. Agent reports success after a failed tool call
    Evidence: 4 supporting traces
 
-Ran:      Anomalies and patterns (5 candidates), tool issues (3 candidates)
+Ran:      Cost efficiency (5 candidates), tool issues (3 candidates)
 Skipped:  Ethos — no document
           Grader failures — no results
           Sentiment — no embedding backend

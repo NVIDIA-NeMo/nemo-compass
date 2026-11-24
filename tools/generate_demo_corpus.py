@@ -5,8 +5,7 @@
 """Generate the bundled sample corpus.
 
 The corpus has to do a specific job: make every one of the tool-issue signal's
-nineteen finding types fire, give the anomaly-and-pattern signal enough recurrence to populate all of its grouping
-sections — all while staying small enough to read. Hand-writing fourteen traces of inline JSON
+nineteen finding types fire while staying small enough to read. Hand-writing fourteen traces of inline JSON
 to hit those targets is where mistakes hide, so it is generated here instead
 and the output is committed. ``tests/test_shipped_corpora.py`` regenerates into a
 tmpdir and asserts byte equality, so the data can never drift from this file.
@@ -500,8 +499,8 @@ def code_trace() -> Trace:
 def stagnation_trace(suffix: str, case: str) -> Trace:
     """The same failing search repeated with no progress between attempts.
 
-    Fires ``repeated_identical_failed_call``, and gives the anomaly-and-pattern signal a trajectory whose
-    terminal evaluation claims success the calls do not support.
+    Fires ``repeated_identical_failed_call`` and records a terminal evaluation
+    claiming success the calls do not support.
     """
     task = f"Find the {suffix} owner in the directory."
     b = TraceBuilder(f"docops-stagnation-{suffix}", case, task)
@@ -522,11 +521,7 @@ def stagnation_trace(suffix: str, case: str) -> Trace:
 
 
 def outlier_trace() -> Trace:
-    """One deliberately extreme trace so the 2% contamination default flags something.
-
-    Long, repetitive, and one very large output — the shape the anomaly-and-pattern feature
-    vector is built to separate.
-    """
+    """A long, repetitive trace with large tool outputs."""
     task = "Reindex the entire documentation tree."
     b = TraceBuilder("docops-outlier", "case-outlier", task)
     _plan(b, "Walk the whole tree and reindex.")

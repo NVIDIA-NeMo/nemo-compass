@@ -15,7 +15,6 @@ NeMo Compass is an applied research project with a goal of improving the tools a
 
 | Compass Signal | Question It Answers | How It Works |
 | --- | --- | --- |
-| Anomaly Detection | What outlier behaviors exist in a set of agent traces? | Scores outliers with an Isolation Forest and reports feature-level deviations |
 | Tool Issues	| What recurring problems occur when the agent uses tools?	| Checks tool calls and results for invalid arguments, failures, missing results, and unproductive retries |
 | Cost Efficiency | Where is the agent wasting tokens? | Checks recorded cache usage, call timing, and tool definitions for cache misses after tools are added, removed, changed, or reordered |
 | User Sentiment | What recurring complaints do users have about the agent? | Screens recorded human messages with a classifier, then reviews recurring complaints in context |

@@ -22,7 +22,6 @@ from compass.insight import Insight
 from compass.insights_generation.validation import CandidateProblemRejection
 
 _SIGNAL_LABELS = {
-    "anomaly-and-patterns": "Anomalies and patterns",
     "tool-issues": "Tool issues",
     "cost-efficiency": "Cost efficiency",
     "ethos-divergence": "Ethos divergence",

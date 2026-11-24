@@ -317,11 +317,7 @@ def test_cli_runs_compass_signals(rows, tmp_path, monkeypatch, select_signals):
                     "--trace.braintrust.to-timestamp",
                     END.isoformat(),
                     "--compass-signals",
-                    json.dumps(
-                        select_signals(
-                            tool_issues={"include_audit_problems": True}, anomaly_and_patterns={}
-                        )
-                    ),
+                    json.dumps(select_signals(tool_issues={"include_audit_problems": True})),
                     "--output-path",
                     str(tmp_path / "insights.yml"),
                 ]
@@ -329,7 +325,7 @@ def test_cli_runs_compass_signals(rows, tmp_path, monkeypatch, select_signals):
             == cli.EXIT_OK
         )
     evidence = compilation.compile_insights.await_args.args[0]
-    assert {e.signal_name for e in evidence} == {"tool-issues", "anomaly-and-patterns"}
+    assert {e.signal_name for e in evidence} == {"tool-issues"}
     findings = next(e for e in evidence if e.signal_name == "tool-issues").artifacts.findings
     assert any(
         f["trace_id"] == "root"

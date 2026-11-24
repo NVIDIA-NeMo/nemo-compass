@@ -10,7 +10,6 @@ All built-in Compass Signals are enabled by default. Each runs when its prerequi
 - [Grader failures](#grader-failures): include recorded scores or feedback.
 - [Tool issues](#tool-issues): preserve tool calls and results.
 - [Cost efficiency](#cost-efficiency): preserve model-call usage, timing, and tool definitions.
-- [Anomalies and patterns](#anomalies-and-patterns): analyze behavior across traces.
 
 ## Ethos divergence
 
@@ -110,12 +109,6 @@ compass_signals:
 Reported token counts describe previously cached tokens associated with a miss.
 They do not establish the savings a change would achieve.
 
-## Anomalies and patterns
-
-This Compass Signal looks for unusual traces and recurring behavior across the loaded set.
-A small or repetitive set may not support trajectory grouping; other analysis can still finish.
-Load more varied traces from the behavior you want to investigate.
-
 ## Disable a Compass Signal
 
 Set a Compass Signal to `false` to disable it. Disabled Compass Signals produce no report entries or skip messages:
@@ -126,7 +119,6 @@ compass_signals:
   user_sentiment: false
 ```
 
-The other keys are `grader_failure_patterns`, `tool_issues`, `cost_efficiency`, and
-`anomaly_and_patterns`.
+The other keys are `grader_failure_patterns`, `tool_issues`, and `cost_efficiency`.
 Omit a key, or use `true` or `{}`, for defaults. Keep at least one Compass Signal enabled.
 When combining examples, put their settings under a single `compass_signals` key.

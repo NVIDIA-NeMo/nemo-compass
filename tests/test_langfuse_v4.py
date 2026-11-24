@@ -347,11 +347,7 @@ def test_v4_cli_runs_evidence(tmp_path, monkeypatch, select_signals, offline):
             [
                 *source_args,
                 "--compass-signals",
-                json.dumps(
-                    select_signals(
-                        tool_issues={"include_audit_problems": True}, anomaly_and_patterns={}
-                    )
-                ),
+                json.dumps(select_signals(tool_issues={"include_audit_problems": True})),
                 "--output-path",
                 str(tmp_path / "insights.yml"),
             ]
@@ -359,7 +355,7 @@ def test_v4_cli_runs_evidence(tmp_path, monkeypatch, select_signals, offline):
         == cli.EXIT_OK
     )
     evidence = compilation.compile_insights.await_args.args[0]
-    assert {item.signal_name for item in evidence} == {"tool-issues", "anomaly-and-patterns"}
+    assert {item.signal_name for item in evidence} == {"tool-issues"}
     tool_evidence = next(item for item in evidence if item.signal_name == "tool-issues")
     assert tool_evidence.problems
 
