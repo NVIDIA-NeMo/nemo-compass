@@ -6,7 +6,23 @@ from pathlib import Path
 
 import pytest
 
+from compass.cli.main import SetupError, get_config
 from compass.config import CompassSignalsConfig, RunConfig
+
+
+def test_removed_anomaly_signal_explains_how_to_update_yaml(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "trace:\n  filesystem:\n    path: traces.jsonl\n"
+        "compass_signals:\n  anomaly_and_patterns: false\n"
+    )
+    with pytest.raises(SetupError) as error:
+        get_config(["--config", str(path)])
+    assert str(error.value) == (
+        "Invalid configuration:\n"
+        "  compass_signals.anomaly_and_patterns: This signal has been removed.\n"
+        "    Remove this entry from your YAML configuration, even if set to false."
+    )
 
 
 def test_cli_nested_override_preserves_yaml_siblings(tmp_path: Path) -> None:
@@ -19,7 +35,7 @@ trace:
     experiment: deep_research
     tracking_uri: https://example.test
 compass_signals:
-  anomaly_and_patterns: {}
+  tool_issues: {}
 """.lstrip(),
         encoding="utf-8",
     )
@@ -44,8 +60,6 @@ def test_config_file_is_optional_when_cli_provides_trace_input() -> None:
         _cli_parse_args=[
             "--trace.filesystem.path",
             "traces.jsonl",
-            "--compass-signals.anomaly-and-patterns.contamination",
-            "0.02",
             "--compass-signals.grader-failure-patterns.max-tool-rounds",
             "72",
         ]
@@ -63,8 +77,6 @@ def test_cli_accepts_optional_code_base() -> None:
         _cli_parse_args=[
             "--trace.filesystem.path",
             "traces.jsonl",
-            "--compass-signals.anomaly-and-patterns.contamination",
-            "0.02",
             "--code-base",
             "../agent-source",
         ]
@@ -147,7 +159,6 @@ def test_signals_default_on_and_false_disables_only_that_signal(tmp_path):
     assert config.compass_signals.user_sentiment is None
     assert config.compass_signals.tool_issues is not None
     assert config.compass_signals.tool_issues.retry_threshold == 5
-    assert config.compass_signals.anomaly_and_patterns is not None
     assert config.compass_signals.grader_failure_patterns is not None
 
 

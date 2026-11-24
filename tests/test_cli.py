@@ -20,6 +20,22 @@ from compass.insights_generation.config import load_dotenv
 from compass.traces import Trace, TraceAggregate, TraceSnapshot
 
 
+def test_removed_anomaly_cli_is_hidden_and_rejected(monkeypatch, capsys):
+    assert cli.main(["--help-all"]) == cli.EXIT_OK
+    output = capsys.readouterr().out
+    assert "--compass-signals.tool-issues.retry-threshold" in output
+    assert "anomaly" not in output.lower()
+
+    loader = Mock()
+    monkeypatch.setattr(cli, "_configured_trace_loader", loader)
+    flag = "--compass-signals.anomaly-and-patterns.contamination"
+    with pytest.raises(SystemExit) as error:
+        cli.main(["--trace.filesystem.path", "unused.jsonl", flag, "0.02"])
+    assert error.value.code == 2
+    assert flag in capsys.readouterr().err
+    loader.assert_not_called()
+
+
 @pytest.fixture
 def clean_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.os, "environ", {})
@@ -328,13 +344,13 @@ def test_compass_signals_share_cli_loop_and_run_concurrently(monkeypatch):
 
             async def analyze(self, snapshot):
                 assert asyncio.get_running_loop() is loop
-                if self.name == "anomaly-and-patterns":
+                if self.name == "cost-efficiency":
                     await asyncio.wait_for(started.wait(), timeout=1)
                 else:
                     started.set()
                 return CompassSignalResult(signal_name=self.name, problems=())
 
-        for signal in (Signal("anomaly-and-patterns"), Signal("tool-issues")):
+        for signal in (Signal("cost-efficiency"), Signal("tool-issues")):
             registry.register(signal)
         monkeypatch.setattr(cli, "registered_builtin_signals", lambda **kwargs: registry)
         progress = []
@@ -343,8 +359,8 @@ def test_compass_signals_share_cli_loop_and_run_concurrently(monkeypatch):
             TraceSnapshot([Trace(id="trace-1", root_spans=[], aggregate=TraceAggregate())]),
             progress=progress.append,
         )
-        assert [result.signal_name for result in results] == ["anomaly-and-patterns", "tool-issues"]
-        assert set().union(*map(set, progress)) == {"anomaly-and-patterns", "tool-issues"}
+        assert [result.signal_name for result in results] == ["cost-efficiency", "tool-issues"]
+        assert set().union(*map(set, progress)) == {"cost-efficiency", "tool-issues"}
         assert progress[-1] == ()
 
     asyncio.run(run())

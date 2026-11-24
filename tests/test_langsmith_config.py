@@ -37,7 +37,7 @@ def test_run_config_selects_langsmith_trace_loader(tmp_path):
     tree_filter: 'eq(run_type, "tool")'
     start_time: 2026-09-01T00:00:00Z
 compass_signals:
-  anomaly_and_patterns: {}
+  tool_issues: {}
 """,
         encoding="utf-8",
     )
@@ -64,7 +64,7 @@ def test_run_config_loads_a_langsmith_trace_export_file(tmp_path):
   langsmith_trace_export_file:
     path: exports/langsmith-traces
 compass_signals:
-  anomaly_and_patterns: {}
+  tool_issues: {}
 """,
         encoding="utf-8",
     )
@@ -83,7 +83,7 @@ def test_langsmith_trace_loader_uses_provider_default_trace_bound():
     config = RunConfig.model_validate(
         {
             "trace": {"langsmith": {"project": "glamr-ux"}},
-            "compass_signals": {"anomaly_and_patterns": {}},
+            "compass_signals": {"tool_issues": {}},
         }
     )
 
@@ -98,8 +98,6 @@ def test_cli_selects_langsmith_trace_export_file_loader():
         _cli_parse_args=[
             "--trace.langsmith-trace-export-file.path",
             "exports/langsmith-traces",
-            "--compass-signals.anomaly-and-patterns.contamination",
-            "0.02",
         ]
     )
 
@@ -126,5 +124,5 @@ def test_trace_config_rejects_multiple_sources():
                     path="traces"
                 ),
             ),
-            compass_signals=CompassSignalsConfig(anomaly_and_patterns={}),
+            compass_signals=CompassSignalsConfig(tool_issues={}),
         )

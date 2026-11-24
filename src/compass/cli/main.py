@@ -254,7 +254,6 @@ async def _run_compass_signals(
     """Run the configured Compass Signals concurrently in registration order."""
 
     registry = registered_builtin_signals(
-        anomaly_and_patterns=config.anomaly_and_patterns,
         tool_issues=config.tool_issues,
         cost_efficiency=config.cost_efficiency,
         ethos_divergence=config.ethos_divergence,
@@ -501,7 +500,13 @@ def get_config(argv: Sequence[str] | None = None) -> RunConfig:
         messages = ["Invalid configuration:"]
         for problem in error.errors():
             field = ".".join(str(part) for part in problem["loc"]) or "configuration"
-            messages.append(f"  {field}: {problem['msg']}")
+            message = problem["msg"]
+            if field == "compass_signals.anomaly_and_patterns":
+                message = (
+                    "This signal has been removed.\n"
+                    "    Remove this entry from your YAML configuration, even if set to false."
+                )
+            messages.append(f"  {field}: {message}")
         raise SetupError("\n".join(messages)) from error
 
 

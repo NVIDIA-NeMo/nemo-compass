@@ -27,7 +27,6 @@ overrides:
   shellingham: ISC
   sympy: BSD-3-Clause
   torch: Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND BSD-2-Clause AND BSD-3-Clause AND BSL-1.0 AND MIT
-  scipy: BSD-3-Clause
   sqlparse: BSD-3-Clause
   tiktoken: MIT
   tokenizers: Apache-2.0

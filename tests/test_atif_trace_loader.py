@@ -14,7 +14,7 @@ from nooa.unifiedllm import FakeLLMClient
 from pydantic import ValidationError
 
 import compass.cli.main as cli
-from compass.compass_signals.anomaly_and_patterns.signal import to_anomaly_and_patterns_trace
+from compass.compass_signals._trace import walk_spans
 from compass.compass_signals.tool_issues.coverage import corpus_coverage
 from compass.compass_signals.tool_issues.signal import to_tool_issue_trace
 from compass.config import RunConfig, TraceConfig
@@ -642,15 +642,15 @@ def test_realistic_nested_trajectory_and_signal_readers():
         "Find a source.",
         "Find the report.",
     ]
-    steps = {
-        step.source_pointer["span_id"]: step for step in to_anomaly_and_patterns_trace(trace).steps
-    }
-    assert steps["trajectory/step/3"].content == "Checking."
+    steps = {visit.span.id: visit.span for visit in walk_spans(trace)}
+    assert steps["trajectory/step/3"].output == {"role": "assistant", "content": "Checking."}
     # A dispatch step (llm_call_count 0) keeps its message.
-    assert steps["trajectory/step/4"].content == "Done."
-    # AGENT spans carry no text, so a subagent's answer never stands in for the trace's.
-    assert steps["trajectory"].content == ""
-    assert steps["trajectory/subagent/0/step/2"].content == "Found it."
+    assert steps["trajectory/step/4"].output == {"role": "assistant", "content": "Done."}
+    assert steps["trajectory"].kind is SpanKind.AGENT
+    assert steps["trajectory/subagent/0/step/2"].output == {
+        "role": "assistant",
+        "content": "Found it.",
+    }
     assert loader.describe()["call_count"] == 4
     # Coverage counts the prior user text the loader records on each call.
     presence = corpus_coverage(loader)["field_presence"]
