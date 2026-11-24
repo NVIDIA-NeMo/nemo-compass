@@ -153,7 +153,6 @@ def test_no_ethos_path_skips_default_detector(tmp_path, monkeypatch):
     config = RunConfig(
         trace={"filesystem": {"path": "unused.jsonl"}},
         compass_signals={
-            "anomaly_and_patterns": False,
             "tool_issues": False,
             "cost_efficiency": False,
             "grader_failure_patterns": False,

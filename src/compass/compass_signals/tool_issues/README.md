@@ -57,4 +57,4 @@ fields were not captured.
 - `detect()` owns individual rule evaluation.
 - `build_cards()` owns recurrence grouping and promotion.
 - `ToolIssueCompassSignal.analyze()` owns the shared compass-signal handoff.
-- `strict_failure()` is intentionally narrower than the anomaly signal's decoder.
+- `strict_failure()` decodes explicit tool failures conservatively.

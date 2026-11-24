@@ -7,7 +7,7 @@ NeMo Compass analyzes recorded agent executions from production and evaluation r
 recurring problems. It has three stages: ingestion, evidence discovery, and insight compilation.
 
 Compass Signals analyze business requirements, user complaints, evaluation results, tool
-behavior, prompt-cache efficiency, and statistical patterns. They use deterministic checks,
+behavior and prompt-cache efficiency. They use deterministic checks,
 learned classifiers, and LLM investigation, with each signal implementing the same
 [interface](../src/compass/compass_signals/compass_signals.py): check prerequisites, analyze
 the snapshot, and return candidate `Problem` objects containing a description and supporting trace
@@ -203,42 +203,6 @@ evidence extraction and card construction, and the
 [prompt-cache detector](../src/compass/compass_signals/cost_efficiency/prompt_caching_miss/)
 defines the comparison and tool-change rules. See the [signal guide](compass-signals.md#cost-efficiency)
 for data requirements and configuration.
-
-## Anomalies and patterns
-
-The anomaly-and-pattern signal identifies unusual execution patterns and recurring failures across a
-corpus. It can help developers select traces to investigate when evaluation labels and user feedback
-are unavailable or when existing checks have left a failure unexplained. An outlier may reflect
-either a defect or legitimate variation in the tasks being performed; interpreting it requires
-reviewing the execution.
-
-The signal extracts numeric features including tool-call count, trajectory length, tool diversity,
-repeated-call rate, explicit-failure rate, output size, and recorded tool duration. It scores
-outliers with an Isolation Forest and reports feature-level deviations to help interpret them.
-Configuration controls the expected outlier fraction, optional robust scaling, and feature
-selection, including supplied numeric metrics. Corpus composition affects the comparison: complex
-research tasks may be legitimate outliers in a dataset dominated by simple requests.
-
-The signal also groups execution trajectories using TF-IDF representations of ordered event unigrams
-and bigrams, followed by K-means clustering. It compares candidate cluster counts using silhouette
-scores. These features capture similarities in local execution sequences that aggregate call counts
-can miss. Clustering requires at least three traces and two distinct feature vectors; the other
-analyses can complete when clustering is unavailable. Trajectory clusters and observed verdict
-groups are retained as descriptive artifacts.
-
-Explicit failures are grouped by normalized signatures within and across tools, with a default
-recurrence threshold of three distinct traces. Similar errors can help locate repeated integration
-failures or a common upstream dependency, though their causes still require investigation.
-Statistical outliers and recurring same-tool or cross-tool failure groups become candidate problems.
-Features, clusters, verdict groups, and an evidence digest remain available for inspection.
-
-Partners can reuse feature extraction, trajectory grouping, and failure-signature analysis
-separately and configure them for their own trace populations. These methods can surface behavior
-that existing rubrics and complaint classifiers do not cover. The [anomaly-and-pattern
-implementation](../src/compass/compass_signals/anomaly_and_patterns/signal.py) contains the
-analysis methods and shared-signal adapter. In the full NeMo Compass pipeline, compilation reviews these
-candidates alongside findings from the other signals to determine which problems have sufficient
-support and a practical remedy.
 
 ---
 

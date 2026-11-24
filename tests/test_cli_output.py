@@ -39,7 +39,7 @@ def test_default_report_prioritizes_findings_and_keeps_coverage_visible(width):
                     ),
                     limitations=("Missing schemas",) if name == "tool-issues" else (),
                 )
-                for name, candidates in (("anomaly-and-patterns", 5), ("tool-issues", 3))
+                for name, candidates in (("cost-efficiency", 5), ("tool-issues", 3))
             ],
             *[
                 CompassSignalResult(signal_name=name, problems=(), skip_reason=reason)
@@ -64,7 +64,7 @@ def test_default_report_prioritizes_findings_and_keeps_coverage_visible(width):
     assert rendered.index("3. False success") < rendered.index("Ran:") < rendered.index("Saved:")
     normalized = " ".join(rendered.split())
     assert (
-        "Ran: Anomalies and patterns (5 candidates), tool issues (3 candidates; Missing schemas)"
+        "Ran: Cost efficiency (5 candidates), tool issues (3 candidates; Missing schemas)"
         in normalized
     )
     assert (

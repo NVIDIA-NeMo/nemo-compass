@@ -25,7 +25,6 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
-from compass.compass_signals.anomaly_and_patterns.signal import AnomalyAndPatternsConfig
 from compass.compass_signals.cost_efficiency.signal import CostEfficiencyConfig
 from compass.compass_signals.ethos_divergence.ethos_divergence_detector import (
     EthosDivergenceConfig,
@@ -263,12 +262,6 @@ class TraceConfig(ConfigModel):
         return self
 
 
-class AnomalyAndPatternsSignalConfig(AnomalyAndPatternsConfig):
-    """Strict YAML settings for anomaly-and-pattern evidence."""
-
-    model_config = ConfigDict(extra="forbid")
-
-
 class ToolIssueSignalConfig(ToolIssueConfig):
     """Strict YAML settings for deterministic tool-issue evidence."""
 
@@ -284,10 +277,6 @@ class CostEfficiencySignalConfig(CostEfficiencyConfig):
 class CompassSignalsConfig(ConfigModel):
     """All signals run by default; use false to disable, true or {} for defaults."""
 
-    anomaly_and_patterns: AnomalyAndPatternsSignalConfig | None = Field(
-        default_factory=AnomalyAndPatternsSignalConfig,
-        description="Anomaly and recurring-pattern evidence",
-    )
     tool_issues: ToolIssueSignalConfig | None = Field(
         default_factory=ToolIssueSignalConfig,
         description="Deterministic tool-issue evidence",
@@ -317,7 +306,6 @@ class CompassSignalsConfig(ConfigModel):
         if all(
             signal is None
             for signal in (
-                self.anomaly_and_patterns,
                 self.tool_issues,
                 self.cost_efficiency,
                 self.ethos_divergence,

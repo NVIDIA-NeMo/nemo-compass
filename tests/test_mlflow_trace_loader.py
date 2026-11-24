@@ -15,7 +15,6 @@ from mlflow.entities import Feedback
 from mlflow.entities import Trace as MLflowTrace
 from mlflow.utils.search_utils import SearchTraceUtils
 
-from compass.compass_signals.anomaly_and_patterns.signal import to_anomaly_and_patterns_trace
 from compass.compass_signals.tool_issues.signal import MISSING, to_tool_issue_trace
 from compass.trace_loaders.mlflow import (
     MLflowFileTraceConfig,
@@ -347,7 +346,7 @@ def test_loader_normalizes_mlflow_spans_without_flattening_payloads():
     assert by_id["tool"].tool_call.result_count == 0
 
 
-def test_normalized_mlflow_trace_flows_through_both_compass_signals():
+def test_normalized_mlflow_trace_flows_through_tool_issue_signal():
     root = span(
         "root",
         span_type="AGENT",
@@ -383,12 +382,10 @@ def test_normalized_mlflow_trace_flows_through_both_compass_signals():
         )
     )
 
-    anomaly_and_patterns = to_anomaly_and_patterns_trace(normalized)
     tool_issue_trace = to_tool_issue_trace(normalized)
 
-    assert anomaly_and_patterns.calls[0].call_id == "tool"
-    assert anomaly_and_patterns.calls[0].error == "timeout"
-    assert anomaly_and_patterns.calls[0].source_pointer["span_id"] == "tool"
+    assert tool_issue_trace.calls[0].call_id == "tool"
+    assert tool_issue_trace.calls[0].source_pointer["span_id"] == "tool"
     assert (normalized.session_id, tool_issue_trace.case_id) == ("session-7", None)
     assert tool_issue_trace.calls[0].result is MISSING
     assert tool_issue_trace.calls[0].explicit_error is True

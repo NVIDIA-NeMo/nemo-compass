@@ -328,13 +328,13 @@ def test_compass_signals_share_cli_loop_and_run_concurrently(monkeypatch):
 
             async def analyze(self, snapshot):
                 assert asyncio.get_running_loop() is loop
-                if self.name == "anomaly-and-patterns":
+                if self.name == "cost-efficiency":
                     await asyncio.wait_for(started.wait(), timeout=1)
                 else:
                     started.set()
                 return CompassSignalResult(signal_name=self.name, problems=())
 
-        for signal in (Signal("anomaly-and-patterns"), Signal("tool-issues")):
+        for signal in (Signal("cost-efficiency"), Signal("tool-issues")):
             registry.register(signal)
         monkeypatch.setattr(cli, "registered_builtin_signals", lambda **kwargs: registry)
         progress = []
@@ -343,8 +343,8 @@ def test_compass_signals_share_cli_loop_and_run_concurrently(monkeypatch):
             TraceSnapshot([Trace(id="trace-1", root_spans=[], aggregate=TraceAggregate())]),
             progress=progress.append,
         )
-        assert [result.signal_name for result in results] == ["anomaly-and-patterns", "tool-issues"]
-        assert set().union(*map(set, progress)) == {"anomaly-and-patterns", "tool-issues"}
+        assert [result.signal_name for result in results] == ["cost-efficiency", "tool-issues"]
+        assert set().union(*map(set, progress)) == {"cost-efficiency", "tool-issues"}
         assert progress[-1] == ()
 
     asyncio.run(run())

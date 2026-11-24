@@ -195,11 +195,7 @@ def test_export_cli_runs_evidence_without_langfuse_client(tmp_path, monkeypatch,
                 "--trace.langfuse-trace-export-file.path",
                 str(export_path),
                 "--compass-signals",
-                json.dumps(
-                    select_signals(
-                        tool_issues={"include_audit_problems": True}, anomaly_and_patterns={}
-                    )
-                ),
+                json.dumps(select_signals(tool_issues={"include_audit_problems": True})),
                 "--output-path",
                 str(tmp_path / "insights.yml"),
             ]
@@ -207,7 +203,7 @@ def test_export_cli_runs_evidence_without_langfuse_client(tmp_path, monkeypatch,
         == cli.EXIT_OK
     )
     evidence = compilation.compile_insights.await_args.args[0]
-    assert {item.signal_name for item in evidence} == {"tool-issues", "anomaly-and-patterns"}
+    assert {item.signal_name for item in evidence} == {"tool-issues"}
     tool_evidence = next(item for item in evidence if item.signal_name == "tool-issues")
     findings = tool_evidence.artifacts.findings
     assert len(findings) == 1

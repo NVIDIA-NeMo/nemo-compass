@@ -6,6 +6,10 @@
 For your first run, choose a [source guide](../README.md#start-here).
 Use this page when you want to adjust an existing setup.
 
+The anomaly-and-patterns signal has been removed. Delete
+`compass_signals.anomaly_and_patterns` from older YAML configurations, including
+entries set to `false`. Its CLI options are no longer supported.
+
 ## Settings
 
 Save reusable settings in YAML. Keep [credentials](model-access.md#credentials)

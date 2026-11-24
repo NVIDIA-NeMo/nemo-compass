@@ -19,7 +19,6 @@ from opentelemetry.trace import StatusCode
 from pydantic import BaseModel
 
 from compass.compass_signals.builtins import (
-    ANOMALY_AND_PATTERNS,
     ETHOS_DIVERGENCE,
     GRADER_FAILURE_PATTERNS,
     TOOL_ISSUES,
@@ -41,7 +40,6 @@ if TYPE_CHECKING:
 
 # These are display names, not keys used to look up configuration.
 _SIGNAL_NAMES = {
-    ANOMALY_AND_PATTERNS: "anomaly_and_patterns",
     ETHOS_DIVERGENCE: "ethos_divergence",
     GRADER_FAILURE_PATTERNS: "grader_failure_patterns",
     TOOL_ISSUES: "tool_issues",
