@@ -93,6 +93,11 @@ from compass.trace_loaders.mlflow import (
 )
 from compass.trace_loaders.trace_loaders import TraceLoader
 from compass.traces import Trace, TraceSnapshot
+from trace_ingest.loaders.arize import (
+    ARIZE_DEFAULT_MAX_TRACES,
+    ArizeTraceConfig,
+    ArizeTraceLoader,
+)
 from trace_ingest.loaders.gym import GymTraceLoader
 
 EXIT_OK = 0
@@ -122,6 +127,8 @@ def _check_environment(config: RunConfig) -> str:
         required["BRAINTRUST_API_KEY — API key for Braintrust"] = os.environ.get(
             "BRAINTRUST_API_KEY"
         )
+    if config.trace.arize is not None:
+        required["ARIZE_AX_API_KEY — API key for Arize AX"] = os.environ.get("ARIZE_AX_API_KEY")
     if config.trace.langfuse is not None:
         for name in ("LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"):
             required[f"{name} — Langfuse project credentials"] = os.environ.get(name)
@@ -155,6 +162,18 @@ def _configured_trace_loader(config: TraceConfig) -> TraceLoader:
         return FSDataLoader(config.filesystem.path)
     if config.gym is not None:
         return GymTraceLoader(config.gym)
+    if config.arize is not None:
+        source = config.arize
+        return ArizeTraceLoader(
+            ArizeTraceConfig(
+                project_id=source.project_id,
+                from_timestamp=source.from_timestamp,
+                to_timestamp=source.to_timestamp,
+                api_url=source.api_url,
+                filter=source.filter,
+                max_traces=config.max_traces or ARIZE_DEFAULT_MAX_TRACES,
+            )
+        )
     if config.atif is not None:
         return ATIFTraceLoader(config.atif)
     if config.intake is not None:

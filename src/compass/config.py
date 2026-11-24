@@ -37,6 +37,7 @@ from compass.trace_loaders.atif import ATIFTraceConfig
 from compass.trace_loaders.braintrust import validate_braintrust_selection
 from compass.trace_loaders.intake import IntakeTraceLoaderConfig
 from compass.trace_loaders.langfuse import validate_langfuse_time_window
+from trace_ingest.loaders.arize import validate_arize_selection
 from trace_ingest.loaders.gym import GymTraceConfig
 
 _CONFIG_MODEL_SETTINGS = SettingsConfigDict(
@@ -126,6 +127,21 @@ class BraintrustConfig(ConfigModel):
         return self
 
 
+class ArizeConfig(ConfigModel):
+    """Read complete traces from an Arize AX project."""
+
+    project_id: str
+    from_timestamp: datetime
+    to_timestamp: datetime
+    api_url: str | None = None
+    filter: str | None = None
+
+    @model_validator(mode="after")
+    def selection_is_valid(self) -> ArizeConfig:
+        validate_arize_selection(self.project_id, self.from_timestamp, self.to_timestamp)
+        return self
+
+
 class LangfuseConfig(ConfigModel):
     """Settings owned by the live Langfuse v3/v4 trace loader."""
 
@@ -199,6 +215,7 @@ class TraceConfig(ConfigModel):
         default=None,
         description="Live Braintrust project logs or experiment traces",
     )
+    arize: ArizeConfig | None = Field(default=None, description="Live Arize AX trace loader")
     langfuse: LangfuseConfig | None = Field(
         default=None,
         description="Live Langfuse v3/v4 trace loader",
@@ -228,6 +245,7 @@ class TraceConfig(ConfigModel):
                 self.mlflow_export,
                 self.intake,
                 self.braintrust,
+                self.arize,
                 self.langfuse,
                 self.langfuse_trace_export_file,
                 self.langsmith,
