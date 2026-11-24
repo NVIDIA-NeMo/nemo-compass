@@ -18,7 +18,9 @@ from trace_ingest.loaders.arize import (
     ArizeTraceLoadError,
     _AXSpan,
     _normalize_trace,
+    _record,
 )
+from trace_ingest.loaders.helper.merge import assemble
 from trace_ingest.models import UNSET, SpanKind
 
 TRACE = "1" * 32
@@ -81,7 +83,8 @@ def fixture_spans():
 
 
 def normalize(rows):
-    return _normalize_trace(TRACE, [_AXSpan.model_validate(row) for row in rows])
+    trace = _normalize_trace(TRACE, [_AXSpan.model_validate(row) for row in rows])
+    return assemble([_record(trace)])[0]
 
 
 def config(*, from_timestamp=START, **kwargs):
@@ -153,12 +156,14 @@ def test_invalid_graphs_fail_instead_of_returning_partial_traces(corruption, mat
 
 def test_load_pages_complete_spans_and_drops_discovery_filter(monkeypatch):
     monkeypatch.setenv("ARIZE_AX_API_KEY", "test-secret")
+    monkeypatch.setenv("ARIZE_AX_API_URL", "https://overridden.example.com")
     requests = []
     spans = fixture_spans()
 
     def respond(request):
         body = json.loads(request.content)
         requests.append((request.url.path, dict(request.url.params), body))
+        assert request.url.host == "private-arize.example.com"
         assert request.headers["Authorization"] == "Bearer test-secret"
         if request.url.path == "/v2/traces":
             assert body["filter"] == "status_code = 'ERROR'"
@@ -187,10 +192,17 @@ def test_load_pages_complete_spans_and_drops_discovery_filter(monkeypatch):
         return httpx.Response(200, json={"spans": spans[:2], "pagination": {"has_more": False}})
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        loader = ArizeTraceLoader(config(max_traces=1, filter="status_code = 'ERROR'"), client)
+        loader = ArizeTraceLoader(
+            config(
+                max_traces=1,
+                filter="status_code = 'ERROR'",
+                api_url="https://private-arize.example.com",
+            ),
+            client,
+        )
         snapshot = loader.load()
     assert [r[0] for r in requests] == ["/v2/traces", "/v2/spans", "/v2/spans"]
-    assert requests[0][1]["limit"] == "1"
+    assert requests[0][1]["limit"] == "2"
     assert snapshot.trace_count == 1
     assert next(iter(snapshot)).model_dump() == normalize(spans).model_dump()
     assert loader.describe() == {
@@ -199,8 +211,8 @@ def test_load_pages_complete_spans_and_drops_discovery_filter(monkeypatch):
         "span_count": 4,
         "call_count": 2,
         "distinct_cases": 1,
-        "distinct_sessions": 1,
-        "api_url": "https://api.arize.com",
+        "distinct_sessions": 0,
+        "api_url": "https://private-arize.example.com",
         "project_id": "project-id",
         "from_timestamp": START.isoformat(),
         "to_timestamp": END.isoformat(),
@@ -216,7 +228,8 @@ def test_discovery_pagination_keeps_multiple_roots_and_stops_at_trace_limit(monk
     def respond(request):
         reads.append((request.url.path, request.url.params.get("cursor")))
         if request.url.path == "/v2/traces":
-            trace_id = TRACE if "cursor" not in request.url.params else OTHER
+            cursor = request.url.params.get("cursor")
+            trace_id = {None: TRACE, "discovery-2": OTHER, "discovery-3": "3" * 32}[cursor]
             return httpx.Response(
                 200,
                 json={
@@ -230,12 +243,18 @@ def test_discovery_pagination_keeps_multiple_roots_and_stops_at_trace_limit(monk
                     ],
                     "pagination": {
                         "has_more": True,
-                        "next_cursor": "discovery-2" if trace_id == TRACE else "do-not-fetch",
+                        "next_cursor": "discovery-2"
+                        if trace_id == TRACE
+                        else "discovery-3"
+                        if trace_id == OTHER
+                        else "do-not-fetch",
                     },
                 },
             )
         body = json.loads(request.content)
-        trace_id = TRACE if TRACE in body["filter"] else OTHER
+        trace_id = (
+            TRACE if TRACE in body["filter"] else OTHER if OTHER in body["filter"] else "3" * 32
+        )
         return httpx.Response(
             200,
             json={
@@ -248,8 +267,111 @@ def test_discovery_pagination_keeps_multiple_roots_and_stops_at_trace_limit(monk
         snapshot = ArizeTraceLoader(config(max_traces=2), client).load()
     assert [t.id for t in snapshot] == [TRACE, OTHER]
     assert all(len(t.root_spans) == 2 for t in snapshot)
-    assert reads[:2] == [("/v2/traces", None), ("/v2/traces", "discovery-2")]
-    assert len(reads) == 4
+    assert [read for read in reads if read[0] == "/v2/traces"] == [
+        ("/v2/traces", None),
+        ("/v2/traces", "discovery-2"),
+        ("/v2/traces", "discovery-3"),
+    ]
+    assert len(reads) == 6  # One complete trace of lookahead decides the next conversation key.
+
+
+@pytest.mark.parametrize("missing_on_reread", [False, True])
+def test_session_limit_rereads_and_merges_records_in_order(monkeypatch, missing_on_reread):
+    monkeypatch.setenv("ARIZE_AX_API_KEY", "test-secret")
+    older = "original-request-with-uuid-id"
+    session = "customer's session"
+    query_filter = "status_code = 'ERROR' OR name = 'agent'"
+    fetches = []
+    selections = []
+
+    def spans(trace_id):
+        offset = "00:00:05" if trace_id == TRACE else "00:00:01"
+        # Only a child needs to carry the OpenInference session ID.
+        attrs = {"session.id": session} if trace_id != OTHER else {}
+        return [
+            record(
+                "root",
+                trace=trace_id,
+                attrs={"input.value": f"question {trace_id}", "output.value": f"answer {trace_id}"},
+                start_time=f"2026-11-01T{offset}Z",
+                end_time="2026-11-01T00:00:06Z",
+            ),
+            record(
+                "tool",
+                parent="root",
+                trace=trace_id,
+                kind="TOOL",
+                attrs={"tool.name": "lookup", "output.value": "ok", **attrs},
+                start_time=f"2026-11-01T{offset}Z",
+                end_time="2026-11-01T00:00:06Z",
+            ),
+        ]
+
+    def summary(trace_id):
+        return {
+            "trace_id": trace_id,
+            "root_span_id": "root",
+            "start_time": START.isoformat(),
+            "end_time": END.isoformat(),
+        }
+
+    def respond(request):
+        body = json.loads(request.content)
+        if request.url.path == "/v2/traces":
+            selections.append(body)
+            if body["filter"] == query_filter:
+                # A different conversation interrupts the selected session; its
+                # older record is beyond the limit and must be read by session.
+                ids = [TRACE, OTHER]
+            else:
+                assert (
+                    body["filter"]
+                    == f"({query_filter}) AND (attributes.session.id = 'customer''s session')"
+                )
+                assert body["start_time"] == START.isoformat()
+                assert body["end_time"] == END.isoformat()
+                ids = [older] if missing_on_reread else [TRACE, older]
+            return httpx.Response(
+                200, json={"traces": [summary(t) for t in ids], "pagination": {"has_more": False}}
+            )
+        trace_id = next(t for t in [TRACE, OTHER, older] if t in body["filter"])
+        fetches.append(trace_id)
+        return httpx.Response(
+            200, json={"spans": spans(trace_id), "pagination": {"has_more": False}}
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        loader = ArizeTraceLoader(config(max_traces=1, filter=query_filter), client)
+        snapshot = loader.load()
+    (conversation,) = snapshot
+    assert conversation.id == "session:" + session
+    assert conversation.session_id == session
+    assert conversation.session_basis == "arize.session.id"
+    assert [r["trace_id"] for r in conversation.attributes["records"]] == [older, TRACE]
+    (root,) = conversation.root_spans
+    assert root.turns is not UNSET
+    assert [s.id for s in root.children] == [older + "/root", TRACE + "/root"]
+    assert root.turns[0].content == "question " + older
+    assert root.turns[-1].content == "answer " + TRACE
+    assert root.turns[1].tool_call_span_ids == [older + "/tool"]
+    assert [loss.code for loss in conversation.losses] == (
+        ["merge_incomplete"] if missing_on_reread else []
+    )
+    assert fetches == [TRACE, OTHER, older]  # Re-queries reuse each trace's complete spans.
+    assert len(selections) == 2
+    assert loader.describe()["trace_count"] == 1
+    assert loader.describe()["distinct_sessions"] == 1
+    assert loader.describe()["span_count"] == 4  # Excludes the synthesized conversation root.
+
+
+def test_conflicting_span_sessions_do_not_merge_or_choose_arbitrarily():
+    rows = fixture_spans()
+    rows[0]["attributes"]["session.id"] = "session-a"
+    rows[1]["attributes"]["session.id"] = "session-b"
+    trace = normalize(rows)
+    assert trace.session_id is None and trace.id == TRACE
+    assert trace.losses[0].code == "conflicting_session_ids"
+    assert trace.losses[0].detail == {"session_ids": ["session-a", "session-b"]}
 
 
 @pytest.mark.parametrize("failure", ["cursor", "http", "malformed", "empty"])

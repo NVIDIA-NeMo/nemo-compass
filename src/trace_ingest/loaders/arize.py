@@ -18,12 +18,14 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue
 
+from trace_ingest.loaders.helper.merge import Record, assemble, select_sessions
 from trace_ingest.loaders.helper.token_counts import token_counts
 from trace_ingest.loaders.helper.tool_definitions import tool_definitions
-from trace_ingest.loaders.helper.turns import NoTurns, agent_turns, parse_json, promote_run_root
+from trace_ingest.loaders.helper.turns import parse_json, run_root
 from trace_ingest.loaders.trace_loaders import TraceDescription
 from trace_ingest.models import (
     UNSET,
+    Loss,
     Span,
     SpanKind,
     ToolCall,
@@ -55,7 +57,7 @@ def validate_arize_selection(project_id: str, start: datetime, end: datetime) ->
 
 @dataclass(frozen=True)
 class ArizeTraceConfig:
-    """Select newest AX traces in a bounded time window."""
+    """Select newest AX conversations in a bounded time window."""
 
     project_id: str
     from_timestamp: datetime
@@ -107,7 +109,7 @@ class _AXSpan(BaseModel):
 
 
 class _TraceSummary(BaseModel):
-    trace_id: str = Field(min_length=1, pattern=r"^[0-9a-fA-F]{32}$")
+    trace_id: str = Field(min_length=1)
     root_span_id: str = Field(min_length=1)
     start_time: AwareDatetime
     end_time: AwareDatetime
@@ -195,51 +197,78 @@ class ArizeTraceLoader:
             seen.add(cursor)
 
     def _load(self, client: httpx.Client, key: str) -> TraceSnapshot:
+        cache: dict[str, Record] = {}
+        records, partial = select_sessions(
+            self._records(client, key, cache),
+            key=lambda record: (
+                ("session", record.trace.session_id)
+                if record.trace.session_id
+                else ("trace", record.trace.id)
+            ),
+            item_id=lambda record: record.trace.id,
+            limit=self.config.max_traces,
+            reread=lambda session_id: self._records(client, key, cache, session_id),
+        )
+        return TraceSnapshot(assemble(records, partial=partial))
+
+    def _records(
+        self,
+        client: httpx.Client,
+        key: str,
+        cache: dict[str, Record],
+        session_id: str | None = None,
+    ) -> Iterator[Record]:
+        """Normalize each distinct provider trace before choosing its conversation key."""
         config = self.config
         selection: dict[str, Any] = {
             "project_id": config.project_id,
             "start_time": config.from_timestamp.isoformat(),
             "end_time": config.to_timestamp.isoformat(),
         }
-        if config.filter is not None:
-            selection["filter"] = config.filter
-        selected: dict[str, _TraceSummary] = {}
+        restriction = config.filter
+        if session_id is not None:
+            session_filter = f"attributes.session.id = {_literal(session_id)}"
+            restriction = (
+                session_filter if restriction is None else f"({restriction}) AND ({session_filter})"
+            )
+        if restriction is not None:
+            selection["filter"] = restriction
+        seen: set[str] = set()
         for raw in self._pages(
-            client, key, "traces", selection, page_size=min(_PAGE_SIZE, config.max_traces)
+            client, key, "traces", selection, page_size=min(_PAGE_SIZE, config.max_traces + 1)
         ):
             summary = _TraceSummary.model_validate(raw)
             if summary.end_time < summary.start_time:
                 raise ArizeTraceLoadError("Arize trace ends before it starts")
-            if summary.trace_id in selected:
-                # A multi-root trace appears once per root. Its spans are read
-                # separately below and all roots remain in one canonical trace.
-                previous = selected[summary.trace_id]
-                previous.start_time = min(previous.start_time, summary.start_time)
-                previous.end_time = max(previous.end_time, summary.end_time)
-            else:
-                selected[summary.trace_id] = summary
-            if len(selected) >= config.max_traces:
-                break
-        traces = []
-        for summary in selected.values():
-            body = {
-                "project_id": config.project_id,
-                "start_time": min(config.from_timestamp, summary.start_time).isoformat(),
-                # The summary can contain nanoseconds; datetime rounds down to
-                # microseconds and the API upper bound is exclusive.
-                "end_time": max(
-                    config.to_timestamp, summary.end_time + timedelta(seconds=1)
-                ).isoformat(),
-                "filter": f"context.trace_id = '{summary.trace_id}'",
-            }
-            spans = [
-                _AXSpan.model_validate(row)
-                for row in self._pages(client, key, "spans", body, page_size=_PAGE_SIZE)
-            ]
-            if not any(span.context.span_id == summary.root_span_id for span in spans):
-                raise ArizeTraceLoadError("Arize span query did not return the selected root")
-            traces.append(_normalize_trace(summary.trace_id, spans))
-        return TraceSnapshot(traces)
+            if summary.trace_id in seen:
+                # AX lists a multi-root trace once per root; its full span query
+                # already includes all roots, so the trace is selected only once.
+                continue
+            seen.add(summary.trace_id)
+            if summary.trace_id not in cache:
+                trace = self._fetch_trace(client, key, summary)
+                cache[summary.trace_id] = _record(trace)
+            yield cache[summary.trace_id]
+
+    def _fetch_trace(self, client: httpx.Client, key: str, summary: _TraceSummary) -> Trace:
+        config = self.config
+        body = {
+            "project_id": config.project_id,
+            "start_time": min(config.from_timestamp, summary.start_time).isoformat(),
+            # Datetime rounds nanosecond summaries down to microseconds; the API
+            # upper bound is exclusive, so leave a margin for the final span.
+            "end_time": max(
+                config.to_timestamp, summary.end_time + timedelta(seconds=1)
+            ).isoformat(),
+            "filter": f"context.trace_id = {_literal(summary.trace_id)}",
+        }
+        spans = [
+            _AXSpan.model_validate(row)
+            for row in self._pages(client, key, "spans", body, page_size=_PAGE_SIZE)
+        ]
+        if not any(span.context.span_id == summary.root_span_id for span in spans):
+            raise ArizeTraceLoadError("Arize span query did not return the selected root")
+        return _normalize_trace(summary.trace_id, spans)
 
     def describe(self) -> ArizeTraceDescription:
         traces = list(self._snapshot) if self._snapshot is not None else []
@@ -247,10 +276,10 @@ class ArizeTraceLoader:
         return ArizeTraceDescription(
             source="arize",
             trace_count=len(traces),
-            span_count=len(spans),
+            span_count=sum("arize" in span.attributes for span in spans),
             call_count=sum(span.kind is SpanKind.TOOL for span in spans),
             distinct_cases=len({trace.case_id or trace.id for trace in traces}),
-            distinct_sessions=len(traces),
+            distinct_sessions=len({trace.session_id for trace in traces if trace.session_id}),
             api_url=self._api_url,
             project_id=self.config.project_id,
             from_timestamp=self.config.from_timestamp.isoformat(),
@@ -258,6 +287,20 @@ class ArizeTraceLoader:
             filter=self.config.filter,
             max_traces=self.config.max_traces,
         )
+
+
+def _literal(value: str) -> str:
+    """AX uses SQL string literals, including doubled apostrophes."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _record(trace: Trace) -> Record:
+    root = run_root(trace)
+    return Record(
+        trace,
+        conversation_input=root.input if root is not None else UNSET,
+        conversation_output=root.output if root is not None else UNSET,
+    )
 
 
 def _walk(roots: list[Span]) -> Iterator[Span]:
@@ -397,8 +440,16 @@ def _normalize_trace(trace_id: str, providers: list[_AXSpan]) -> Trace:
             for index, result in enumerate(getattr(provider, category) or []):
                 name = result.get("name") or str(index)
                 evaluations[f"arize/{category}/{provider.context.span_id}/{index}/{name}"] = result
-    trace = Trace(
+    sessions = {
+        value
+        for span in providers
+        if isinstance(value := (span.attributes or {}).get("session.id"), str) and value
+    }
+    session_id = next(iter(sessions)) if len(sessions) == 1 else None
+    return Trace(
         id=trace_id,
+        session_id=session_id,
+        session_basis="arize.session.id" if session_id is not None else None,
         root_spans=[normalized[key] for key in sorted(roots, key=order)],
         aggregate=TraceAggregate(
             latency_ms=(
@@ -407,18 +458,8 @@ def _normalize_trace(trace_id: str, providers: list[_AXSpan]) -> Trace:
             * 1000
         ),
         evaluator_results=evaluations,
+        attributes={"source_pointer": {"provider": "arize", "trace_id": trace_id}},
+        losses=[Loss(code="conflicting_session_ids", detail={"session_ids": sorted(sessions)})]
+        if len(sessions) > 1
+        else [],
     )
-    promote_run_root(trace)
-    for span in _walk(trace.root_spans):
-        if span.kind is SpanKind.AGENT:
-            try:
-                span.turns, losses = agent_turns(
-                    span.children,
-                    owner_id=span.id,
-                    conversation_input=span.input,
-                    conversation_output=span.output,
-                )
-                trace.losses.extend(losses)
-            except NoTurns:
-                pass
-    return trace
