@@ -11,7 +11,7 @@ from __future__ import annotations
 import heapq
 import json
 import os
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -554,6 +554,28 @@ def _raw_attributes(span: _IntakeSpan) -> dict[str, JsonValue]:
     if not isinstance(value, dict):
         raise ValueError(f"span {span.span_id!r} raw_attributes must be a JSON object")
     return _JSON_OBJECT.validate_python(value)
+
+
+def normalize_intake_trace(
+    trace: Mapping[str, object],
+    spans: Sequence[Mapping[str, object]],
+    evaluator_results: Sequence[Mapping[str, object]] = (),
+    *,
+    base_url: str,
+    workspace: str,
+) -> Trace:
+    """Normalize already-fetched Intake records without authentication or network IO.
+
+    Accept the wire dictionaries returned by Intake. Unknown fields are ignored;
+    required fields, timestamps, and trace/span ownership are validated.
+    """
+    return _normalize_trace(
+        _IntakeTrace.model_validate(trace),
+        [_IntakeSpan.model_validate(span) for span in spans],
+        [_EvaluatorResult.model_validate(result) for result in evaluator_results],
+        base_url=base_url,
+        workspace=workspace,
+    )
 
 
 def _normalize_trace(

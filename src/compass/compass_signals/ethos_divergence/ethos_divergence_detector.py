@@ -10,6 +10,7 @@ from nooa.unifiedllm import UnifiedLLM
 from opentelemetry import trace
 from pydantic import BaseModel, ConfigDict
 
+from compass.analysis_runtime import agent_scope
 from compass.compass_signals.compass_signals import CompassSignalResult, Problem
 from compass.compass_signals.issue_detector import IssueDetector
 from compass.traces import TraceSnapshot
@@ -44,9 +45,9 @@ async def detect_ethos_divergence(
     trace_snapshot: TraceSnapshot, llm: UnifiedLLM, ethos: str
 ) -> list[Problem]:
     async with llm:
-        return await IssueDetector(llm=llm).detect_issues(
-            trace_snapshot, ETHOS_DIVERGENCE, ethos=ethos
-        )
+        detector = IssueDetector(llm=llm)
+        async with agent_scope(detector):
+            return await detector.detect_issues(trace_snapshot, ETHOS_DIVERGENCE, ethos=ethos)
 
 
 class EthosDivergenceConfig(BaseModel):

@@ -1385,6 +1385,7 @@ version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
+    { name = "huggingface-hub" },
     { name = "jsonschema" },
     { name = "litellm" },
     { name = "nooa", extra = ["tracing"] },
@@ -1430,6 +1431,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "huggingface-hub", specifier = ">=0.34,<2" },
     { name = "jsonschema", specifier = ">=4.18,<5" },
     { name = "langfuse", marker = "extra == 'langfuse'", specifier = ">=4.17,<5" },
     { name = "langsmith", marker = "extra == 'langsmith'", specifier = ">=0.14.10,<0.15" },

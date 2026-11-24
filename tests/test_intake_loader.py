@@ -1083,3 +1083,26 @@ def test_experiment_id_cli_overrides_yaml(tmp_path):
     assert isinstance(loader, IntakeTraceLoader)
     assert loader.config.query.experiment_id == "from-cli"
     assert "filter[experiment_id]" not in loader.config.query.params()
+
+
+def test_public_normalization_accepts_fetched_records_and_checks_ownership():
+    from compass.analysis import normalize_intake_trace
+
+    result = normalize_intake_trace(
+        _trace_record(), [_span_record("root")], base_url=BASE_URL, workspace=WORKSPACE
+    )
+    assert result.id == TRACE_ID
+    assert result.root_spans[0].id == "root"
+    assert result.attributes["source_pointer"] == {
+        "provider": "nemo-platform-intake",
+        "base_url": BASE_URL,
+        "workspace": WORKSPACE,
+        "trace_id": TRACE_ID,
+    }
+    with pytest.raises(ValueError, match="belongs to trace"):
+        normalize_intake_trace(
+            _trace_record(),
+            [_span_record("root", trace_id="another")],
+            base_url=BASE_URL,
+            workspace=WORKSPACE,
+        )

@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+
 import asyncio
 import warnings
 from unittest.mock import Mock
@@ -8,7 +9,7 @@ from unittest.mock import Mock
 import pytest
 from nooa.unifiedllm import FakeLLMClient
 
-from compass.cli.main import _run_compass_signals
+from compass.analysis import _run_compass_signals
 from compass.compass_signals.anomaly_and_patterns.signal import (
     AnomalyAndPatternsAnalysis,
     NormalizedCall,

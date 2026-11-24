@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+
 import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ from unittest.mock import AsyncMock
 import yaml
 from nooa.unifiedllm import FakeLLMClient
 
+import compass.analysis as analysis
 from compass.compass_signals.compass_signals import CompassSignalResult, Problem
 from compass.insight import Insight, TraceEvidence, load_insights
 
@@ -62,7 +64,7 @@ def test_cli_passes_through_updated_date_from_compilation(tmp_path, monkeypatch,
     monkeypatch.setattr(cli, "_check_environment", lambda config: "test-key")
     monkeypatch.setattr(cli, "_build_llm", lambda *args: FakeLLMClient())
     monkeypatch.setattr(
-        cli,
+        analysis,
         "_run_compass_signals",
         AsyncMock(
             return_value=[
@@ -96,7 +98,9 @@ def test_cli_passes_through_updated_date_from_compilation(tmp_path, monkeypatch,
     )
     first_compile = AsyncMock(return_value=[first_insight])
     monkeypatch.setattr(
-        cli, "InsightCompilation", lambda **kwargs: SimpleNamespace(compile_insights=first_compile)
+        analysis,
+        "InsightCompilation",
+        lambda **kwargs: SimpleNamespace(compile_insights=first_compile),
     )
     first_output = tmp_path / "first-run-insights.yml"
     assert cli.main(run_args(first_output)) == cli.EXIT_OK
@@ -118,7 +122,9 @@ def test_cli_passes_through_updated_date_from_compilation(tmp_path, monkeypatch,
     )
     second_compile = AsyncMock(return_value=[grown_insight])
     monkeypatch.setattr(
-        cli, "InsightCompilation", lambda **kwargs: SimpleNamespace(compile_insights=second_compile)
+        analysis,
+        "InsightCompilation",
+        lambda **kwargs: SimpleNamespace(compile_insights=second_compile),
     )
     second_output = tmp_path / "second-run-insights.yml"
     assert (
@@ -134,7 +140,9 @@ def test_cli_passes_through_updated_date_from_compilation(tmp_path, monkeypatch,
     # through exactly, not recompute it to "now".
     third_compile = AsyncMock(return_value=[grown_insight])
     monkeypatch.setattr(
-        cli, "InsightCompilation", lambda **kwargs: SimpleNamespace(compile_insights=third_compile)
+        analysis,
+        "InsightCompilation",
+        lambda **kwargs: SimpleNamespace(compile_insights=third_compile),
     )
     third_output = tmp_path / "third-run-insights.yml"
     assert (

@@ -33,7 +33,7 @@ from compass.insight import Insight, Rating
 from compass.telemetry import record_span
 
 if TYPE_CHECKING:
-    from compass.cli.output import RunResult
+    from compass.analysis_result import AnalysisResult as RunResult
     from compass.insights_generation.validation import (
         CandidateProblemDecision,
         CandidateProblemValidationResult,
