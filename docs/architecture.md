@@ -6,9 +6,9 @@
 NeMo Compass analyzes recorded agent executions from production and evaluation runs to identify
 recurring problems. It has three stages: ingestion, evidence discovery, and insight compilation.
 
-Five Compass Signals analyze business requirements, user complaints, evaluation results, tool
-behavior, and statistical patterns. They use deterministic checks, learned classifiers, and LLM
-investigation, with each signal implementing the same
+Compass Signals analyze business requirements, user complaints, evaluation results, tool
+behavior, prompt-cache efficiency, and statistical patterns. They use deterministic checks,
+learned classifiers, and LLM investigation, with each signal implementing the same
 [interface](../src/compass/compass_signals/compass_signals.py): check prerequisites, analyze
 the snapshot, and return candidate `Problem` objects containing a description and supporting trace
 IDs. Results can also include analysis artifacts, coverage limitations, and reasons for skipping
@@ -179,6 +179,30 @@ results, identifiers, schemas when available, and logical case identity. The [to
 implementation](../src/compass/compass_signals/tool_issues/signal.py) contains normalization,
 detection rules, card construction, and problem promotion. Its artifacts retain both individual
 findings and the recurring groups used for insight generation.
+
+## Cost efficiency
+
+The cost-efficiency signal identifies recurring prompt-cache misses after tool-list changes.
+It uses the main inference model to extract missing model-call evidence from recorded spans,
+then applies deterministic checks to the resulting view. Calls are grouped by session and
+agent and ordered by start time. Each call is compared with the nearest earlier eligible
+call that finished before it started.
+
+The current detector checks for a call that reads none of a previously populated cache
+within its recorded lifetime, sends at least as much input, and changes the tool list.
+Changes include adding or removing tools, changing definitions, and reordering or
+reformatting the list. Checks abstain when the required usage, timing, or tool evidence
+is missing. Findings count previously cached tokens; they do not establish recoverable
+token or dollar savings.
+
+Findings are grouped by change type into evidence cards. By default, a card needs findings
+in three distinct traces before becoming a candidate problem for insight compilation;
+findings below that threshold remain in the audit artifacts. The
+[signal implementation](../src/compass/compass_signals/cost_efficiency/signal.py) handles
+evidence extraction and card construction, and the
+[prompt-cache detector](../src/compass/compass_signals/cost_efficiency/prompt_caching_miss/)
+defines the comparison and tool-change rules. See the [signal guide](compass-signals.md#cost-efficiency)
+for data requirements and configuration.
 
 ## Anomalies and patterns
 

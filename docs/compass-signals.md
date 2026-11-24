@@ -3,12 +3,13 @@
 
 # Compass Signals
 
-All five Compass Signals are enabled by default. Each runs when its prerequisites are available.
+All built-in Compass Signals are enabled by default. Each runs when its prerequisites are available.
 
 - [Ethos divergence](#ethos-divergence): supply your agent’s business rules.
 - [User sentiment](#user-sentiment): configure embeddings for complaint detection.
 - [Grader failures](#grader-failures): include recorded scores or feedback.
 - [Tool issues](#tool-issues): preserve tool calls and results.
+- [Cost efficiency](#cost-efficiency): preserve model-call usage, timing, and tool definitions.
 - [Anomalies and patterns](#anomalies-and-patterns): analyze behavior across traces.
 
 ## Ethos divergence
@@ -85,6 +86,30 @@ Include tool schemas when available so argument-validation checks can run. When 
 merges a session's records, each call is checked against the tools its own record offered.
 If the report says “No tool calls,” check that your selected traces and export preserve them.
 
+## Cost efficiency
+
+This Compass Signal finds recurring prompt-cache misses after tools are added, removed,
+changed, or reordered. It uses your main inference model to extract missing evidence from
+recorded spans, then applies deterministic checks to compare model calls within a session
+and agent sequence.
+
+Preserve per-call input-token counts, cache-read and cache-write counts, cache lifetimes,
+start and end times, and the ordered tool definitions sent with each request. Include
+session and agent IDs when available. Comparisons are skipped when the evidence cannot
+rule out cache expiry or a shorter request; missing evidence limits coverage.
+
+By default, findings must recur in at least three distinct traces to become candidate
+problems for insight compilation. To change that threshold:
+
+```yaml
+compass_signals:
+  cost_efficiency:
+    minimum_independent_traces: 3
+```
+
+Reported token counts describe previously cached tokens associated with a miss.
+They do not establish the savings a change would achieve.
+
 ## Anomalies and patterns
 
 This Compass Signal looks for unusual traces and recurring behavior across the loaded set.
@@ -101,6 +126,7 @@ compass_signals:
   user_sentiment: false
 ```
 
-The other keys are `grader_failure_patterns`, `tool_issues`, and `anomaly_and_patterns`.
+The other keys are `grader_failure_patterns`, `tool_issues`, `cost_efficiency`, and
+`anomaly_and_patterns`.
 Omit a key, or use `true` or `{}`, for defaults. Keep at least one Compass Signal enabled.
 When combining examples, put their settings under a single `compass_signals` key.
