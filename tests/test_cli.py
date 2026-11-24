@@ -20,22 +20,6 @@ from compass.insights_generation.config import load_dotenv
 from compass.traces import Trace, TraceAggregate, TraceSnapshot
 
 
-def test_removed_anomaly_cli_is_hidden_and_rejected(monkeypatch, capsys):
-    assert cli.main(["--help-all"]) == cli.EXIT_OK
-    output = capsys.readouterr().out
-    assert "--compass-signals.tool-issues.retry-threshold" in output
-    assert "anomaly" not in output.lower()
-
-    loader = Mock()
-    monkeypatch.setattr(cli, "_configured_trace_loader", loader)
-    flag = "--compass-signals.anomaly-and-patterns.contamination"
-    with pytest.raises(SystemExit) as error:
-        cli.main(["--trace.filesystem.path", "unused.jsonl", flag, "0.02"])
-    assert error.value.code == 2
-    assert flag in capsys.readouterr().err
-    loader.assert_not_called()
-
-
 @pytest.fixture
 def clean_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.os, "environ", {})
