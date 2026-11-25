@@ -81,7 +81,7 @@ lacks a single orchestration root or a recoverable conversation input, the merge
 conversation has no turns. Original record metadata stays in `attributes.records`.
 Outputs retain AX trace and span IDs without generating UI permalinks.
 
-## Deployment and data mapping
+## Connect to another deployment
 
 The API origin defaults to `https://api.arize.com`. Set `ARIZE_AX_API_URL` in `.env`
 for a self-hosted AX deployment, or set `api_url` under `trace.arize_ax` to override it.
@@ -97,24 +97,3 @@ trace:
     from_timestamp: 2026-11-01T00:00:00Z
     to_timestamp: 2026-11-02T00:00:00Z
 ```
-
-Requests use bearer authentication, do not follow redirects, and report HTTP failures
-without exposing response bodies or credentials. There are no automatic retries.
-
-The loader preserves span IDs, parents, timestamps, kinds, errors, inputs and outputs.
-OpenInference JSON payloads are decoded only when their MIME type is `application/json`.
-A missing output remains missing; a recorded JSON null remains a result. Tool spans
-become matched calls/results, using the span ID as the call identity. A source error
-status marks a failed result; a default success status does not prove a successful result.
-LLM model names, recorded prompt/completion counts, invocation parameters, and tool
-declarations populate their canonical fields. Recorded `llm.cost.total` becomes span cost.
-Other attributes, events, annotations, and evaluation details remain under
-`attributes.arize_ax` on each span. Recorded evaluations
-and annotations also populate trace evaluation results for grader failure analysis.
-
-Agent spans with recorded conversation inputs receive ordered turns using the same
-input/LLM/tool/output projection as the [MLflow loader](mlflow.md#conversation-turns).
-An orchestration root of kind `CHAIN` becomes an agent span, keeping `CHAIN` as its subtype.
-Without a recorded input, turns remain absent. Span order follows start time, then ID.
-Trace latency is the earliest start through latest end. AX timestamps on replayed or
-synthetic data describe that recording, so they need not represent production latency.
