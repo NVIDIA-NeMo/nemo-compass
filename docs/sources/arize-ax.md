@@ -67,11 +67,8 @@ ID do not prevent grouping. Conflicting IDs leave the trace separate and record 
 `conflicting_session_ids` loss; a trace without a session ID also stays on its own.
 
 `max_traces` counts conversations.
-Selection reads until it finds a conversation beyond the limit, then queries every
-selected session again using the original window and filter plus session equality.
-This retrieves older matching records that initial selection may have missed. The
-same trace's complete spans are fetched once per load. If the session query omits a
-record already selected, Compass retains it and marks the conversation `merge_incomplete`.
+Compass includes older matching traces from each selected session within the query
+window. The session ID and selection filter can match different spans in a trace.
 The query window and filter still apply: this is not necessarily a session's full lifetime.
 
 The shared conversation merger orders records by start time and ID, prefixes span IDs

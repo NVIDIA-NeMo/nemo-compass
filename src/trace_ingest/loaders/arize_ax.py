@@ -12,6 +12,7 @@ import os
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from functools import cache
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -37,7 +38,8 @@ from trace_ingest.models import (
 from trace_ingest.source_links import validate_source_url
 
 ARIZE_AX_DEFAULT_MAX_TRACES = 100
-_PAGE_SIZE = 100
+_TRACE_PAGE_SIZE = 50
+_SPAN_PAGE_SIZE = 100
 
 
 class ArizeAXTraceLoadError(RuntimeError):
@@ -197,9 +199,16 @@ class ArizeAXTraceLoader:
             seen.add(cursor)
 
     def _load(self, client: httpx.Client, key: str) -> TraceSnapshot:
-        cache: dict[str, Record] = {}
+        span_cache: dict[str, Record] = {}
+
+        @cache
+        def filtered_records() -> tuple[Record, ...]:
+            # AX applies the entire filter to one span. Match session membership
+            # on complete traces so the session and filter can match different spans.
+            return tuple(self._records(client, key, span_cache, page_size=_TRACE_PAGE_SIZE))
+
         records, partial = select_sessions(
-            self._records(client, key, cache),
+            self._records(client, key, span_cache),
             key=lambda record: (
                 ("session", record.trace.session_id)
                 if record.trace.session_id
@@ -207,7 +216,11 @@ class ArizeAXTraceLoader:
             ),
             item_id=lambda record: record.trace.id,
             limit=self.config.max_traces,
-            reread=lambda session_id: self._records(client, key, cache, session_id),
+            reread=lambda session_id: (
+                filtered_records()
+                if self.config.filter is not None
+                else self._records(client, key, span_cache, session_id)
+            ),
         )
         return TraceSnapshot(assemble(records, partial=partial))
 
@@ -217,6 +230,8 @@ class ArizeAXTraceLoader:
         key: str,
         cache: dict[str, Record],
         session_id: str | None = None,
+        *,
+        page_size: int | None = None,
     ) -> Iterator[Record]:
         """Normalize each distinct provider trace before choosing its conversation key."""
         config = self.config
@@ -227,15 +242,16 @@ class ArizeAXTraceLoader:
         }
         restriction = config.filter
         if session_id is not None:
-            session_filter = f"attributes.session.id = {_literal(session_id)}"
-            restriction = (
-                session_filter if restriction is None else f"({restriction}) AND ({session_filter})"
-            )
+            restriction = f"attributes.session.id = {_literal(session_id)}"
         if restriction is not None:
             selection["filter"] = restriction
         seen: set[str] = set()
         for raw in self._pages(
-            client, key, "traces", selection, page_size=min(_PAGE_SIZE, config.max_traces + 1)
+            client,
+            key,
+            "traces",
+            selection,
+            page_size=page_size or min(_TRACE_PAGE_SIZE, config.max_traces + 1),
         ):
             summary = _TraceSummary.model_validate(raw)
             if summary.end_time < summary.start_time:
@@ -264,7 +280,7 @@ class ArizeAXTraceLoader:
         }
         spans = [
             _AXSpan.model_validate(row)
-            for row in self._pages(client, key, "spans", body, page_size=_PAGE_SIZE)
+            for row in self._pages(client, key, "spans", body, page_size=_SPAN_PAGE_SIZE)
         ]
         if not any(span.context.span_id == summary.root_span_id for span in spans):
             raise ArizeAXTraceLoadError("Arize AX span query did not return the selected root")
