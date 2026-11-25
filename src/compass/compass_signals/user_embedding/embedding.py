@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 from collections.abc import Generator, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import closing
@@ -26,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from tokenizers import Tokenizer
 
 from compass.compass_signals._hashing import digest
+from compass.compass_signals.user_embedding.cache import EmbeddingCache
 
 MAX_USER_MESSAGE_CHARS = 20_000
 
@@ -173,7 +173,7 @@ class UserEmbeddingGenerator:
     ) -> None:
         self.device = device
         self.litellm = litellm
-        self.cache_path = cache_path.expanduser() if cache_path is not None else None
+        self.cache_path = cache_path
         self.projection = UserEmbeddingProjection()
 
     @cached_property
@@ -356,30 +356,10 @@ class UserEmbeddingGenerator:
 
         keys = [digest([self._cache_namespace, text[:MAX_USER_MESSAGE_CHARS]]) for text in texts]
         inputs = dict(zip(keys, texts, strict=True))
-        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(self.cache_path)) as connection:
-            connection.execute(
-                "CREATE TABLE IF NOT EXISTS embeddings ("
-                "key TEXT PRIMARY KEY, data BLOB NOT NULL CHECK(length(data) = 132), "
-                "token_count INTEGER NOT NULL CHECK(token_count >= 0))"
-            )
-            cached = {}
-            for key in inputs:
-                row = connection.execute(
-                    "SELECT data, token_count FROM embeddings WHERE key = ?", (key,)
-                ).fetchone()
-                if row is not None:
-                    if (
-                        not isinstance(row[0], bytes)
-                        or len(row[0]) != 132
-                        or not isinstance(row[1], int)
-                        or row[1] < 0
-                    ):
-                        raise ValueError(f"Invalid embedding cache entry in {self.cache_path}")
-                    cached[key] = UserEmbedding(row[0], row[1])
+        with EmbeddingCache.open(self.cache_path) as cache:
+            cached = {key: UserEmbedding(*row) for key, row in cache.get_many(inputs).items()}
 
             missing = [key for key in inputs if key not in cached]
-            # No database transaction spans model inference or network requests.
             if missing:
                 texts = [inputs[key] for key in missing]
                 batches = (
@@ -389,18 +369,11 @@ class UserEmbeddingGenerator:
                 )
                 with closing(batches):
                     for offset, generated in batches:
-                        with connection:
+                        saved = cache.put_many(
+                            (key, item.data, item.token_count)
                             for key, item in zip(
                                 missing[offset : offset + len(generated)], generated, strict=True
-                            ):
-                                connection.execute(
-                                    "INSERT INTO embeddings VALUES (?, ?, ?) "
-                                    "ON CONFLICT(key) DO NOTHING",
-                                    (key, item.data, item.token_count),
-                                )
-                                # Another run may have stored this input while we encoded it.
-                                data, count = connection.execute(
-                                    "SELECT data, token_count FROM embeddings WHERE key = ?", (key,)
-                                ).fetchone()
-                                cached[key] = UserEmbedding(data, count)
+                            )
+                        )
+                        cached.update({key: UserEmbedding(*row) for key, row in saved.items()})
             return [cached[key] for key in keys]
