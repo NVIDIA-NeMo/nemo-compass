@@ -68,6 +68,21 @@ Hardware is selected automatically by default. A configured `litellm` endpoint t
 Both local and remote embeddings still use your main inference model to investigate
 complaints. See [data access](model-access.md#where-data-goes).
 
+To speed up repeat runs, add `cache_path` alongside your embedding settings:
+
+```yaml
+compass_signals:
+  user_sentiment:
+    cache_path: ~/.cache/nemo-compass/user-embeddings.sqlite3
+```
+
+Use the same path across runs to reuse saved embeddings. Other analysis still
+runs each time.
+
+For remote embeddings, adjust `litellm.batch_size` and `litellm.max_concurrency`
+to suit your provider's limits. The defaults are 64 messages per request and
+four requests at a time.
+
 ## Grader failures
 
 Include Braintrust root-span scores, Langfuse scores, MLflow assessments, or LangSmith feedback.

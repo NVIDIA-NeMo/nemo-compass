@@ -70,6 +70,8 @@ def test_config_file_is_optional_when_cli_provides_trace_input() -> None:
             "traces.jsonl",
             "--compass-signals.grader-failure-patterns.max-tool-rounds",
             "72",
+            "--compass-signals.user-sentiment.cache-path",
+            "tmp/embeddings.sqlite3",
         ]
     )
 
@@ -78,6 +80,8 @@ def test_config_file_is_optional_when_cli_provides_trace_input() -> None:
     assert config.trace.filesystem.path == Path("traces.jsonl")
     assert config.compass_signals.grader_failure_patterns is not None
     assert config.compass_signals.grader_failure_patterns.max_tool_rounds == 72
+    assert config.compass_signals.user_sentiment is not None
+    assert config.compass_signals.user_sentiment.cache_path == Path("tmp/embeddings.sqlite3")
 
 
 def test_cli_accepts_optional_code_base() -> None:

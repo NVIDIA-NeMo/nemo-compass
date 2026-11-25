@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from functools import cached_property
+from pathlib import Path
 
 from nooa import Agent
 from nooa.unifiedllm import UnifiedLLM
@@ -153,6 +154,10 @@ class UserSentimentConfig(BaseModel):
         description="Run the embedding model on your machine. Downloads model weights on first use.",
     )
     device: str | None = Field(default=None, description="PyTorch device; auto-detected by default")
+    cache_path: Path | None = Field(
+        default=None,
+        description="Optional SQLite file for reusing user embeddings across runs",
+    )
     litellm: LiteLLMEmbeddingConfig | None = Field(
         default=None,
         description="Use remote Qwen3-Embedding-8B embeddings instead of local weights",
@@ -175,7 +180,9 @@ class UserSentimentCompassSignal:
 
     @cached_property
     def embedding_generator(self) -> UserEmbeddingGenerator:
-        return UserEmbeddingGenerator(self.config.device, self.config.litellm)
+        return UserEmbeddingGenerator(
+            self.config.device, self.config.litellm, cache_path=self.config.cache_path
+        )
 
     @cached_property
     def classifier(self) -> ComplaintClassifier:
