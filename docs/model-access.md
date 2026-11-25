@@ -4,7 +4,7 @@
 # Data and model access
 
 NeMo Compass needs an inference model to investigate traces and write insights.
-Its API key is separate from your Braintrust, LangSmith, Langfuse, MLflow, or Intake credentials.
+Its API key is separate from your Arize AX, Braintrust, LangSmith, Langfuse, MLflow, or Intake credentials.
 
 ## Choose a model
 
