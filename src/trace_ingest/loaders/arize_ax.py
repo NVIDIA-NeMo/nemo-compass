@@ -36,27 +36,27 @@ from trace_ingest.models import (
 )
 from trace_ingest.source_links import validate_source_url
 
-ARIZE_DEFAULT_MAX_TRACES = 100
+ARIZE_AX_DEFAULT_MAX_TRACES = 100
 _PAGE_SIZE = 100
 
 
-class ArizeTraceLoadError(RuntimeError):
+class ArizeAXTraceLoadError(RuntimeError):
     """The AX selection could not be fetched or normalized completely."""
 
 
-def validate_arize_selection(project_id: str, start: datetime, end: datetime) -> None:
+def validate_arize_ax_selection(project_id: str, start: datetime, end: datetime) -> None:
     """Require a project and an explicit timezone-aware selection window."""
     if not project_id.strip():
-        raise ValueError("Arize project_id must not be blank")
+        raise ValueError("Arize AX project_id must not be blank")
     for value in (start, end):
         if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("Arize timestamps must include a timezone")
+            raise ValueError("Arize AX timestamps must include a timezone")
     if end <= start:
-        raise ValueError("Arize to_timestamp must be after from_timestamp")
+        raise ValueError("Arize AX to_timestamp must be after from_timestamp")
 
 
 @dataclass(frozen=True)
-class ArizeTraceConfig:
+class ArizeAXTraceConfig:
     """Select newest AX conversations in a bounded time window."""
 
     project_id: str
@@ -64,15 +64,15 @@ class ArizeTraceConfig:
     to_timestamp: datetime
     api_url: str | None = None
     filter: str | None = None
-    max_traces: int = ARIZE_DEFAULT_MAX_TRACES
+    max_traces: int = ARIZE_AX_DEFAULT_MAX_TRACES
 
     def __post_init__(self) -> None:
-        validate_arize_selection(self.project_id, self.from_timestamp, self.to_timestamp)
+        validate_arize_ax_selection(self.project_id, self.from_timestamp, self.to_timestamp)
         if self.max_traces < 1:
             raise ValueError("max_traces must be at least 1")
 
 
-class ArizeTraceDescription(TraceDescription):
+class ArizeAXTraceDescription(TraceDescription):
     """Selection and corpus facts without credentials."""
 
     api_url: str
@@ -116,14 +116,14 @@ class _TraceSummary(BaseModel):
 
 
 @dataclass
-class ArizeTraceLoader:
+class ArizeAXTraceLoader:
     """Discover traces, then page every span of each selected trace.
 
     AX can cap the spans embedded in trace-list responses, even when
     ``spans_truncated`` is false. Never use that embedded list as the corpus.
     """
 
-    config: ArizeTraceConfig
+    config: ArizeAXTraceConfig
     client: httpx.Client | None = field(default=None, repr=False)
     _snapshot: TraceSnapshot | None = field(default=None, init=False, repr=False)
     _api_url: str = field(default="", init=False)
@@ -132,7 +132,7 @@ class ArizeTraceLoader:
         self._snapshot = None
         key = os.environ.get("ARIZE_AX_API_KEY", "").strip()
         if not key:
-            raise ArizeTraceLoadError("ARIZE_AX_API_KEY is required")
+            raise ArizeAXTraceLoadError("ARIZE_AX_API_KEY is required")
         base = (
             self.config.api_url or os.environ.get("ARIZE_AX_API_URL") or "https://api.arize.com"
         ).rstrip("/")
@@ -141,7 +141,7 @@ class ArizeTraceLoader:
             parsed = urlsplit(base)
             if parsed.scheme not in {"http", "https"} or parsed.query or parsed.fragment:
                 raise ValueError(
-                    "Arize api_url must be an HTTP(S) base URL without query or fragment"
+                    "Arize AX api_url must be an HTTP(S) base URL without query or fragment"
                 )
             self._api_url = base
             if self.client is not None:
@@ -149,19 +149,19 @@ class ArizeTraceLoader:
             else:
                 with httpx.Client(timeout=60) as client:
                     snapshot = self._load(client, key)
-        except ArizeTraceLoadError:
+        except ArizeAXTraceLoadError:
             raise
         except httpx.HTTPStatusError as error:
-            raise ArizeTraceLoadError(
-                f"Arize request failed (HTTP {error.response.status_code})"
+            raise ArizeAXTraceLoadError(
+                f"Arize AX request failed (HTTP {error.response.status_code})"
             ) from error
         except httpx.RequestError as error:
-            raise ArizeTraceLoadError(
-                "Arize request failed; check API URL and connectivity"
+            raise ArizeAXTraceLoadError(
+                "Arize AX request failed; check API URL and connectivity"
             ) from error
         except (ValueError, TypeError, OverflowError) as error:
-            raise ArizeTraceLoadError(
-                f"Invalid Arize response or configuration: {error}"
+            raise ArizeAXTraceLoadError(
+                f"Invalid Arize AX response or configuration: {error}"
             ) from error
         self._snapshot = snapshot
         return snapshot
@@ -184,16 +184,16 @@ class ArizeTraceLoader:
             response.raise_for_status()
             data = response.json()
             if not isinstance(data, dict) or not isinstance(data.get(resource), list):
-                raise ArizeTraceLoadError(f"Arize {resource} response must contain a list")
+                raise ArizeAXTraceLoadError(f"Arize AX {resource} response must contain a list")
             pagination = data.get("pagination")
             if not isinstance(pagination, dict) or not isinstance(pagination.get("has_more"), bool):
-                raise ArizeTraceLoadError("Arize response is missing pagination metadata")
+                raise ArizeAXTraceLoadError("Arize AX response is missing pagination metadata")
             yield from data[resource]
             if not pagination["has_more"]:
                 break
             cursor = pagination.get("next_cursor")
             if not isinstance(cursor, str) or not cursor or cursor in seen:
-                raise ArizeTraceLoadError("Arize pagination cursor is missing or repeated")
+                raise ArizeAXTraceLoadError("Arize AX pagination cursor is missing or repeated")
             seen.add(cursor)
 
     def _load(self, client: httpx.Client, key: str) -> TraceSnapshot:
@@ -239,7 +239,7 @@ class ArizeTraceLoader:
         ):
             summary = _TraceSummary.model_validate(raw)
             if summary.end_time < summary.start_time:
-                raise ArizeTraceLoadError("Arize trace ends before it starts")
+                raise ArizeAXTraceLoadError("Arize AX trace ends before it starts")
             if summary.trace_id in seen:
                 # AX lists a multi-root trace once per root; its full span query
                 # already includes all roots, so the trace is selected only once.
@@ -267,16 +267,16 @@ class ArizeTraceLoader:
             for row in self._pages(client, key, "spans", body, page_size=_PAGE_SIZE)
         ]
         if not any(span.context.span_id == summary.root_span_id for span in spans):
-            raise ArizeTraceLoadError("Arize span query did not return the selected root")
+            raise ArizeAXTraceLoadError("Arize AX span query did not return the selected root")
         return _normalize_trace(summary.trace_id, spans)
 
-    def describe(self) -> ArizeTraceDescription:
+    def describe(self) -> ArizeAXTraceDescription:
         traces = list(self._snapshot) if self._snapshot is not None else []
         spans = [span for trace in traces for span in _walk(trace.root_spans)]
-        return ArizeTraceDescription(
-            source="arize",
+        return ArizeAXTraceDescription(
+            source="arize_ax",
             trace_count=len(traces),
-            span_count=sum("arize" in span.attributes for span in spans),
+            span_count=sum("arize_ax" in span.attributes for span in spans),
             call_count=sum(span.kind is SpanKind.TOOL for span in spans),
             distinct_cases=len({trace.case_id or trace.id for trace in traces}),
             distinct_sessions=len({trace.session_id for trace in traces if trace.session_id}),
@@ -360,9 +360,9 @@ def _normalize_span(provider: _AXSpan) -> Span:
         token_counts=token_counts(
             input_total=_count(attrs.get("llm.token_count.prompt")),
             output_tokens=_count(attrs.get("llm.token_count.completion")),
-            source="arize.openinference",
+            source="arize_ax.openinference",
         ),
-        attributes={"arize": provider.model_dump(mode="json", exclude_unset=True)},
+        attributes={"arize_ax": provider.model_dump(mode="json", exclude_unset=True)},
     )
     if kind is SpanKind.TOOL:
         name = attrs.get("tool.name")
@@ -402,18 +402,18 @@ def _normalize_span(provider: _AXSpan) -> Span:
 def _normalize_trace(trace_id: str, providers: list[_AXSpan]) -> Trace:
     by_id = {span.context.span_id: span for span in providers}
     if len(by_id) != len(providers):
-        raise ArizeTraceLoadError(f"Duplicate Arize span ID in trace {trace_id}")
+        raise ArizeAXTraceLoadError(f"Duplicate Arize AX span ID in trace {trace_id}")
     if not by_id:
-        raise ArizeTraceLoadError(f"Arize trace {trace_id} has no spans")
+        raise ArizeAXTraceLoadError(f"Arize AX trace {trace_id} has no spans")
     children: dict[str, list[str]] = {key: [] for key in by_id}
     roots = []
     for key, provider in by_id.items():
         if provider.context.trace_id != trace_id:
-            raise ArizeTraceLoadError("Arize span belongs to a different trace")
+            raise ArizeAXTraceLoadError("Arize AX span belongs to a different trace")
         if not provider.parent_id:
             roots.append(key)
         elif provider.parent_id not in by_id:
-            raise ArizeTraceLoadError(f"Arize trace {trace_id} is incomplete: missing parent")
+            raise ArizeAXTraceLoadError(f"Arize AX trace {trace_id} is incomplete: missing parent")
         else:
             children[provider.parent_id].append(key)
 
@@ -433,13 +433,15 @@ def _normalize_trace(trace_id: str, providers: list[_AXSpan]) -> Trace:
         for child in children[key]:
             heapq.heappush(ready, (order(child), child))
     if len(normalized) != len(by_id):
-        raise ArizeTraceLoadError(f"Arize trace {trace_id} contains a parent cycle")
+        raise ArizeAXTraceLoadError(f"Arize AX trace {trace_id} contains a parent cycle")
     evaluations: dict[str, JsonValue] = {}
     for provider in providers:
         for category in ("evaluations", "annotations", "trace_annotations"):
             for index, result in enumerate(getattr(provider, category) or []):
                 name = result.get("name") or str(index)
-                evaluations[f"arize/{category}/{provider.context.span_id}/{index}/{name}"] = result
+                evaluations[f"arize_ax/{category}/{provider.context.span_id}/{index}/{name}"] = (
+                    result
+                )
     sessions = {
         value
         for span in providers
@@ -449,7 +451,7 @@ def _normalize_trace(trace_id: str, providers: list[_AXSpan]) -> Trace:
     return Trace(
         id=trace_id,
         session_id=session_id,
-        session_basis="arize.session.id" if session_id is not None else None,
+        session_basis="arize_ax.session.id" if session_id is not None else None,
         root_spans=[normalized[key] for key in sorted(roots, key=order)],
         aggregate=TraceAggregate(
             latency_ms=(
@@ -458,7 +460,7 @@ def _normalize_trace(trace_id: str, providers: list[_AXSpan]) -> Trace:
             * 1000
         ),
         evaluator_results=evaluations,
-        attributes={"source_pointer": {"provider": "arize", "trace_id": trace_id}},
+        attributes={"source_pointer": {"provider": "arize_ax", "trace_id": trace_id}},
         losses=[Loss(code="conflicting_session_ids", detail={"session_ids": sorted(sessions)})]
         if len(sessions) > 1
         else [],

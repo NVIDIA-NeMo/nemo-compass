@@ -10,12 +10,11 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
-from compass.cli.main import _check_environment, _configured_trace_loader
-from compass.config import RunConfig
-from trace_ingest.loaders.arize import (
-    ArizeTraceConfig,
-    ArizeTraceLoader,
-    ArizeTraceLoadError,
+from compass.cli.main import _check_environment, _configured_trace_loader, get_config
+from trace_ingest.loaders.arize_ax import (
+    ArizeAXTraceConfig,
+    ArizeAXTraceLoader,
+    ArizeAXTraceLoadError,
     _AXSpan,
     _normalize_trace,
     _record,
@@ -88,7 +87,7 @@ def normalize(rows):
 
 
 def config(*, from_timestamp=START, **kwargs):
-    return ArizeTraceConfig(
+    return ArizeAXTraceConfig(
         project_id="project-id", from_timestamp=from_timestamp, to_timestamp=END, **kwargs
     )
 
@@ -99,7 +98,7 @@ def test_native_openinference_mapping_is_deterministic_and_preserves_results():
     assert trace.model_dump() == normalize(original).model_dump()
     (root,) = trace.root_spans
     assert root.kind is SpanKind.AGENT and root.attributes["subtype"] == "CHAIN"
-    assert root.attributes["arize"]["kind"] == "CHAIN"
+    assert root.attributes["arize_ax"]["kind"] == "CHAIN"
     assert [s.id for s in root.children] == ["llm", "tool-missing", "tool-null"]
     llm, missing, null = root.children
     assert llm.kind is SpanKind.LLM
@@ -124,7 +123,7 @@ def test_native_openinference_mapping_is_deterministic_and_preserves_results():
     assert list(trace.evaluator_results.values()) == [
         {"name": "quality", "score": 0.0, "label": "bad"}
     ]
-    assert null.attributes["arize"]["status_message"] == "not found"
+    assert null.attributes["arize_ax"]["status_message"] == "not found"
 
 
 @pytest.mark.parametrize(
@@ -150,7 +149,7 @@ def test_invalid_graphs_fail_instead_of_returning_partial_traces(corruption, mat
         rows[1]["context"]["trace_id"] = OTHER
     else:
         rows = []
-    with pytest.raises(ArizeTraceLoadError, match=match):
+    with pytest.raises(ArizeAXTraceLoadError, match=match):
         normalize(rows)
 
 
@@ -163,7 +162,7 @@ def test_load_pages_complete_spans_and_drops_discovery_filter(monkeypatch):
     def respond(request):
         body = json.loads(request.content)
         requests.append((request.url.path, dict(request.url.params), body))
-        assert request.url.host == "private-arize.example.com"
+        assert request.url.host == "private-arize-ax.example.com"
         assert request.headers["Authorization"] == "Bearer test-secret"
         if request.url.path == "/v2/traces":
             assert body["filter"] == "status_code = 'ERROR'"
@@ -192,11 +191,11 @@ def test_load_pages_complete_spans_and_drops_discovery_filter(monkeypatch):
         return httpx.Response(200, json={"spans": spans[:2], "pagination": {"has_more": False}})
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        loader = ArizeTraceLoader(
+        loader = ArizeAXTraceLoader(
             config(
                 max_traces=1,
                 filter="status_code = 'ERROR'",
-                api_url="https://private-arize.example.com",
+                api_url="https://private-arize-ax.example.com",
             ),
             client,
         )
@@ -206,13 +205,13 @@ def test_load_pages_complete_spans_and_drops_discovery_filter(monkeypatch):
     assert snapshot.trace_count == 1
     assert next(iter(snapshot)).model_dump() == normalize(spans).model_dump()
     assert loader.describe() == {
-        "source": "arize",
+        "source": "arize_ax",
         "trace_count": 1,
         "span_count": 4,
         "call_count": 2,
         "distinct_cases": 1,
         "distinct_sessions": 0,
-        "api_url": "https://private-arize.example.com",
+        "api_url": "https://private-arize-ax.example.com",
         "project_id": "project-id",
         "from_timestamp": START.isoformat(),
         "to_timestamp": END.isoformat(),
@@ -264,7 +263,7 @@ def test_discovery_pagination_keeps_multiple_roots_and_stops_at_trace_limit(monk
         )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        snapshot = ArizeTraceLoader(config(max_traces=2), client).load()
+        snapshot = ArizeAXTraceLoader(config(max_traces=2), client).load()
     assert [t.id for t in snapshot] == [TRACE, OTHER]
     assert all(len(t.root_spans) == 2 for t in snapshot)
     assert [read for read in reads if read[0] == "/v2/traces"] == [
@@ -341,12 +340,12 @@ def test_session_limit_rereads_and_merges_records_in_order(monkeypatch, missing_
         )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        loader = ArizeTraceLoader(config(max_traces=1, filter=query_filter), client)
+        loader = ArizeAXTraceLoader(config(max_traces=1, filter=query_filter), client)
         snapshot = loader.load()
     (conversation,) = snapshot
     assert conversation.id == "session:" + session
     assert conversation.session_id == session
-    assert conversation.session_basis == "arize.session.id"
+    assert conversation.session_basis == "arize_ax.session.id"
     assert [r["trace_id"] for r in conversation.attributes["records"]] == [older, TRACE]
     (root,) = conversation.root_spans
     assert root.turns is not UNSET
@@ -392,11 +391,11 @@ def test_pagination_errors_empty_selection_and_http_failures(monkeypatch, failur
         )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        loader = ArizeTraceLoader(config(), client)
+        loader = ArizeAXTraceLoader(config(), client)
         if failure == "empty":
             assert loader.load().trace_count == 0
         else:
-            with pytest.raises(ArizeTraceLoadError) as caught:
+            with pytest.raises(ArizeAXTraceLoadError) as caught:
                 loader.load()
             assert "test-secret" not in str(caught.value)
 
@@ -405,11 +404,21 @@ def test_cli_configuration_credentials_and_loader_selection(monkeypatch, tmp_pat
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("COMPASS_API_KEY", "model-key")
     monkeypatch.setenv("ARIZE_AX_API_KEY", "test-secret")
-    source = {"project_id": "project-id", "from_timestamp": START, "to_timestamp": END}
-    run = RunConfig(trace={"arize": source, "max_traces": 3}, compass_signals={"tool_issues": {}})
+    run = get_config(
+        [
+            "--trace.arize-ax.project-id",
+            "project-id",
+            "--trace.arize-ax.from-timestamp",
+            START.isoformat(),
+            "--trace.arize-ax.to-timestamp",
+            END.isoformat(),
+            "--trace.max-traces",
+            "3",
+        ]
+    )
     assert _check_environment(run) == "model-key"
     loader = _configured_trace_loader(run.trace)
-    assert isinstance(loader, ArizeTraceLoader)
+    assert isinstance(loader, ArizeAXTraceLoader)
     assert loader.config.max_traces == 3
     monkeypatch.delenv("ARIZE_AX_API_KEY")
     with pytest.raises(ValueError, match="ARIZE_AX_API_KEY"):
