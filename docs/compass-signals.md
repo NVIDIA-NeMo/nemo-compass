@@ -68,7 +68,7 @@ Hardware is selected automatically by default. A configured `litellm` endpoint t
 Both local and remote embeddings still use your main inference model to investigate
 complaints. See [data access](model-access.md#where-data-goes).
 
-To reuse embeddings across runs, optionally set a local SQLite file:
+To speed up repeat runs, add `cache_path` alongside your embedding settings:
 
 ```yaml
 compass_signals:
@@ -76,24 +76,12 @@ compass_signals:
     cache_path: ~/.cache/nemo-compass/user-embeddings.sqlite3
 ```
 
-Keep your embedding backend configuration alongside `cache_path`. Only uncached
-messages are encoded; extraction and complaint investigation still run each time.
-The cache stores compressed embeddings and token counts, without message text.
-Use the same path across checkouts and experiments to share it. Keys identify the
-message text sent to the encoder and its embedding representation, not the Compass
-or evaluator version. Compass updates, evaluator updates, classifier changes, and
-batch/concurrency changes reuse entries when that representation stays the same.
-Treat the cache as derived trace data and keep it outside version control. Encoder
-or projection changes invalidate entries. If a remote model alias changes what it
-serves, delete the database to refresh it. Remove
-`cache_path` to disable caching. Each completed remote batch (or local message)
-is saved immediately, so a failed or interrupted run can reuse saved results.
-SQLite may create a temporary journal beside the database. Cache errors fail the run;
-check the configured path or delete a damaged cache before retrying.
+Use the same path across runs to reuse saved embeddings. Other analysis still
+runs each time.
 
-For faster encoding of uncached messages, tune `litellm.batch_size` and
-`litellm.max_concurrency` for your endpoint's batch and rate limits. The defaults
-are 64 messages per request and four concurrent requests.
+For remote embeddings, adjust `litellm.batch_size` and `litellm.max_concurrency`
+to suit your provider's limits. The defaults are 64 messages per request and
+four requests at a time.
 
 ## Grader failures
 
