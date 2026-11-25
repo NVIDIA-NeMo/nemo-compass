@@ -14,7 +14,7 @@ Install the CLI with [uv](../../README.md#start-here):
 uv tool install nemo-compass
 ```
 
-No Arize AX SDK extra is required. [Configure your inference model and key](../model-access.md#choose-a-model),
+[Configure your inference model and key](../model-access.md#choose-a-model),
 then add your AX API key to `.env`:
 
 ```dotenv
