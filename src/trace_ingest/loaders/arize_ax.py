@@ -7,11 +7,14 @@ from __future__ import annotations
 
 import heapq
 import json
+import logging
 import math
 import os
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from functools import cache
 from typing import Any
 from urllib.parse import urlsplit
@@ -40,6 +43,24 @@ from trace_ingest.source_links import validate_source_url
 ARIZE_AX_DEFAULT_MAX_TRACES = 100
 _TRACE_PAGE_SIZE = 50
 _SPAN_PAGE_SIZE = 100
+_RATE_LIMIT_BACKOFF_SECONDS = (30, 60, 120)
+_MAX_RETRY_DELAY_SECONDS = 300
+_LOGGER = logging.getLogger(__name__)
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    if value is None:
+        return None
+    value = value.strip()
+    if value.isascii() and value.isdecimal():
+        return int(value)
+    try:
+        retry_at = parsedate_to_datetime(value)
+    except (ValueError, TypeError):
+        return None
+    if retry_at.tzinfo is None:
+        return None
+    return max(0, (retry_at - datetime.now(timezone.utc)).total_seconds())
 
 
 class ArizeAXTraceLoadError(RuntimeError):
@@ -168,6 +189,22 @@ class ArizeAXTraceLoader:
         self._snapshot = snapshot
         return snapshot
 
+    def _request_page(self, client: httpx.Client, request: httpx.Request) -> httpx.Response:
+        response = client.send(request)
+        for backoff in _RATE_LIMIT_BACKOFF_SECONDS:
+            if response.status_code != 429:
+                break
+            delay = _retry_after_seconds(response.headers.get("Retry-After"))
+            if delay is None:
+                delay = backoff
+            if delay > _MAX_RETRY_DELAY_SECONDS:
+                break
+            response.close()
+            _LOGGER.warning("Arize AX rate limited a read; retrying in %.1fs", delay)
+            time.sleep(delay)
+            response = client.send(request)
+        return response
+
     def _pages(
         self, client: httpx.Client, key: str, resource: str, body: dict[str, Any], *, page_size: int
     ) -> Iterator[dict[str, Any]]:
@@ -177,12 +214,14 @@ class ArizeAXTraceLoader:
             params: dict[str, str | int] = {"limit": page_size}
             if cursor is not None:
                 params["cursor"] = cursor
-            response = client.post(
+            request = client.build_request(
+                "POST",
                 f"{self._api_url}/v2/{resource}",
                 headers={"Authorization": f"Bearer {key}"},
                 params=params,
                 json=body,
             )
+            response = self._request_page(client, request)
             response.raise_for_status()
             data = response.json()
             if not isinstance(data, dict) or not isinstance(data.get(resource), list):
