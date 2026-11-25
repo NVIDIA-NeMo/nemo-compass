@@ -66,7 +66,7 @@ the trace's `session_id`, with `session_basis: arize_ax.session.id`. Spans witho
 ID do not prevent grouping. Conflicting IDs leave the trace separate and record a
 `conflicting_session_ids` loss; a trace without a session ID also stays on its own.
 
-As with the LangSmith and Langfuse loaders, `max_traces` counts conversations.
+`max_traces` counts conversations.
 Selection reads until it finds a conversation beyond the limit, then queries every
 selected session again using the original window and filter plus session equality.
 This retrieves older matching records that initial selection may have missed. The
