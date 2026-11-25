@@ -6,13 +6,17 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Iterator
+import sqlite3
+from collections.abc import Generator, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextlib import closing
 from dataclasses import dataclass
 from functools import cached_property
+from hashlib import sha256
 from importlib.resources import files
 from importlib.util import find_spec
 from itertools import islice
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -20,6 +24,8 @@ from litellm import EmbeddingResponse
 from openinference.instrumentation import suppress_tracing
 from pydantic import BaseModel, ConfigDict, Field
 from tokenizers import Tokenizer
+
+from compass.compass_signals._hashing import digest
 
 MAX_USER_MESSAGE_CHARS = 20_000
 
@@ -159,11 +165,33 @@ class UserEmbeddingGenerator:
     """Encode locally or through LiteLLM using the pinned Qwen instruction."""
 
     def __init__(
-        self, device: str | None = None, litellm: LiteLLMEmbeddingConfig | None = None
+        self,
+        device: str | None = None,
+        litellm: LiteLLMEmbeddingConfig | None = None,
+        *,
+        cache_path: Path | None = None,
     ) -> None:
         self.device = device
         self.litellm = litellm
+        self.cache_path = cache_path.expanduser() if cache_path is not None else None
         self.projection = UserEmbeddingProjection()
+
+    @cached_property
+    def _cache_namespace(self) -> str:
+        folder = files("compass.compass_signals.user_embedding").joinpath("models")
+        return digest(
+            {
+                "format": 1,
+                "metadata": self.projection.metadata,
+                "weights": sha256(folder.joinpath("embedding.npz").read_bytes()).hexdigest(),
+                "max_chars": MAX_USER_MESSAGE_CHARS,
+                "backend": (
+                    {"model": self.litellm.model, "api_base": self.litellm.api_base}
+                    if self.litellm is not None
+                    else {"local": True, "device": self.device}
+                ),
+            }
+        )
 
     @cached_property
     def remote_tokenizer(self) -> Tokenizer:
@@ -261,15 +289,21 @@ class UserEmbeddingGenerator:
 
     def generate_remote(self, texts: list[str]) -> list[UserEmbedding]:
         """Encode with a fixed worker pool and provider-managed retries."""
+        completed = dict(self._generate_remote_batches(texts))
+        return [item for index in sorted(completed) for item in completed[index]]
+
+    def _generate_remote_batches(
+        self, texts: list[str]
+    ) -> Generator[tuple[int, list[UserEmbedding]], None, None]:
+        """Yield completed batches on the coordinator thread, preserving input offsets."""
         config = self.litellm
         if config is None:
             raise ValueError("Remote embeddings require LiteLLM configuration")
         if not texts:
-            return []
+            return
         api_key = os.environ[config.api_key_env] if config.api_key_env else None
         batches = self._remote_batches(texts, config.batch_size)
         active: dict[Future[list[UserEmbedding]], int] = {}
-        completed: dict[int, list[UserEmbedding]] = {}
         with ThreadPoolExecutor(max_workers=config.max_concurrency) as executor:
             while True:
                 # Keep only one batch per worker in flight; refill as each finishes.
@@ -279,9 +313,17 @@ class UserEmbeddingGenerator:
                 if not active:
                     break
                 done, _ = wait(active, return_when=FIRST_COMPLETED)
+                error = None
                 for future in done:
-                    completed[active.pop(future)] = future.result()
-        return [item for index in sorted(completed) for item in completed[index]]
+                    index = active.pop(future)
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        error = exc
+                    else:
+                        yield index, result
+                if error is not None:
+                    raise error
 
     def _remote_batch(
         self, batch: _RemoteBatch, config: LiteLLMEmbeddingConfig, api_key: str | None
@@ -308,6 +350,57 @@ class UserEmbeddingGenerator:
 
     def generate_batch(self, texts: list[str]) -> list[UserEmbedding]:
         """Batch remote requests while preserving input order and local token limits."""
-        if self.litellm is None:
-            return self.generate_local(texts)
-        return self.generate_remote(texts)
+        generate = self.generate_local if self.litellm is None else self.generate_remote
+        if self.cache_path is None or not texts:
+            return generate(texts)
+
+        keys = [digest([self._cache_namespace, text[:MAX_USER_MESSAGE_CHARS]]) for text in texts]
+        inputs = dict(zip(keys, texts, strict=True))
+        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(self.cache_path)) as connection:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS embeddings ("
+                "key TEXT PRIMARY KEY, data BLOB NOT NULL CHECK(length(data) = 132), "
+                "token_count INTEGER NOT NULL CHECK(token_count >= 0))"
+            )
+            cached = {}
+            for key in inputs:
+                row = connection.execute(
+                    "SELECT data, token_count FROM embeddings WHERE key = ?", (key,)
+                ).fetchone()
+                if row is not None:
+                    if (
+                        not isinstance(row[0], bytes)
+                        or len(row[0]) != 132
+                        or not isinstance(row[1], int)
+                        or row[1] < 0
+                    ):
+                        raise ValueError(f"Invalid embedding cache entry in {self.cache_path}")
+                    cached[key] = UserEmbedding(row[0], row[1])
+
+            missing = [key for key in inputs if key not in cached]
+            # No database transaction spans model inference or network requests.
+            if missing:
+                texts = [inputs[key] for key in missing]
+                batches = (
+                    self._generate_remote_batches(texts)
+                    if self.litellm is not None
+                    else ((i, self.generate_local([text])) for i, text in enumerate(texts))
+                )
+                with closing(batches):
+                    for offset, generated in batches:
+                        with connection:
+                            for key, item in zip(
+                                missing[offset : offset + len(generated)], generated, strict=True
+                            ):
+                                connection.execute(
+                                    "INSERT INTO embeddings VALUES (?, ?, ?) "
+                                    "ON CONFLICT(key) DO NOTHING",
+                                    (key, item.data, item.token_count),
+                                )
+                                # Another run may have stored this input while we encoded it.
+                                data, count = connection.execute(
+                                    "SELECT data, token_count FROM embeddings WHERE key = ?", (key,)
+                                ).fetchone()
+                                cached[key] = UserEmbedding(data, count)
+            return [cached[key] for key in keys]
