@@ -4,7 +4,7 @@
 # Analyze Arize AX traces
 
 Connect Compass to an Arize AX tracing project. This integration uses AX's public
-v2 REST API. Phoenix has a separate API and is not supported by this loader.
+v2 REST API.
 
 ## Connect and run
 
