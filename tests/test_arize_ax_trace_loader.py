@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
+import trace_ingest.loaders.arize_ax as arize_ax
 from compass.cli.main import _check_environment, _configured_trace_loader, get_config
 from trace_ingest.loaders.arize_ax import (
     ArizeAXTraceConfig,
@@ -475,6 +476,83 @@ def test_pagination_errors_empty_selection_and_http_failures(monkeypatch, failur
             with pytest.raises(ArizeAXTraceLoadError) as caught:
                 loader.load()
             assert "test-secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize("resource", ["traces", "spans"])
+@pytest.mark.parametrize(
+    "retry_after,expected_delay",
+    [("2", 2), ("Sun, 01 Nov 2026 00:00:02 GMT", 2), (None, 30), ("invalid", 30)],
+)
+def test_rate_limit_retries_same_page_without_losing_records(
+    monkeypatch, resource, retry_after, expected_delay
+):
+    monkeypatch.setenv("ARIZE_AX_API_KEY", "test-secret")
+    waits = []
+    monkeypatch.setattr(arize_ax.time, "sleep", waits.append)
+    monkeypatch.setattr(arize_ax.time, "time", lambda: START.timestamp())
+    requests = []
+
+    def respond(request):
+        requests.append((str(request.url), request.content))
+        if len(requests) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    resource: [{"id": "first"}],
+                    "pagination": {"has_more": True, "next_cursor": "next"},
+                },
+            )
+        if len(requests) == 2:
+            headers = {} if retry_after is None else {"Retry-After": retry_after}
+            return httpx.Response(429, headers=headers, text="test-secret")
+        return httpx.Response(
+            200, json={resource: [{"id": "second"}], "pagination": {"has_more": False}}
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        loader = ArizeAXTraceLoader(config(), client)
+        loader._api_url = "https://api.arize.com"
+        rows = list(
+            loader._pages(
+                client, "test-secret", resource, {"project_id": "project-id"}, page_size=50
+            )
+        )
+    assert rows == [{"id": "first"}, {"id": "second"}]
+    assert waits == [expected_delay]
+    assert requests[1] == requests[2]
+    assert "cursor=next" in requests[1][0]
+
+
+@pytest.mark.parametrize(
+    "status,retry_after,expected_waits",
+    [
+        (429, None, [30, 60, 120]),
+        (429, "301", []),
+        (403, None, []),
+    ],
+)
+def test_rate_limit_retries_are_bounded_and_other_http_errors_fail_immediately(
+    monkeypatch, status, retry_after, expected_waits
+):
+    monkeypatch.setenv("ARIZE_AX_API_KEY", "test-secret")
+    waits = []
+    monkeypatch.setattr(arize_ax.time, "sleep", waits.append)
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(
+            status,
+            headers={} if retry_after is None else {"Retry-After": retry_after},
+            text="test-secret",
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(ArizeAXTraceLoadError, match=f"HTTP {status}") as caught:
+            ArizeAXTraceLoader(config(), client).load()
+    assert "test-secret" not in str(caught.value)
+    assert waits == expected_waits
+    assert len(requests) == len(expected_waits) + 1
 
 
 def test_cli_configuration_credentials_and_loader_selection(monkeypatch, tmp_path):
